@@ -1,0 +1,17 @@
+# Normalise line endings in the repository.
+#
+# verify-wisp.mjs rebuilds lib/client.js in memory and compares it against the
+# committed copy. If Git rewrote line endings on checkout, that comparison would
+# fail on a fresh clone for a bundle that is perfectly up to date.
+* text=auto eol=lf
+
+# Windows batch files genuinely require CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Artwork is binary; never touch it.
+*.webp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
