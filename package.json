@@ -1,0 +1,72 @@
+{
+  "name": "dsh-wisp",
+  "version": "0.5.0",
+  "description": "DeepSeek娘 — an unofficial floating desktop companion for the DeepSeek Harness UI. Zero dependencies; sprites inlined as data URIs; schedules on the Client timer service instead of the trapped browser timer globals.",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis-plugin",
+    "desktop-companion",
+    "desktop-pet",
+    "deepseek-chan"
+  ],
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/client.template.js",
+    "cordis.patch.yml",
+    "build.mjs",
+    "verify-wisp.mjs",
+    "tools/keyout.mjs",
+    "tools/assets.mjs",
+    "tools/CHARACTER-PROMPT.md",
+    "assets/",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "verify": "node verify-wisp.mjs",
+    "test": "node build.mjs && node verify-wisp.mjs",
+    "prepublishOnly": "node build.mjs && node verify-wisp.mjs"
+  },
+  "dependencies": {},
+  "peerDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/969246694/dsh-wisp.git"
+  },
+  "homepage": "https://github.com/969246694/dsh-wisp#readme",
+  "bugs": {
+    "url": "https://github.com/969246694/dsh-wisp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "title": {
+        "en": "DeepSeek-chan",
+        "zh": "DeepSeek娘"
+      }
+    }
+  }
+}

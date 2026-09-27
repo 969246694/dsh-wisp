@@ -1,0 +1,48 @@
+# Bundle patch for dsh-wisp.
+#
+# A profile points at this file through its own `dsh.bundle.patch` field; the
+# loader reads it as a top-level YAML array of patch entries, exactly like the
+# shipped bundles do.
+#
+# THE ROW BELOW POINTS AT THE HOST HALF — `dsh-wisp`, not `dsh-wisp/client`.
+#
+# This distinction is the whole reason the plugin failed to load three times.
+# The loader imports this name as an ES module. `dsh-wisp` resolves to
+# lib/index.js, which is a valid ES module. `dsh-wisp/client` resolves to
+# lib/client.js, which is a classic browser script beginning with
+# `window.__ModuleLoader__.load(...)` — the host cannot import that, so
+# `entry.fiber` stayed undefined and @deepseek-ai/dsh-app-boot reported its
+# terse `"failed to import"`.
+#
+# The browser half still ships: it is discovered through package.json
+# `exports["./client"]` (dsh-client-modules reads that, it does not import it)
+# and delivered to the page by the /plugins bundle route.
+#
+# Config keys the client half accepts — every one optional, every one clamped to
+# a sane range, so a typo degrades to the default instead of leaving an
+# unusable companion on screen:
+#   right             distance from the right edge in px     (default 26)
+#   bottom            distance from the bottom edge in px    (default 46)
+#   size              render scale, 0.4–8                    (default 4)
+#                     -> drawn 560x840 CSS px from the 2048x3072 sprite tier
+#   sleepAfterMs      idle time before dozing off in ms      (default 90000)
+#   reactions         react to agent-busy / composer text    (default true)
+#   persist           remember where she was dragged to      (default true)
+#   celebrate         cheer when a run finishes              (default true)
+#   celebrateAfterMs  only celebrate runs at least this long  (default 2500)
+#   happyMs           how long the happy state lasts          (default 1100)
+#   chatterMs         idle line interval; 0 = stay quiet      (default 0)
+#
+# Example — add a `config:` block to the row below:
+#
+#   - insert:
+#       - id: wisp
+#         name: "dsh-wisp"
+#         config:
+#           bottom: 90
+#           size: 1.2
+#           chatterMs: 300000
+
+- insert:
+    - id: wisp
+      name: "dsh-wisp"

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # No dependencies: the plugin inlines its own sprites and uses only Node's
+      # standard library in the build and verify scripts.
+      - name: Verify
+        run: node verify-wisp.mjs
+
+      # verify-wisp.mjs rebuilds in memory and compares against the committed
+      # bundle, so a stale lib/client.js fails the run. This second pass makes
+      # the intent explicit and catches a build that is not reproducible.
+      - name: Build must be reproducible
+        run: |
+          node build.mjs
+          git diff --exit-code -- lib/client.js
+
+  artwork-integrity:
+    # The sprites are inlined into lib/client.js as base64. If an asset changed
+    # without a rebuild, the published bundle would ship the old picture while
+    # the repository shows the new one — checked here rather than discovered by
+    # a user wondering why the pet looks wrong.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Rebuild and confirm the bundle is unchanged
+        shell: pwsh
+        run: |
+          node build.mjs
+          $dirty = git status --porcelain -- lib/client.js
+          if ($dirty) {
+            Write-Error "lib/client.js is out of date with the assets. Run 'node build.mjs' and commit the result."
+            exit 1
+          }
+          Write-Host "bundle matches the assets"
