@@ -32,6 +32,9 @@
 #   celebrateAfterMs  only celebrate runs at least this long  (default 2500)
 #   happyMs           how long the happy state lasts          (default 1100)
 #   chatterMs         idle line interval; 0 = stay quiet      (default 0)
+#   wander            stroll around on her own while idle     (default true)
+#   wanderMs          how often she considers a stroll        (default 45000)
+#   wanderRange       how far one stroll may travel, in px    (default 260)
 #
 # Example — add a `config:` block to the row below:
 #
