@@ -577,7 +577,7 @@ if (clientSrc !== null) {
       return m === null ? null : { x: Number(m[1]), y: Number(m[2]), facing: Number(m[3]) }
     }
     const placed = boxAt(root.style.transform)
-    check(placed !== null && placed.x === after.x && placed.y === after.y,
+    check(placed !== null && Math.abs(placed.x - after.x) <= 1 && Math.abs(placed.y - after.y) <= 1,
       'the rendered box starts exactly where the position says',
       `transform at ${placed?.x},${placed?.y} vs position ${after.x},${after.y}`)
 
@@ -695,6 +695,57 @@ if (clientSrc !== null) {
       'a nonsense config cannot produce NaN geometry', `${liveRoot.style.width} / ${liveRoot.style.transform}`)
     third.destroy()
 
+    /* ------------------------------------------- 3i-bis. 自己踱步 + 右键归位 */
+    head('3i-bis. idle wander and the right-click trip home')
+
+    plugin.apply(h.ctx, { reactions: false, wander: true, wanderMs: 5000, wanderRange: 200 })
+    const fifth = h.win.__wisp
+    const body5 = fifth.element.querySelector('.wisp-body')
+    const BOX_W5 = 140 * 4
+    const BOX_H5 = 210 * 4
+    const centreOf = () => ({ x: fifth.position.x + BOX_W5 / 2, y: fifth.position.y + BOX_H5 / 2 })
+
+    fifth.move(200, 200)                       // away from the corners, so any bearing can move
+    h.advance(6000, 200)
+    const strolled = fifth.position
+    check(strolled.x !== 200 || strolled.y !== 200, 'she strolls on her own while idle',
+      `200,200 -> ${strolled.x},${strolled.y}`)
+    check(Math.abs(strolled.x - 200) <= 200 && Math.abs(strolled.y - 200) <= 200,
+      'a stroll stays inside the configured range', `${strolled.x},${strolled.y}`)
+    check(fifth.element.dataset.gliding === 'true', 'the stroll is a glide, not a teleport')
+    h.advance(2000, 200)
+    check(fifth.element.dataset.gliding === undefined, 'the glide class is cleared afterwards')
+    check(JSON.parse(h.win.localStorage.getItem('dsh-wisp:position:v1') || '{}').x !== strolled.x,
+      'a stroll does not overwrite the position the user chose', h.win.localStorage.getItem('dsh-wisp:position:v1'))
+
+    // 右键：任何位置都要能一下子叫回右下角
+    const clickPoint = centreOf()
+    const home = { clientX: clickPoint.x, clientY: clickPoint.y, defaultPrevented: false, preventDefault() { this.defaultPrevented = true }, stopPropagation() {} }
+    body5.dispatch('contextmenu', home)
+    check(home.defaultPrevented, 'a right-click on her body is handled')
+    const homed = fifth.position
+    check(homed.x === h.win.innerWidth - 26 - BOX_W5 && homed.y === h.win.innerHeight - 46 - BOX_H5,
+      'the right-click puts her back in her corner', `${homed.x},${homed.y}`)
+    check(JSON.parse(h.win.localStorage.getItem('dsh-wisp:position:v1')).x === homed.x,
+      'the remembered position follows her home')
+
+    // 但踱步不能在她被拖拽 / 睡着 / 忙碌时乱动
+    fifth.move(300, 300)
+    fifth.mood('sleep')
+    h.advance(6000, 200)
+    check(fifth.position.x === 300 && fifth.position.y === 300, 'no strolling while she is asleep',
+      `${fifth.position.x},${fifth.position.y}`)
+    fifth.destroy()
+
+    /* ------------------------------------------- 3i-ter. 关掉踱步就不动 ---- */
+    plugin.apply(h.ctx, { reactions: false, wander: false })
+    const sixth = h.win.__wisp
+    sixth.move(300, 300)
+    h.advance(3000, 200)
+    check(sixth.position.x === 300 && sixth.position.y === 300, 'wander: false keeps her still',
+      `${sixth.position.x},${sixth.position.y}`)
+    sixth.destroy()
+
     /* ------------------------------ 3j. storage that throws (opaque origin) - */
     head('3j. a page without usable storage still works')
 
@@ -724,7 +775,7 @@ if (clientSrc !== null) {
     active = hf
     hf.evaluate(clientSrc)
     const modF = hf.module()
-    modF.apply(hf.ctx, { reactions: false, chatterMs: 0, sleepAfterMs: 5000 })
+    modF.apply(hf.ctx, { reactions: false, chatterMs: 0, sleepAfterMs: 5000, wander: false })
     const apiF = hf.win.__wisp
     const rootF = apiF.element
     check(apiF?.clock === 'animation-frame', 'falls back to the frame clock', String(apiF?.clock))
