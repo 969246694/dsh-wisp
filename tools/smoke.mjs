@@ -286,16 +286,30 @@ check(kbd.focusAfter === 'wisp-body', 'and focus lands back on her, not on <body
 const openedAgain = await openMenu()
 check(openedAgain !== null, 'the menu reopens for the activation check')
 const zoomed = await page.evaluate(() => {
-  /* 大小两项收在「外观」组里：先展开，再点。 */
-  const group = [...document.querySelectorAll('.wisp-menu-item')].find((i) => i.dataset && i.dataset.group === '外观')
-  if (group) group.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-  const item = [...document.querySelectorAll('.wisp-menu-item')].find((i) => i.textContent === '放大一点')
-  if (!item) return { missing: true }
-  item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-  return { width: document.querySelector('.wisp-root').style.width, menuGone: document.querySelector('.wisp-menu') === null }
+  /* 大小已经是菜单里的**滑块**了（"放大一点/缩小一点"两条旧条目已删 —— 与滑块重复）。
+     真浏览器里直接聚焦滑块再按 →，走的就是键盘用户那条路。 */
+  const slider = document.querySelector('.wisp-slider')
+  if (!slider) return { missing: true }
+  const before = window.__wisp.config.size
+  /* 用**真实键盘**走到滑块：Home 回到第一项，再一路 ↓ 直到焦点落在滑块上。
+     不能直接 .focus() —— 插件用的是 roving tabindex，直接聚焦不会更新它内部的焦点索引，
+     于是 → 键到了插件那儿会被当成"焦点不在滑块上"，什么都不做（踩过）。 */
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home' }))
+  for (let i = 0; i < 16 && document.activeElement !== slider; i++) {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }))
+  }
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+  return {
+    before,
+    after: window.__wisp.config.size,
+    width: document.querySelector('.wisp-root').style.width,
+    menuGone: document.querySelector('.wisp-menu') === null,
+  }
 })
-check(zoomed.width === '630px' && zoomed.menuGone, 'a menu item runs and closes the menu',
-  zoomed.missing ? 'the item was not found' : `width=${zoomed.width}`)
+check(zoomed.after === zoomed.before + 0.5 && zoomed.menuGone === false,
+  'the size slider changes her size and keeps the menu open',
+  zoomed.missing ? 'the slider was not found' : `${zoomed.before} -> ${zoomed.after}, width=${zoomed.width}, menuGone=${zoomed.menuGone}`)
 
 /* 两个弹窗在真浏览器里的样子 —— 可见性、图片真的解码出来，这些假 DOM 测不到。
    注意位置：必须放在键盘那一段**之后**。放前面会扰动它依赖的焦点状态
@@ -626,6 +640,42 @@ for (const which of ['br', 'bl', 'tr', 'tl']) {
   }, which)
   cornerGeo.push(geo)
 }
+/* 可选截图：WISP_SHOT=<路径> 时把"菜单 + 展开的子面板"拍下来。
+   样式改动光看代码看不出来，拍一张最直接。默认不拍，不影响正常冒烟。 */
+if (process.env.WISP_SHOT) {
+  try {
+    await page.evaluate(async () => {
+      const wisp = window.__wisp
+      const box = document.querySelector(".wisp-root")
+      const bw = parseFloat(box.style.width) || 560
+      const bh = parseFloat(box.style.height) || 840
+      wisp.configure({ right: 26, bottom: 46 })
+      wisp.resetPosition()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const body = document.querySelector(".wisp-body")
+      body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))
+      const menu = document.querySelector(".wisp-menu")
+      const row = [...menu.querySelectorAll(".wisp-menu-item")].find((el) => el.dataset && el.dataset.group)
+      row.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }))
+      await new Promise((resolve) => setTimeout(resolve, 420))
+      void bw; void bh
+    })
+    const clipBox = await page.evaluate(() => {
+      const els = [".wisp-menu", ".wisp-submenu"].map((sel) => document.querySelector(sel)).filter(Boolean)
+      const rects = els.map((el) => el.getBoundingClientRect())
+      const left = Math.min(...rects.map((r) => r.left)) - 22
+      const top = Math.min(...rects.map((r) => r.top)) - 22
+      const right = Math.max(...rects.map((r) => r.right)) + 22
+      const bottom = Math.max(...rects.map((r) => r.bottom)) + 22
+      return { x: Math.max(0, left), y: Math.max(0, top), width: right - left, height: bottom - top }
+    })
+    await page.screenshot({ path: process.env.WISP_SHOT, clip: clipBox })
+    console.log("  screenshot: " + process.env.WISP_SHOT)
+  } catch (error) {
+    console.log("  screenshot failed: " + String(error && error.message ? error.message : error))
+  }
+}
+
 const withPanel = cornerGeo.filter((g) => g && g.panel)
 check(withPanel.length === 4, 'the submenu opens from every corner',
   cornerGeo.map((g) => g.which + (g.panel ? '' : '✗')).join(' '))
