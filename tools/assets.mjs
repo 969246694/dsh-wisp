@@ -39,6 +39,8 @@ function loadSharp() {
 }
 
 const argv = process.argv.slice(2)
+/* 默认只写第一档（会进包的那一档）；--all-tiers 才写全部四档。 */
+const allTiers = argv.includes('--all-tiers')
 const flag = (name, fallback) => {
   const at = argv.indexOf(name)
   return at >= 0 && argv[at + 1] !== undefined ? argv[at + 1] : fallback
@@ -52,12 +54,18 @@ const outDir = resolve(here, flag('--out', skin === '' ? 'assets' : join('assets
 
 const T0 = 14
 const T1 = 96
-const TIERS = [
+/* 只有第一档会被 build.mjs 打进 JS 包并真正显示；其余三档运行时**从不读取**
+   （_hi 也测不出画质差别：DPR 2 差 0.3%，DPR 1/3 反而低 4~5%）。
+   所以默认只写第一档 —— 不让 9.9 MB 死重悄悄长回包里。
+   确实要用别的档重打包时：加 --all-tiers。 */
+const ALL_TIERS = [
   { suffix: '', w: 1024, q: 84 },
   { suffix: '_md', w: 512, q: 82 },
   { suffix: '_sm', w: 256, q: 80 },
   { suffix: '_hi', w: 2048, q: 86 },
 ]
+/* 选择语句必须**在数组定义之后**：放在前面会踩 TDZ（Cannot access before initialization）。 */
+const TIERS = allTiers ? ALL_TIERS : ALL_TIERS.slice(0, 1)
 
 if (!existsSync(srcDir)) {
   console.error(`母版目录不存在: ${srcDir}`)
@@ -151,4 +159,4 @@ if (failed > 0) {
   console.error(`\n${failed} 张母版抠图失败 —— 素材未更新，请检查这些图是否是干净的纯绿背景。`)
   process.exit(1)
 }
-console.log('\n完成。接着跑 `node build.mjs`（默认就用 <mood>.webp 那一档，要用 4K 档加 --tier=hi）。')
+console.log('\n完成。接着跑 `node build.mjs`（默认就用 <mood>.webp 那一档，要出别的档位加 --all-tiers）。')

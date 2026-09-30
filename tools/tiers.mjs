@@ -36,18 +36,23 @@ function loadSharp() {
 }
 
 const argv = process.argv.slice(2)
+/* 默认只写第一档（会进包的那一档）；--all-tiers 才写全部四档。 */
+const allTiers = argv.includes('--all-tiers')
 const flag = (name, fallback) => {
   const at = argv.indexOf(name)
   return at >= 0 && argv[at + 1] !== undefined ? argv[at + 1] : fallback
 }
 
 const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn']
-const TIERS = [
+/* 同 tools/assets.mjs：默认只写会进包的那一档，其余要 --all-tiers。 */
+const ALL_TIERS = [
   { suffix: '', w: 1024, q: 84 },
   { suffix: '_md', w: 512, q: 82 },
   { suffix: '_sm', w: 256, q: 80 },
   { suffix: '_hi', w: 2048, q: 86 },
 ]
+/* 选择语句必须**在数组定义之后**：放在前面会踩 TDZ（Cannot access before initialization）。 */
+const TIERS = allTiers ? ALL_TIERS : ALL_TIERS.slice(0, 1)
 
 const srcDir = resolve(here, flag('--from', 'keyed'))
 const skin = flag('--skin', '')

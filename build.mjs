@@ -11,23 +11,22 @@
    extra route, and no missing-asset failure mode.
 
    RUN
-     node build.mjs                      # default tier: 1024x1536
-     node build.mjs --tier=hi            # 2048x3072 masters  (~3x the bundle)
+     node build.mjs                      # default tier: 1024x1536 —— 这一档进包，也是唯一被显示的
+     node build.mjs --tier=hi            # 2048x3072（需先 tools/assets.mjs --all-tiers 生成 _hi）
      node build.mjs --tier=md            # 512x768
      node build.mjs --tier=sm            # 256x384  (--small is an alias)
      node build.mjs --from assets/       # optional, defaults to ./assets
 
-   WHICH SOURCE IS INLINED MATTERS FOR SHARPNESS. assets/ carries four tiers per
-   mood, all downsampled from one 2048x3072 master:
+   ONLY ONE TIER SHIPS. assets/ now carries just <mood>.webp (1024x1536) per skin.
+   The other three tiers are no longer published: runtime never reads them, and
+   _hi measured no sharper than the default (DPR 2: 0.3% high-frequency
+   difference; DPR 1/3: 1024 was 4~5% BETTER — 2048 gets resampled harder, and
+   resampling is itself a low-pass filter). They cost 9.9 MB of the package for
+   nothing. Regenerate on demand with `tools/assets.mjs --all-tiers`; the TIERS
+   map below falls back down its chain when a preferred file is absent.
 
-     <mood>.webp      1024x1536   default   sharp to devicePixelRatio ~4.9 at the
-                                            shipped render size (210x315 CSS px)
-     <mood>_md.webp    512x768              the pre-0.4 size
-     <mood>_sm.webp    256x384              smallest
-     <mood>_hi.webp   2048x3072             headroom for a much larger wisp
-
-   The default is the smallest tier that is sharp on every realistic display; the
-   tiers above it add bytes, not visible pixels, until she is drawn much bigger.
+   The default is the smallest tier that is sharp on every realistic display:
+   sharp to devicePixelRatio ~4.9 at the shipped render size (210x315 CSS px).
    ========================================================================== */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
