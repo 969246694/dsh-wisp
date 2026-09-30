@@ -207,7 +207,8 @@ function createHarness(options = {}) {
         if (typeof sel !== 'string' || sel === '') return []
         if (sel.startsWith('.')) {
           const cls = sel.slice(1)
-          return this.descendants().filter((d) => d.className === cls)
+          /* 同 matchAll：类选择器按类名列表匹配，不是精确相等 */
+      return this.descendants().filter((d) => String(d.className || '').split(/\s+/).includes(cls))
         }
         const tag = sel.toUpperCase()
         return this.descendants().filter((d) => d.tagName === tag)
@@ -479,8 +480,10 @@ function createHarness(options = {}) {
     pendingTimers: () => timers.filter((t) => !t.cancelled),
     /** 假 document：有些断言要直接查插件往页面里放了什么（例如窗口背景那条规则）。 */
     document: documentShim,
-    find: (className) => created.find((e) => e.className === className) ?? null,
-    all: (className) => created.filter((e) => e.className === className),
+    /* 按**类名列表**匹配，和 matchAll 一致：真实 DOM 的 .a 选择器本来就命中有多个类的元素，
+       精确相等会让 'wisp-menu-item wisp-menu-row' 这类行在替身里变成不存在（这个坑踩过两次）。 */
+    find: (className) => created.find((e) => String(e.className || '').split(/\s+/).includes(className)) ?? null,
+    all: (className) => created.filter((e) => String(e.className || '').split(/\s+/).includes(className)),
     /** Evaluate lib/client.js the way the shell does, with every trap armed. */
     evaluate(src) {
       const traps = {}
@@ -1478,7 +1481,8 @@ if (clientSrc !== null) {
     /* 开关在「行为」组里：先展开（分组行带着 data-group） */
     const groupRowOf = (name) => eatLive().find((el) => el.dataset && el.dataset.group === name)
     groupRowOf('行为').dispatch('click', { preventDefault() {}, stopPropagation() {} })
-    const eatToggle = eatLive().find((el) => (el.textContent || '').includes('饿了'))
+    /* 开关行现在是真的开关控件：文字在子 span 里，按 switchKey 找才靠谱。 */
+    const eatToggle = eatLive().find((el) => el.dataset && el.dataset.switchKey === 'hungry')
     check(Boolean(eatToggle), 'the menu carries a rice toggle',
       eat.all('wisp-menu-item').filter((el) => el.removed !== true).length + ' 项')
     if (eatToggle) {
@@ -2238,6 +2242,10 @@ if (clientSrc !== null) {
     // 菜单挂在 layer 上（与气泡同一层，屏幕坐标系），不是挂在会被镜像/缩放的 root 上
     const menuHost = () => fifth.element.parentNode
     const menuOf = () => menuHost().querySelector('.wisp-menu')
+/* itemsOf() 会把**已移除的旧菜单**也返回（替身的既定行为），
+       所以凡是数数的地方都先滤掉 removed —— 这个坑在菜单测试里踩过不止一次。
+       名字不能用 liveItems：上面的标签菜单那节已经用过（同一作用域）。 */
+    const liveMenuItems = () => menuHost().querySelectorAll('.wisp-menu-item').filter((el) => el.removed !== true)
     const itemsOf = () => menuHost().querySelectorAll('.wisp-menu-item')
     // 尺寸会变（菜单里就能放大缩小），所以每次都要按当前实时状态算，不能用写死常量
     const boxNow = () => ({
@@ -2265,7 +2273,7 @@ if (clientSrc !== null) {
        原来 19 个条目全平铺、只靠三行不可点的头部标签分区 —— 那不是结构，是排版。
        现在顶层 7 项，外观 / 行为 / 位置 三组各自折叠。 */
     const topLevel = itemsOf()
-    check(topLevel.length === 7, 'the top level holds seven entries, not nineteen',
+    check(topLevel.length === 8, 'the top level stays short',
       `${topLevel.length} 项：${topLevel.map((i) => i.textContent).join(' | ')}`)
     const groupRow = (name) => itemsOf().find((i) => i.dataset && i.dataset.group === name)
     const groupNames = ['外观', '行为', '位置']
@@ -2293,12 +2301,11 @@ if (clientSrc !== null) {
     }
     check(expand('外观'), 'clicking a group expands it in place',
       `row=${JSON.stringify(groupRow('外观') ? groupRow('外观').dataset : null)} 项=${itemsOf().length}`)
-    check(itemsOf().length === 7 + skinCount + 2,
-      'the skins and the two size entries appear once it is open',
-      `${itemsOf().length} 项 = 7 + ${skinCount} 皮肤 + 2 大小`)
+    check(liveMenuItems().length > 8 && liveMenuItems().length >= skinCount,
+      'opening the group adds its entries (大小不再是条目，改成了滑块)',
+      `展开后 ${liveMenuItems().length} 项（收起时 8）`)
     check(collapse('外观'), 'clicking it again collapses it')
-    check(itemsOf().length === 7, 'and the menu is back to seven entries', String(itemsOf().length))
-    /* 换一套皮肤之后，展开的分组要自动收起（closeMenu 会清掉 activeGroup） */
+    check(liveMenuItems().length === 8, 'and the menu is back to its top level', String(liveMenuItems().length))
     const byText = (t) => itemsOf().filter((i) => i.textContent.includes(t))
     expand('外观')
     check(groupRow('外观').getAttribute('aria-expanded') === 'true',
@@ -2312,37 +2319,149 @@ if (clientSrc !== null) {
     const skinItems = itemsOf().filter((i) => skinNames.includes(plainSkinLabel(i)))
     check(skinItems.length === skinCount,
       'every shipped skin is offered',
-      `${skinItems.length} 项 / ${skinCount} 套；名字表=${JSON.stringify(skinNames)}；菜单=${itemsOf().map((i) => i.textContent).join('|')}`)
-    // 勾现在有三处（三个行为开关都默认开）—— 皮肤那一段必须**恰有一个**勾
+      `${skinItems.length} 项 / ${skinCount} 套；名字表=${JSON.stringify(skinNames)}`)
     check(skinItems.filter((i) => i.textContent.startsWith('✓')).length === 1,
       'exactly one skin is ticked as current',
       skinItems.map((i) => i.textContent).join(' / '))
     check(body5.querySelectorAll('.wisp-menu').length === 0,
       'the menu lives beside her body, not inside it', 'inside it would be mirrored and scale with her')
 
-    /* ---- 三个行为开关（原本在设置页里，那页撤掉后落到菜单） -------------- */
-    check(expand('行为'), 'the behaviour group opens')   /* 开关都在这一组里 */
-    const toggleItem = (label) => itemsOf().find((i) => i.textContent.replace(/^[✓　]\s*/, '') === label)
-    const togglesPresent = ['自己溜达', '跟随状态', '跑完撒花'].every((l) => toggleItem(l) !== undefined)
-    check(togglesPresent, 'all three behaviour toggles are in the menu',
-      itemsOf().filter((i) => /溜达|跟随状态|撒花/.test(i.textContent)).map((i) => i.textContent).join(' / '))
-    check(toggleItem('自己溜达').textContent.startsWith('✓'),
-      'a toggle shows its current state', toggleItem('自己溜达').textContent)
-    const wanderBefore = fifth.config.wander
-    toggleItem('自己溜达').dispatch('click', itemEvent())
-    check(fifth.config.wander === !wanderBefore, 'clicking a toggle really flips the config',
-      `${wanderBefore} -> ${fifth.config.wander}`)
-    body5.dispatch('contextmenu', rightClickOnHer().ev)
-    /* 重开菜单＝一次新手势，所以分组回到收起状态（这是设计）。要再点开关就得再展开。 */
-    check(expand('行为'), 'reopening the menu collapses the groups again')
-    const reopened = toggleItem('自己溜达')
-    check(reopened !== undefined && reopened.textContent.startsWith('　'),
-      'and reopening the menu shows the new state',
-      reopened ? reopened.textContent : `菜单没重开（${itemsOf().length} 项）`)
-    if (reopened !== undefined) {
-      reopened.dispatch('click', itemEvent())
-      check(fifth.config.wander === wanderBefore, 'toggling back restores it', String(fifth.config.wander))
+    /* ---- 重做之后的结构：头部 / 分隔线 / 摘要 / 键盘提示 --------------------
+       这一节盯着"交互设计"本身，而不只是"条目在不在"。 */
+    const liveMenu = () => menuOf()
+    check(liveMenu().querySelectorAll('.wisp-menu-title').length === 1,
+      'the menu opens with a header that says who it is',
+      liveMenu().querySelectorAll('.wisp-menu-title').map((e) => e.textContent).join(''))
+    const headerTitle = liveMenu().querySelector('.wisp-menu-title')
+    const headerSub = liveMenu().querySelector('.wisp-menu-sub')
+    check(headerTitle !== null && headerTitle.textContent === 'DeepSeek娘',
+      'and the name is hers', headerTitle ? headerTitle.textContent : '(没有)')
+    check(headerSub !== null && String(headerSub.textContent).includes('v'),
+      'the version is visible without opening anything', headerSub ? headerSub.textContent : '(没有)')
+    check(liveMenu().querySelectorAll('.wisp-menu-sep').length >= 3,
+      'sections are separated instead of stacked flat',
+      String(liveMenu().querySelectorAll('.wisp-menu-sep').length))
+    check(liveMenu().querySelectorAll('.wisp-menu-hint').length === 1,
+      'and the menu tells you how to drive it from the keyboard')
+
+    /* ---- 摘要行：收起时也知道里面是什么 ---- */
+    const summaryOf = (name) => {
+      const row = groupRow(name)
+      if (!row) return null
+      const sum = row.querySelector ? row.querySelector('.wisp-menu-sum') : null
+      return sum ? String(sum.textContent) : null
     }
+    check(summaryOf('外观') === api.skinLabels.find((s) => s.id === fifth.skin).label,
+      'the appearance row shows which skin is on', String(summaryOf('外观')))
+    check(/^\d+\/\d+ 开$/.test(String(summaryOf('行为'))),
+      'the behaviour row counts how many switches are on', String(summaryOf('行为')))
+    check(typeof summaryOf('位置') === 'string' && summaryOf('位置').length > 0,
+      'the position row says where she is', String(summaryOf('位置')))
+
+    /* ---- 开关：真开关控件，而且点完不关菜单 ---- */
+    check(collapse('外观'), 'close the skin group again')
+    check(expand('行为'), 'the behaviour group opens')   /* 开关都在这一组里 */
+    const switchOf = (key) => itemsOf().find((i) => i.dataset && i.dataset.switchKey === key)
+    const switchKeys = ['wander', 'reactions', 'celebrate', 'hungry', 'night']
+    check(switchKeys.every((k) => switchOf(k) !== undefined), 'every behaviour has a switch row',
+      switchKeys.map((k) => k + '=' + (switchOf(k) ? '有' : '无')).join(' '))
+    const wanderSwitch = switchOf('wander')
+    check(wanderSwitch.getAttribute('role') === 'menuitemcheckbox'
+      && wanderSwitch.getAttribute('aria-checked') === 'true',
+      'a switch is a checkbox that says whether it is on',
+      `role=${wanderSwitch.getAttribute('role')} aria-checked=${wanderSwitch.getAttribute('aria-checked')}`)
+    check(wanderSwitch.querySelector('.wisp-switch') !== null
+      && wanderSwitch.querySelector('.wisp-switch').dataset.on === 'true',
+      'and it has a visible on/off control, not a ✓ in the text')
+    const wanderBefore = fifth.config.wander
+    wanderSwitch.dispatch('click', itemEvent())
+    check(fifth.config.wander === !wanderBefore, 'clicking a switch really flips the config',
+      `${wanderBefore} -> ${fifth.config.wander}`)
+    check(menuOf() !== null, 'and the menu stays open while you flick switches')
+    check(groupRow('行为') && groupRow('行为').dataset.open === 'true',
+      'with the group still expanded')
+    const flipped = switchOf('wander')
+    check(flipped && flipped.getAttribute('aria-checked') === 'false'
+      && flipped.querySelector('.wisp-switch').dataset.on === 'false',
+      'and the control redraws in its new state',
+      flipped ? flipped.getAttribute('aria-checked') : '(没了)')
+    flipped.dispatch('click', itemEvent())
+    check(fifth.config.wander === wanderBefore, 'toggling back restores it', String(fifth.config.wander))
+
+    /* ---- 滑块：连续量直接调，键盘也能调，而且不关菜单 ---- */
+    const sliderEl = menuOf().querySelector ? menuOf().querySelector('.wisp-slider') : null
+    check(sliderEl !== null && sliderEl.getAttribute('role') === 'slider',
+      'size is a slider, not a pair of nudge buttons',
+      sliderEl ? sliderEl.getAttribute('role') : '(没有)')
+    const sizeBefore = fifth.config.size
+    check(Number(sliderEl.getAttribute('aria-valuenow')) === sizeBefore,
+      'and it reports the current size', sliderEl.getAttribute('aria-valuenow'))
+    /* 用真实键盘走到滑块：它前面还有 5 个可聚焦项（两个专注 + 三个分组）。
+       不调用内部函数 —— 那不是公开面，测它就等于测实现。 */
+    const pressKey = (key, shift) => h.win.dispatch('keydown', { key, shiftKey: shift === true, preventDefault() {}, stopPropagation() {} })
+    /* 先把两个展开过的分组收起来：展开的组会把子项插进可聚焦序列，
+       焦点顺序就不确定了 —— 不依赖"第几次方向键刚好落在滑块上"这种脆弱假设。 */
+    /* 那时它们本来就是收起的 —— 断言"collapse 成功"会假失败，改成"确保是收起的"。 */
+    const ensureCollapsed = (name) => {
+      const row = groupRow(name)
+      if (row && row.dataset.open === 'true') collapse(name)
+      return groupRow(name) !== undefined && groupRow(name).dataset.open === 'false'
+    }
+    check(ensureCollapsed('外观') && ensureCollapsed('行为'),
+      'both groups are collapsed, so the focus order is stable')
+    /* 判断"焦点在滑块上"要看**当前**那个元素：菜单每次重画都会换新元素，
+       用之前抓到的 sliderEl 做同一性比较会假失败（收起分组就重画过）。 */
+    const focusedIsSlider = () => {
+      const el = h.document.activeElement
+      return Boolean(el && el.dataset && el.dataset.slider === '1')
+    }
+    /* 走到滑块：Home 回到第一项，然后一直往下，直到焦点真的落在滑块上。
+       不数"第几次" —— 可聚焦项的数量会随分组展开变化，数次数是脆的。 */
+    const focusSlider = () => {
+      h.win.dispatch('keydown', { key: 'Home', preventDefault() {}, stopPropagation() {} })
+      for (let i = 0; i < 16; i++) {
+        if (focusedIsSlider()) return true
+        pressKey('ArrowDown')
+      }
+      return focusedIsSlider()
+    }
+    check(focusSlider(), 'the slider is reachable with the arrow keys',
+      h.document.activeElement ? String(h.document.activeElement.className) : '(没有焦点)')
+    pressKey('ArrowRight')
+    check(Math.abs(fifth.config.size - (sizeBefore + 0.25)) < 1e-9,
+      'ArrowRight grows her by a quarter step', `${sizeBefore} -> ${fifth.config.size}`)
+    check(menuOf() !== null && focusedIsSlider(),
+      'and it neither closes the menu nor steals focus from the slider',
+      menuOf() === null ? '菜单关了' : String(h.document.activeElement && h.document.activeElement.className))
+    pressKey('ArrowLeft')
+    check(Math.abs(fifth.config.size - sizeBefore) < 1e-9, 'ArrowLeft shrinks it back', String(fifth.config.size))
+    const valueLabel = menuOf().querySelector('.wisp-slider-value')
+    check(valueLabel !== null && valueLabel.textContent === Math.round(fifth.config.size * 100) + '%',
+      'and the percentage label follows', valueLabel ? valueLabel.textContent : '(没有)')
+
+    /* ---- 位置：2×2 的方位控件 ---- */
+    check(expand('位置'), 'the position group opens')
+    const gridButtons = menuOf().querySelectorAll('.wisp-corner')
+    check(gridButtons.length === 4, 'the four corners are a 2×2 compass, not four text rows',
+      String(gridButtons.length) + ' 个')
+    /* 她此刻并不在任何角落（位置是拖出来的），所以先点一个角落归位，再看标记。 */
+    const toTopLeft = gridButtons.find((b) => b.dataset && b.dataset.corner === '左上角')
+    toTopLeft.dispatch('click', itemEvent())
+    body5.dispatch('contextmenu', rightClickOnHer().ev)
+    check(expand('位置'), 'reopen the position group')
+    const marked = menuOf().querySelectorAll('.wisp-corner').filter((b) => b.dataset && b.dataset.current === 'true')
+    check(marked.length === 1 && marked[0].dataset.corner === '左上角',
+      'and the corner she is actually in is marked',
+      menuOf().querySelectorAll('.wisp-corner').map((b) => b.textContent + (b.dataset.current ? '*' : '')).join(' '))
+
+    /* ---- 菜单里不该再有"版本与更新"：版本号在头部，检查更新在弹窗里 ---- */
+    check(!itemsOf().some((i) => i.textContent.includes('版本与更新')),
+      'the version entry is gone from the menu (the header shows it now)')
+    check(itemsOf().some((i) => i.textContent.includes('关于她')),
+      'but 关于她 is still reachable')
+
+    check(body5.querySelectorAll('.wisp-menu').length === 0,
+      'the menu lives beside her body, not inside it', 'inside it would be mirrored and scale with her')
 
     // 换皮肤：精灵图必须真的换掉，位置和情绪不能动。
     // 自己开菜单，不依赖上一节留下的状态 —— 隐含的跨节状态是测试脆弱性的常见来源。
@@ -2371,20 +2490,31 @@ if (clientSrc !== null) {
     check(fifth.configure({ skin: 'deepsea' }) && fifth.skin === 'deepsea',
       'configure({skin}) goes through the same path as the menu', String(fifth.skin))
 
-    // 点「放大一点」—— 真改尺寸，并且菜单自己关掉（大小两项在「外观」组里，先展开）
+    // 大小现在是滑块：用键盘调（不关菜单），再用菜单动作验证"选了就关"
     body5.dispatch('contextmenu', rightClickOnHer().ev)
-    check(expand('外观'), 'the size entries need the appearance group open')
-    byText('放大一点')[0].dispatch('click', itemEvent())
+    check(menuOf() !== null, 'the menu opens for the size check')
+    const sizeSlider = menuOf().querySelector('.wisp-slider')
+    check(sizeSlider !== null, 'the slider is there')
+    h.win.dispatch('keydown', { key: 'Home', preventDefault() {}, stopPropagation() {} })
+    for (let i = 0; i < 5; i++) {
+      h.win.dispatch('keydown', { key: 'ArrowDown', preventDefault() {}, stopPropagation() {} })
+    }
+    h.win.dispatch('keydown', { key: 'ArrowRight', preventDefault() {}, stopPropagation() {} })
+    h.win.dispatch('keydown', { key: 'ArrowRight', preventDefault() {}, stopPropagation() {} })
     check(fifth.element.style.width === '630px' && fifth.element.style.height === '945px',
-      'a menu action runs (zoom one step up)', `${fifth.element.style.width}x${fifth.element.style.height}`)
-    check(menuOf() === null, 'choosing an item closes the menu')
+      'the slider really resized her (two steps up)', `${fifth.element.style.width}x${fifth.element.style.height}`)
+    check(menuOf() !== null, 'and the slider keeps the menu open, unlike an action row')
+    h.win.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    check(menuOf() === null, 'Escape closes it when you are done')
 
     // 再右键一次，用「回到右下角」归位（此时她已经被放大了，兜底尺寸要跟着变）
     const secondClick = rightClickOnHer()
     body5.dispatch('contextmenu', secondClick.ev)
     check(menuOf() !== null, 'the menu reopens')
     check(expand('位置'), 'the corners live in the position group')
-    byText('右下角')[0].dispatch('click', itemEvent())
+    const homeBtn = menuOf().querySelectorAll('.wisp-corner').find((b) => b.dataset && b.dataset.corner === '右下角')
+    check(Boolean(homeBtn), 'the corner button is there')
+    homeBtn.dispatch('click', itemEvent())
     const homed = fifth.position
     check(homed.x === secondClick.homeX && homed.y === secondClick.homeY,
       'the trip-home item works at the current size', `${homed.x},${homed.y} (want ${secondClick.homeX},${secondClick.homeY})`)
@@ -2410,7 +2540,7 @@ if (clientSrc !== null) {
     })
     check(kbd().at !== null && kbd().at.tagName === 'BUTTON',
       'opening the menu focuses its first item', kbd().label)
-    check(kbd().at?.className === 'wisp-menu-item' && kbd().label === '关于她…',
+    check(kbd().at?.className === 'wisp-menu-item' && /^专注 /.test(String(kbd().label)),
       'and the focus lands on the first real action', kbd().label)
     check(kbd().zero === 1, 'exactly one item is in the tab order (roving tabindex)', `${kbd().zero}`)
     check(itemsOf()[0].getAttribute('aria-selected') === 'true',
@@ -2586,6 +2716,14 @@ if (clientSrc !== null) {
       found[0].dispatch('click', itemEvent())
       return true
     }
+    /* 四个角落现在是 2×2 罗盘里的按钮（不是 .wisp-menu-item），所以单独一个选择器。 */
+    const pickCorner = (inst, text) => {
+      const found = inst.element.parentNode.querySelectorAll('.wisp-corner')
+        .filter((i) => i.dataset && i.dataset.corner === text)
+      if (found.length !== 1) return false
+      found[0].dispatch('click', itemEvent())
+      return true
+    }
     /* 菜单改成分组之后，组里的条目要先把组展开才看得见。
        这个 helper 让"点某个分组里的东西"是一次调用，而不是每处各写一遍。 */
     const openGroupOn = (inst, name) => {
@@ -2607,8 +2745,8 @@ if (clientSrc !== null) {
     }
     for (const [label, want] of Object.entries(EXPECT)) {
       openMenuOn(pinned)
-      openGroupOn(pinned, '位置')     // 四个角落现在收在「位置」组里
-      const hit = pickExact(pinned, label)
+      openGroupOn(pinned, '位置')     // 四个角落现在收在「位置」组里，而且是罗盘按钮
+      const hit = pickCorner(pinned, label)
       check(hit && pinned.position.x === want.x && pinned.position.y === want.y,
         `the ${label} item puts her there`, `${pinned.position.x},${pinned.position.y} (want ${want.x},${want.y})`)
     }

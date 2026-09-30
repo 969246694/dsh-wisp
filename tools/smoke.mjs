@@ -258,7 +258,7 @@ const skinCount = await page.evaluate(() => {
   const s = window.__wisp.skins
   return Array.isArray(s) ? s.length : Object.keys(s ?? {}).length
 })
-check(menu !== null && menu.items.length === 7, 'the menu lists every entry',
+check(menu !== null && menu.items.length === 8, 'the menu lists every entry',
   `${menu?.items.length} items at the top level`)
 
 // 键盘：打开即聚焦第一项，方向键移动，Esc 关闭并把焦点还给她
