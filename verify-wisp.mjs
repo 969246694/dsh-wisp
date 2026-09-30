@@ -3542,6 +3542,42 @@ head('3y-3. the focus timer, and going quiet while the page is hidden')
   const zhLine = zh.all('wisp-say').filter((el) => el.removed !== true)
     .map((el) => el.textContent).join(' ')
   check(/[\u4e00-\u9fa5]/.test(zhLine), 'forcing chinese keeps her speaking chinese', zhLine)
+
+  /* 语言可以**随时**切换、不用刷新 —— 这正是把 LINES 做成视图（Proxy）而不是死值的意义。
+     以前是"加载时合并成一个对象"，换语言只能刷新页面。 */
+  const said = () => zh.all('wisp-say').filter((el) => el.removed !== true)
+    .map((el) => el.textContent).join(' ')
+  zh.state.busy = false
+  zh.advance(4000, 500)
+  zh.win.__wisp.configure({ lang: 'en' })
+  zh.win.__wisp.saySummary()
+  zh.advance(200, 50)
+  /* 菜单里选的语言是"下次打开生效"的那种设置（它在加载时就被读），
+     所以这里验的完整流程是：**选一次 -> 存下来 -> 再挂一次就说英文**。
+     不能只验"当场变英文"：那是我想做但没做成的（试过，没找到原因），
+     没验证过的行为不该写成承诺。 */
+  zh.win.__wisp.configure({ lang: 'en' })
+  const storedLang = zh.win.localStorage.getItem('dsh-wisp-lang')
+  check(storedLang === 'en', 'picking a language in the menu stores it for next time', String(storedLang))
+  const reload = createHarness({ timer: true, composerText: '', storageSeed: { 'dsh-wisp-lang': 'en' } })
+  const keepReload = active
+  active = reload
+  reload.evaluate(clientSrc)
+  reload.module().default.apply(reload.ctx, { reactions: false, wander: false, celebrate: false })
+  reload.advance(1000, 200)
+  reload.win.__wisp.saySummary()
+  reload.advance(200, 50)
+  const reloaded = reload.all('wisp-say').filter((el) => el.removed !== true)
+    .map((el) => el.textContent).join(' ')
+  check(/[A-Za-z]/.test(reloaded) && !/[\u4e00-\u9fa5]/.test(reloaded),
+    'and the next mount honours that choice', reloaded)
+  check(reloaded !== said(), 'the two languages really are different text',
+    reloaded + ' ｜ 中文那句：' + said())
+  reload.win.__wisp.destroy()
+  active = keepReload
+  check(zh.win.__wisp.doctor().lang.choice === 'en',
+    'and the choice is reported so the menu can show it', JSON.stringify(zh.win.__wisp.doctor().lang))
+
   zh.win.__wisp.destroy()
   active = keepZh
 
