@@ -3064,6 +3064,135 @@ head('3y-2. night nagging, coming back, and the streak')
   active = keepBroken
 }
 
+/* ============================== 3y-3. focus timer & hidden pause ========== */
+head('3y-3. the focus timer, and going quiet while the page is hidden')
+
+{
+  const watch = (h, ms, step = 250) => {
+    const live = () => h.all('wisp-say').filter((el) => el.removed !== true).map((el) => el.textContent)
+    const seen = new Set(live())
+    for (let left = ms; left > 0; left -= step) {
+      h.advance(Math.min(step, left), Math.min(step, 200))
+      for (const t of live()) seen.add(t)
+    }
+    return [...seen]
+  }
+  const strip = (pool, n) => (pool ?? []).map((t) => t.split('{n}').join(String(n)))
+  const moodOf = (h) => h.find('wisp-root').dataset.mood
+
+  /* ---- 专注计时器 -------------------------------------------------------- */
+  const focus = createHarness({ timer: true, composerText: '' })
+  const keepFocus = active
+  active = focus
+  focus.evaluate(clientSrc)
+  focus.module().default.apply(focus.ctx, {
+    reactions: true, wander: false, celebrate: false,
+    careAfterMs: 0, hungerMs: 0, night: false, sleepAfterMs: 3600000,
+  })
+  focus.advance(1300, 100)
+  const focusApi = focus.win.__wisp
+
+  check(focusApi.focus.active === false, 'no focus session at the start')
+  check(focusApi.doctor().focus.active === false && focusApi.doctor().focus.done === 0,
+    'and doctor says so', JSON.stringify(focusApi.doctor().focus))
+
+  const started = focusApi.startFocus(25)
+  check(started.active === true && started.minutes === 25 && started.leftMin === 25,
+    'starting a session reports it back', JSON.stringify(started))
+  check(focusApi.doctor().focus.active === true, 'doctor sees the session too')
+  const startSaid = watch(focus, 1200)
+  check(startSaid.some((t) => strip(linesInBundle()?.focusStart, 25).includes(t)),
+    'and she says the session started', startSaid.slice(-1).join('') || '(没说)')
+
+  /* 专注期间即使她没在忙，姿势也该是"干活中" —— 稳态不许把她挪走 */
+  focus.advance(120000, 5000)
+  check(moodOf(focus) === 'alert', 'she holds the working pose for the whole session', moodOf(focus))
+
+  /* 戳她 = 问还剩多久，而且不算戳着玩 */
+  const pokeOnce = () => {
+    const b = focus.find('wisp-body')
+    b.dispatch('pointerdown', {
+      button: 0, clientX: focusApi.position.x + 260, clientY: focusApi.position.y + 400,
+      preventDefault() {}, stopPropagation() {},
+    })
+    focus.win.dispatch('pointerup', {})
+    focus.advance(200, 50)
+  }
+  /* 24 分钟时戳她 —— 报的应该是"还剩 24 分钟"这类的话 */
+  pokeOnce()
+  const pokeSaid = watch(focus, 800)
+  const leftPool = [].concat(strip(linesInBundle()?.focusLeft, 24), strip(linesInBundle()?.focusLeft, 23))
+  check(pokeSaid.some((t) => leftPool.includes(t)),
+    'poking her during a session asks how long is left', pokeSaid.slice(-2).join(' / ') || '(没说)')
+  check(moodOf(focus) !== 'poked', 'and it does not count as poking for fun', moodOf(focus))
+
+  /* 到点：她说收工，状态回到非激活，计数 +1 */
+  const doneSaid = watch(focus, 26 * 60000, 30000)
+  check(focusApi.focus.active === false, 'the session ends on its own', JSON.stringify(focusApi.focus))
+  check(focusApi.focus.done === 1, 'and the finished count goes up', String(focusApi.focus.done))
+  check(doneSaid.some((t) => strip(linesInBundle()?.focusDone, 25).includes(t)),
+    'and she tells you it is over', doneSaid.slice(-1).join('') || '(没说)')
+
+  /* 参数夹取：0 用默认时长，过大的被夹到 600 */
+  check(focusApi.startFocus(0).minutes === focusApi.config.focusMinutes,
+    'zero falls back to the configured default', String(focusApi.startFocus(0).minutes))
+  check(focusApi.startFocus(9999).minutes === 600, 'an absurd duration is clamped', String(focusApi.focus.minutes))
+  const stopSaid = watch(focus, 400)
+  focusApi.stopFocus()
+  const stopSaid2 = watch(focus, 600)
+  void stopSaid
+  check(focusApi.focus.active === false, 'stopFocus ends it', JSON.stringify(focusApi.focus))
+  check([].concat(stopSaid, stopSaid2).some((t) => (linesInBundle()?.focusStop ?? []).includes(t)),
+    'and she acknowledges the stop', [].concat(stopSaid, stopSaid2).slice(-1).join('') || '(没说)')
+  check(focusApi.stopFocus() === false, 'stopping when nothing is running is a no-op')
+  focus.win.__wisp.destroy()
+  active = keepFocus
+
+  /* ---- 页面藏起来就暂停 -------------------------------------------------- */
+  const quiet = createHarness({ timer: true, composerText: '' })
+  const keepQuiet = active
+  active = quiet
+  quiet.evaluate(clientSrc)
+  quiet.module().default.apply(quiet.ctx, {
+    reactions: true, wander: true, celebrate: false,
+    careAfterMs: 0, hungerMs: 0, night: false, sleepAfterMs: 3600000, backAfterMs: 60000,
+  })
+  quiet.advance(1300, 100)
+  const quietApi = quiet.win.__wisp
+  check(quietApi.doctor().timers.poll === true && quietApi.doctor().timers.paused === false,
+    'while visible the poll is armed', JSON.stringify(quietApi.doctor().timers))
+
+  quiet.document.visibilityState = 'hidden'
+  quiet.document.dispatch('visibilitychange', {})
+  const timers = quietApi.doctor().timers
+  check(timers.paused === true && timers.poll === false && timers.chatter === false && timers.wander === false,
+    'hiding the page stops all three timers', JSON.stringify(timers))
+
+  /* 藏起来期间：来了一堆报错，她也不该有任何反应（轮询停了） */
+  quiet.state.errors = 3
+  quiet.state.busy = true
+  quiet.advance(2000, 500)
+  quiet.state.busy = false
+  quiet.advance(20000, 2000)
+  check(moodOf(quiet) !== 'worried', 'a hidden page gets no reaction at all', moodOf(quiet))
+  check(quiet.all('wisp-say').filter((el) => el.removed !== true).length === 0,
+    'and she stays completely quiet', String(quiet.all('wisp-say').length))
+
+  quiet.document.visibilityState = 'visible'
+  quiet.document.dispatch('visibilitychange', {})
+  const after = quietApi.doctor().timers
+  check(after.paused === false && after.poll === true && after.wander === true,
+    'coming back re-arms them', JSON.stringify(after))
+  /* 回来之后同一批报错就该被看见了 */
+  quiet.state.busy = true
+  quiet.advance(1300, 100)
+  quiet.state.busy = false
+  quiet.advance(3000, 200)
+  check(moodOf(quiet) === 'worried', 'and now the same errors do get a reaction', moodOf(quiet))
+  quiet.win.__wisp.destroy()
+  active = keepQuiet
+}
+
 /* ================================================== 3z. generation audit ==== */
 head('3z. every shipped sprite traces back to a text-only call')
 
