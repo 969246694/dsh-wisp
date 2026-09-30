@@ -304,10 +304,22 @@ function createHarness(options = {}) {
   }
   const pendingNode = {}
 
+  const documentListeners = Object.create(null)
   const documentShim = {
     body: bodyEl,
     head: headEl,
     get activeElement() { return activeEl },
+    /* 真 document 有事件接口，替身也得有 —— 否则"插件是否正确处理文档级 Esc"根本测不到，
+       而且少一个方法会让插件在替身里整个起不来（这坑踩过一次）。 */
+    addEventListener(type, fn) { (documentListeners[type] ??= []).push(fn) },
+    removeEventListener(type, fn) {
+      const list = documentListeners[type]
+      if (!list) return
+      const at = list.indexOf(fn)
+      if (at >= 0) list.splice(at, 1)
+    },
+    dispatch(type, event) { for (const fn of [...(documentListeners[type] ?? [])]) fn(event ?? {}) },
+    get documentListenerCount() { return Object.values(documentListeners).reduce((n, l) => n + l.length, 0) },
     createElement: (t) => makeEl(t),
     getElementById: (id) => created.find((e) => e.id === id && !e.removed) ?? null,
     /* 采样点上的元素栈：按"最上面优先"返回。窗口背景那一段要靠它判断
@@ -476,7 +488,8 @@ function createHarness(options = {}) {
       // 默认不给 —— 这样"没有 host 时降级"才测得到；要测检查更新就传 hostCall。
       const hostSeat = typeof options.hostCall === 'function' ? { call: options.hostCall } : undefined
       // eslint-disable-next-line no-new-func
-      new Function('window', 'document', 'host', ...TRAPPED, src)(
+      /* 追加 sourceURL：new Function 里的代码否则在堆栈里是 anonymous，定位不到行。 */
+      new Function('window', 'document', 'host', ...TRAPPED, src + '\n//# sourceURL=wisp-client-half.js')(
         win, documentShim, hostSeat, ...TRAPPED.map((name) => traps[name]),
       )
     },
@@ -1455,12 +1468,16 @@ if (clientSrc !== null) {
        ctxEvent 定义在文件后半部分，在这里用就是 TDZ。 */
     eat.win.__wisp.configure({ hungry: true })
     const eatBody = eat.find('wisp-root').querySelector('.wisp-body')
-    eatBody.dispatch('keydown', {
+    const openEatMenu = () => eatBody.dispatch('keydown', {
       type: 'keydown', key: 'Enter', shiftKey: false, defaultPrevented: false,
       preventDefault() { this.defaultPrevented = true }, stopPropagation() {},
     })
-    const eatToggle = eat.all('wisp-menu-item').filter((el) => el.removed !== true)
-      .find((el) => (el.textContent || '').includes('饿了'))
+    const eatLive = () => eat.all('wisp-menu-item').filter((el) => el.removed !== true)
+    openEatMenu()
+    /* 开关在「行为」组里：先展开（分组行带着 data-group） */
+    const groupRowOf = (name) => eatLive().find((el) => el.dataset && el.dataset.group === name)
+    groupRowOf('行为').dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    const eatToggle = eatLive().find((el) => (el.textContent || '').includes('饿了'))
     check(Boolean(eatToggle), 'the menu carries a rice toggle',
       eat.all('wisp-menu-item').filter((el) => el.removed !== true).length + ' 项')
     if (eatToggle) {
@@ -2243,14 +2260,49 @@ if (clientSrc !== null) {
        固定部分 = 6 个动作 + 4 个开关 + 4 个角落 = 14；其余是每套皮肤一项。 */
     /* api.skins 是数组（SKIN_IDS 的拷贝），不是对象 —— 用 Object.keys 只是碰巧数对了。 */
     const skinCount = Array.isArray(api.skins) ? api.skins.length : Object.keys(api.skins ?? {}).length
-    check(itemsOf().length === 14 + skinCount,
-      'the menu lists fixed actions and corners plus exactly one entry per skin',
-      `${itemsOf().length} items = 14 + ${skinCount} skin(s)`)
+    /* ---- 结构：顶层只放动作，其余收进可折叠分组 ----------------------------
+       原来 19 个条目全平铺、只靠三行不可点的头部标签分区 —— 那不是结构，是排版。
+       现在顶层 7 项，外观 / 行为 / 位置 三组各自折叠。 */
+    const topLevel = itemsOf()
+    check(topLevel.length === 7, 'the top level holds seven entries, not nineteen',
+      `${topLevel.length} 项：${topLevel.map((i) => i.textContent).join(' | ')}`)
+    const groupRow = (name) => itemsOf().find((i) => i.dataset && i.dataset.group === name)
+    const groupNames = ['外观', '行为', '位置']
+    check(groupNames.every((n) => groupRow(n) !== undefined), 'the three groups are there',
+      groupNames.map((n) => `${n}=${groupRow(n) ? '有' : '无'}`).join(' '))
+    check(groupNames.every((n) => groupRow(n).dataset.open === 'false'),
+      'and they start collapsed', groupNames.map((n) => groupRow(n).dataset.open).join(','))
+    check(groupNames.every((n) => groupRow(n).getAttribute('aria-expanded') === 'false'),
+      'with aria-expanded telling assistive tech the same thing')
+    /* 展开一个分组：点它一下，菜单在原地重开，条目多出这一组的孩子 */
+    /* 展开/收起**只从 DOM 判断**：分组行自己带着 data-open 与 aria-expanded，
+       而 api 这个绑定是第一个替身的（728 行），不是这一节的实例 —— 拿它读菜单状态
+       会得到"菜单明明开着、API 却说没开"的假失败（踩过）。 */
+    const expand = (name) => {
+      const row = groupRow(name)
+      if (!row) return false
+      row.dispatch('click', itemEvent())
+      return groupRow(name) !== undefined && groupRow(name).dataset.open === 'true'
+    }
+    const collapse = (name) => {
+      const row = groupRow(name)
+      if (!row) return false
+      row.dispatch('click', itemEvent())
+      return groupRow(name) !== undefined && groupRow(name).dataset.open === 'false'
+    }
+    check(expand('外观'), 'clicking a group expands it in place',
+      `row=${JSON.stringify(groupRow('外观') ? groupRow('外观').dataset : null)} 项=${itemsOf().length}`)
+    check(itemsOf().length === 7 + skinCount + 2,
+      'the skins and the two size entries appear once it is open',
+      `${itemsOf().length} 项 = 7 + ${skinCount} 皮肤 + 2 大小`)
+    check(collapse('外观'), 'clicking it again collapses it')
+    check(itemsOf().length === 7, 'and the menu is back to seven entries', String(itemsOf().length))
+    /* 换一套皮肤之后，展开的分组要自动收起（closeMenu 会清掉 activeGroup） */
     const byText = (t) => itemsOf().filter((i) => i.textContent.includes(t))
-    const heads = menuOf().querySelectorAll('.wisp-menu-head')
-    check(heads.length === 3, 'the behaviour, position and skin sections each get a header', `${heads.length} headers`)
-    check(heads[0].textContent === '行为' && heads[1].textContent === '位置' && heads[2].textContent === '皮肤',
-      'the headers name their sections', heads.map((x) => x.textContent).join(' / '))
+    expand('外观')
+    check(groupRow('外观').getAttribute('aria-expanded') === 'true',
+      'and aria-expanded follows the expansion')
+    /* 皮肤现在在「外观」组里 —— 上一步已经把该组展开了。 */
     /* 从 API 派生，**不写死皮肤名**。写死过「初版女仆」，改名成「素绘女仆」之后
        三条断言当场全炸，其中一条 undefined.dispatch 还把整个套件截断了。 */
     /* 既有 API 的形状是**有序数组** [{id,label}]，不是 id→label 的对象。 */
@@ -2268,6 +2320,7 @@ if (clientSrc !== null) {
       'the menu lives beside her body, not inside it', 'inside it would be mirrored and scale with her')
 
     /* ---- 三个行为开关（原本在设置页里，那页撤掉后落到菜单） -------------- */
+    check(expand('行为'), 'the behaviour group opens')   /* 开关都在这一组里 */
     const toggleItem = (label) => itemsOf().find((i) => i.textContent.replace(/^[✓　]\s*/, '') === label)
     const togglesPresent = ['自己溜达', '跟随状态', '跑完撒花'].every((l) => toggleItem(l) !== undefined)
     check(togglesPresent, 'all three behaviour toggles are in the menu',
@@ -2279,6 +2332,8 @@ if (clientSrc !== null) {
     check(fifth.config.wander === !wanderBefore, 'clicking a toggle really flips the config',
       `${wanderBefore} -> ${fifth.config.wander}`)
     body5.dispatch('contextmenu', rightClickOnHer().ev)
+    /* 重开菜单＝一次新手势，所以分组回到收起状态（这是设计）。要再点开关就得再展开。 */
+    check(expand('行为'), 'reopening the menu collapses the groups again')
     const reopened = toggleItem('自己溜达')
     check(reopened !== undefined && reopened.textContent.startsWith('　'),
       'and reopening the menu shows the new state',
@@ -2292,6 +2347,7 @@ if (clientSrc !== null) {
     // 自己开菜单，不依赖上一节留下的状态 —— 隐含的跨节状态是测试脆弱性的常见来源。
     body5.dispatch('contextmenu', rightClickOnHer().ev)
     check(menuOf() !== null, 'the menu opens for the skin checks')
+    check(expand('外观'), 'and the skins group can be opened')
     const skinBefore = fifth.skin
     const posBefore = fifth.position
     const srcBeforeSkin = h.srcs[h.srcs.length - 1]
@@ -2314,9 +2370,9 @@ if (clientSrc !== null) {
     check(fifth.configure({ skin: 'deepsea' }) && fifth.skin === 'deepsea',
       'configure({skin}) goes through the same path as the menu', String(fifth.skin))
 
-    // 点「放大一点」—— 真改尺寸，并且菜单自己关掉
+    // 点「放大一点」—— 真改尺寸，并且菜单自己关掉（大小两项在「外观」组里，先展开）
     body5.dispatch('contextmenu', rightClickOnHer().ev)
-    const menuItems = itemsOf()
+    check(expand('外观'), 'the size entries need the appearance group open')
     byText('放大一点')[0].dispatch('click', itemEvent())
     check(fifth.element.style.width === '630px' && fifth.element.style.height === '945px',
       'a menu action runs (zoom one step up)', `${fifth.element.style.width}x${fifth.element.style.height}`)
@@ -2326,6 +2382,7 @@ if (clientSrc !== null) {
     const secondClick = rightClickOnHer()
     body5.dispatch('contextmenu', secondClick.ev)
     check(menuOf() !== null, 'the menu reopens')
+    check(expand('位置'), 'the corners live in the position group')
     byText('右下角')[0].dispatch('click', itemEvent())
     const homed = fifth.position
     check(homed.x === secondClick.homeX && homed.y === secondClick.homeY,
@@ -2352,7 +2409,7 @@ if (clientSrc !== null) {
     })
     check(kbd().at !== null && kbd().at.tagName === 'BUTTON',
       'opening the menu focuses its first item', kbd().label)
-    check(kbd().at?.className === 'wisp-menu-item' && kbd().label === '说句话',
+    check(kbd().at?.className === 'wisp-menu-item' && kbd().label === '关于她…',
       'and the focus lands on the first real action', kbd().label)
     check(kbd().zero === 1, 'exactly one item is in the tab order (roving tabindex)', `${kbd().zero}`)
     check(itemsOf()[0].getAttribute('aria-selected') === 'true',
@@ -2528,6 +2585,16 @@ if (clientSrc !== null) {
       found[0].dispatch('click', itemEvent())
       return true
     }
+    /* 菜单改成分组之后，组里的条目要先把组展开才看得见。
+       这个 helper 让"点某个分组里的东西"是一次调用，而不是每处各写一遍。 */
+    const openGroupOn = (inst, name) => {
+      const host = inst.element.parentNode
+      const row = host.querySelectorAll('.wisp-menu-item').find((i) => i.dataset && i.dataset.group === name)
+      if (!row) return false
+      row.dispatch('click', itemEvent())
+      return host.querySelectorAll('.wisp-menu-item')
+        .some((i) => i.dataset && i.dataset.group === name && i.dataset.open === 'true')
+    }
     // 四个角落。期望值按【当前】尺寸算 —— 写死尺寸的话，一旦尺寸变了断言会
     // 指着正确的实现说它错。
     const cur = boxOf(pinned)
@@ -2539,6 +2606,7 @@ if (clientSrc !== null) {
     }
     for (const [label, want] of Object.entries(EXPECT)) {
       openMenuOn(pinned)
+      openGroupOn(pinned, '位置')     // 四个角落现在收在「位置」组里
       const hit = pickExact(pinned, label)
       check(hit && pinned.position.x === want.x && pinned.position.y === want.y,
         `the ${label} item puts her there`, `${pinned.position.x},${pinned.position.y} (want ${want.x},${want.y})`)
@@ -2706,11 +2774,99 @@ if (clientSrc !== null) {
     active = keepSoak
   } catch (error) {
     bad('browser half executes', `${error.constructor.name}: ${error.message}`)
+    if (error && error.stack) console.log(String(error.stack).split('\n').slice(0, 6).map((l) => '        ' + l.trim()).join('\n'))
     console.log(error.stack)
   } finally {
     active = null
     for (const [key, value] of Object.entries(savedGlobals)) globalThis[key] = value
   }
+}
+
+/* ================================================== 3y. dialogs ============ */
+head('3y. dialogs: about her, and the action preview')
+
+/* 菜单顶层只留动作，"她是谁"和"她有哪些动作"放进弹窗。这里测的就是这两个弹窗：
+   能不能开、内容对不对、三种关法，以及**反复开合不会把文档级监听越堆越多**
+   （那是真写进去过的 bug：清理函数是个空壳）。 */
+{
+  const dlg = createHarness({ timer: true, composerText: '' })
+  const keepDlg = active
+  active = dlg
+  dlg.evaluate(clientSrc)
+  dlg.module().default.apply(dlg.ctx, { reactions: true, wander: false, celebrate: false })
+  dlg.advance(1300, 100)
+  const dlgApi = dlg.win.__wisp
+  const bundleVersion = /const VERSION = '([^']+)'/.exec(clientSrc)?.[1] ?? null
+
+  /* 替身的 find() 会把已移除的节点也返回（它自己的约定），所以要显式认 removed。 */
+  const dialogGone = () => {
+    const el = dlg.find('wisp-dialog')
+    return el === null || el.removed === true
+  }
+  /* 按段落/页脚类读文本：简化 DOM 不会汇总子节点 textContent，读卡片本身只会得到空串。 */
+  const dialogText = () => [].concat(
+    dlg.all('wisp-dialog-p').filter((el) => el.removed !== true).map((el) => String(el.textContent)),
+    dlg.all('wisp-dialog-foot-l').filter((el) => el.removed !== true).map((el) => String(el.textContent)),
+    dlg.all('wisp-dialog-foot-r').filter((el) => el.removed !== true).map((el) => String(el.textContent)),
+  ).join('\n')
+
+  check(dlgApi.dialog === null, 'nothing is open at the start', String(dlgApi.dialog))
+  check(dialogGone(), 'and no dialog sits in the DOM before it is asked for')
+
+  dlgApi.openAbout()
+  check(dlgApi.dialog === 'about', 'asking about her opens the about dialog', String(dlgApi.dialog))
+  const card = dlg.find('wisp-dialog')
+  check(card !== null, 'the dialog card is in the DOM')
+  check(dlg.find('wisp-dialog-backdrop') !== null, 'with a backdrop behind it')
+  const aboutText = dialogText()
+  check(aboutText.includes('DeepSeek娘'), 'it says who she is')
+  check(bundleVersion !== null && aboutText.includes(bundleVersion),
+    'and which version this is', `${bundleVersion} / 文本里找得到: ${aboutText.includes(String(bundleVersion))}`)
+  check(aboutText.includes('社区'), 'and credits the community the look comes from')
+  check(aboutText.includes('非官方'), 'and says plainly that it is unofficial')
+
+  dlg.document.dispatch('keydown', { key: 'Escape', preventDefault() {} })
+  check(dlgApi.dialog === null && dialogGone(), 'Escape closes it',
+    `dialog=${String(dlgApi.dialog)} 监听数=${dlg.document.documentListenerCount}`)
+  check(dlg.document.documentListenerCount === 1,
+    'exactly one document-level key listener exists', String(dlg.document.documentListenerCount))
+
+  dlgApi.openActions()
+  check(dlgApi.dialog === 'actions', 'the action preview opens', String(dlgApi.dialog))
+  const cells = dlg.all('wisp-cell').filter((el) => el.removed !== true)
+  check(cells.length === 8, 'and lists eight actions — one per mood', `${cells.length} 格`)
+  check(cells.every((c) => typeof c.dataset.mood === 'string' && c.dataset.mood !== ''),
+    'each cell names its mood', cells.map((c) => c.dataset.mood).join(','))
+  check(cells.every((c) => c.querySelector('img') !== null), 'each cell carries a sprite')
+
+  const eatCell = cells.find((c) => c.dataset.mood === 'eat')
+  eatCell.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  check(dlgApi.dialog === null, 'clicking an action closes the dialog so you can see her')
+  check(dlgApi.currentMood === 'eat', 'and she takes that pose', String(dlgApi.currentMood))
+  dlg.advance(1500, 100)
+  check(dlgApi.currentMood === 'eat',
+    'the reaction poll leaves the preview alone while it lasts', String(dlgApi.currentMood))
+  dlg.advance(9000, 500)
+  check(dlgApi.currentMood !== 'eat', 'and the preview does not stick forever', String(dlgApi.currentMood))
+
+  dlgApi.openActions()
+  const x = dlg.find('wisp-dialog-x')
+  check(x !== null, 'the close button is there')
+  x.dispatch('click', { preventDefault() {} })
+  check(dlgApi.dialog === null, 'and it closes the dialog')
+
+  dlgApi.openAbout()
+  dlg.find('wisp-dialog-backdrop').dispatch('pointerdown', {})
+  check(dlgApi.dialog === null, 'clicking the backdrop closes it too')
+
+  for (let i = 0; i < 3; i++) { dlgApi.openAbout(); dlgApi.closeDialog() }
+  check(dlg.document.documentListenerCount === 1,
+    'opening and closing repeatedly does not stack listeners', String(dlg.document.documentListenerCount))
+
+  dlgApi.openAbout()
+  dlgApi.destroy()
+  check(dlgApi.dialog === null, 'destroy() takes the dialog with it')
+  active = keepDlg
 }
 
 /* ================================================== 3z. generation audit ==== */

@@ -224,9 +224,28 @@ const cornerMenu = await page.evaluate(() => {
 })
 check(cornerMenu !== null, 'a menu can be opened near the bottom of her body',
   cornerMenu ? `pointer at y=${cornerMenu.pointerY}` : 'no candidate point hit her silhouette')
-check(cornerMenu !== null && cornerMenu.naiveBottom > 900,
-  'the case actually needs clamping (otherwise the next check is vacuous)',
-  cornerMenu ? `unclamped bottom would be ${cornerMenu.naiveBottom} > 900` : 'n/a')
+/* 顶层只有 7 项，"靠近底部"未必真的需要夹取 —— 原来那条 naiveBottom > 900 的守卫
+   在菜单变矮之后自己就失效了。改成：展开一个分组把菜单撑高，再验证同一个性质。
+   顺带这也是真浏览器里第一次验证折叠分组。 */
+const tallMenu = await page.evaluate(() => {
+  const row = [...document.querySelectorAll('.wisp-menu-item')].find((i) => i.dataset && i.dataset.group)
+  if (!row) return null
+  row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  const menu = document.querySelector('.wisp-menu')
+  if (!menu) return null
+  const r = menu.getBoundingClientRect()
+  return {
+    items: menu.querySelectorAll('.wisp-menu-item').length,
+    left: r.left, top: r.top, right: r.right, bottom: r.bottom,
+    vw: window.innerWidth, vh: window.innerHeight,
+  }
+})
+check(tallMenu !== null && tallMenu.items > 7, 'a group expands inside the real menu',
+  tallMenu ? `${tallMenu.items} 项` : '没找到分组行')
+check(tallMenu !== null && tallMenu.left >= 0 && tallMenu.top >= 0
+  && tallMenu.right <= tallMenu.vw && tallMenu.bottom <= tallMenu.vh,
+  'and the expanded menu still stays inside the viewport',
+  tallMenu ? JSON.stringify(tallMenu) : 'n/a')
 check(cornerMenu !== null && cornerMenu.inside,
   'and the menu is clamped back inside the viewport',
   cornerMenu ? `bottom ${cornerMenu.bottom} (was ${cornerMenu.naiveBottom}), right ${cornerMenu.right}` : 'n/a')
@@ -239,8 +258,8 @@ const skinCount = await page.evaluate(() => {
   const s = window.__wisp.skins
   return Array.isArray(s) ? s.length : Object.keys(s ?? {}).length
 })
-check(menu !== null && menu.items.length === 14 + skinCount, 'the menu lists every entry',
-  `${menu?.items.length} items = 14 + ${skinCount} skin(s)`)
+check(menu !== null && menu.items.length === 7, 'the menu lists every entry',
+  `${menu?.items.length} items at the top level`)
 
 // 键盘：打开即聚焦第一项，方向键移动，Esc 关闭并把焦点还给她
 const kbd = await page.evaluate(() => {
@@ -266,6 +285,9 @@ check(kbd.focusAfter === 'wisp-body', 'and focus lands back on her, not on <body
 const openedAgain = await openMenu()
 check(openedAgain !== null, 'the menu reopens for the activation check')
 const zoomed = await page.evaluate(() => {
+  /* 大小两项收在「外观」组里：先展开，再点。 */
+  const group = [...document.querySelectorAll('.wisp-menu-item')].find((i) => i.dataset && i.dataset.group === '外观')
+  if (group) group.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
   const item = [...document.querySelectorAll('.wisp-menu-item')].find((i) => i.textContent === '放大一点')
   if (!item) return { missing: true }
   item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
@@ -273,6 +295,58 @@ const zoomed = await page.evaluate(() => {
 })
 check(zoomed.width === '630px' && zoomed.menuGone, 'a menu item runs and closes the menu',
   zoomed.missing ? 'the item was not found' : `width=${zoomed.width}`)
+
+/* 两个弹窗在真浏览器里的样子 —— 可见性、图片真的解码出来，这些假 DOM 测不到。
+   注意位置：必须放在键盘那一段**之后**。放前面会扰动它依赖的焦点状态
+   （实测：键盘段会退化成"焦点在哪都行"然后连挂三条）。 */
+const aboutView = await page.evaluate(() => {
+  window.__wisp.openAbout()
+  const card = document.querySelector('.wisp-dialog')
+  const back = document.querySelector('.wisp-dialog-backdrop')
+  if (!card) return { missing: true }
+  const r = card.getBoundingClientRect()
+  const text = [...card.querySelectorAll('.wisp-dialog-p, .wisp-dialog-foot-l, .wisp-dialog-foot-r')]
+    .map((el) => el.textContent).join(' ')
+  return {
+    visible: r.width > 200 && r.height > 80,
+    inView: r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight,
+    hasBackdrop: back !== null,
+    text,
+  }
+})
+check(aboutView.visible === true && aboutView.inView === true, 'the about dialog is really on screen',
+  JSON.stringify(aboutView))
+check(aboutView.hasBackdrop === true && (aboutView.text || '').includes('DeepSeek娘'),
+  'with a backdrop and her name in it', String((aboutView.text || '').slice(0, 48)))
+
+const actionsView = await page.evaluate(async () => {
+  window.__wisp.openActions()
+  const cells = [...document.querySelectorAll('.wisp-cell')]
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const loaded = cells.filter((c) => {
+    const im = c.querySelector('img')
+    return im && im.complete && im.naturalWidth > 0
+  }).length
+  const r = document.querySelector('.wisp-dialog').getBoundingClientRect()
+  return {
+    cells: cells.length, loaded,
+    inView: r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight,
+  }
+})
+check(actionsView.cells === 8, 'the action preview lists eight cells', String(actionsView.cells))
+check(actionsView.loaded === 8, 'and every sprite in it actually decoded',
+  actionsView.loaded + '/' + actionsView.cells)
+check(actionsView.inView === true, 'and it fits on screen', String(actionsView.inView))
+
+const previewed = await page.evaluate(() => {
+  const cell = [...document.querySelectorAll('.wisp-cell')].find((c) => c.dataset.mood === 'proud')
+  cell.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  return { dialog: window.__wisp.dialog, mood: window.__wisp.currentMood }
+})
+check(previewed.dialog === null && previewed.mood === 'proud',
+  'clicking a cell closes the dialog and poses her', JSON.stringify(previewed))
+
+
 
 /* 键盘入口：假 DOM 证明不了原生按键处理与事件冒泡（窗口上的捕获监听会先看到 keydown），
    所以这里用真实按键事件走一遍。 */
