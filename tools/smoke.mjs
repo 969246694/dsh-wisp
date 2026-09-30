@@ -581,61 +581,64 @@ check(skinSwap.layersDuringFade === 1, 'the cross-fade layer is gone once it set
 // 每个页面都要装下这份包与解码后的精灵图（单张就是 naturalWidth*naturalHeight*4 字节），
 // 多开一个页面 = 多一份；之前正是这样把浏览器推崩的，表现为随机的
 // "Target page, context or browser has been closed"，极难定位。
-/* 级联子菜单的几何检查：必须在**页面还活着**的时候跑（它要量真实布局），
-   也必须在键盘段之后（它会开关菜单、动焦点）。 */
-/* 级联子菜单的几何检查放在**最后**：它会开关菜单、动焦点，放在中间会扰动后面的键盘段。 */
-/* 级联子菜单的**几何**：它在旁边，不在上面。
-   这一条替身测不到（假 DOM 没有布局），而"子菜单遮住主菜单"那个 bug 正好出在这里 ——
-   混用了视口坐标（getBoundingClientRect）与图层坐标（菜单的 left/top）。 */
-const flyoutGeo = await page.evaluate(async () => {
-  const body = document.querySelector('.wisp-body')
-  const box = document.querySelector('.wisp-root')
-  if (!body || !box) return { noBody: true }
-  const r0 = box.getBoundingClientRect()
-  body.dispatchEvent(new MouseEvent('contextmenu', {
-    bubbles: true, cancelable: true, clientX: r0.left + r0.width / 2, clientY: r0.top + r0.height / 2,
-  }))
-  const menu = document.querySelector('.wisp-menu')
-  if (!menu) return { noMenu: true }
-  const row = [...menu.querySelectorAll('.wisp-menu-item')].find((el) => el.dataset && el.dataset.group)
-  if (!row) return { noRow: true }
-  row.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }))
-  await new Promise((resolve) => setTimeout(resolve, 350))
-  const panel = document.querySelector('.wisp-submenu')
-  if (!panel) return { noPanel: true }
-  const mr = menu.getBoundingClientRect()
-  const pr = panel.getBoundingClientRect()
-  const rr = row.getBoundingClientRect()
-  const layer = menu.parentNode
-  const lr = layer.getBoundingClientRect ? layer.getBoundingClientRect() : { left: -999, top: -999, width: 0, height: 0 }
-  return {
-    menu: { l: Math.round(mr.left), r: Math.round(mr.right), w: Math.round(mr.width), styleL: menu.style.left, styleT: menu.style.top },
-    panel: { l: Math.round(pr.left), r: Math.round(pr.right), t: Math.round(pr.top), w: Math.round(pr.width), styleL: panel.style.left, styleT: panel.style.top },
-    row: { t: Math.round(rr.top), h: Math.round(rr.height) },
-    layer: { l: Math.round(lr.left), t: Math.round(lr.top), w: Math.round(lr.width), h: Math.round(lr.height), pos: getComputedStyle(layer).position },
-    view: { w: window.innerWidth, h: window.innerHeight },
-    rows: panel.querySelectorAll('.wisp-menu-item').length,
-  }
-})
-check(flyoutGeo.panel !== undefined && flyoutGeo.rows > 0,
-  'hovering a group row pops a submenu panel', JSON.stringify(flyoutGeo))
-check(flyoutGeo.panel !== undefined
-  && (flyoutGeo.panel.l >= flyoutGeo.menu.r - 6 || flyoutGeo.panel.r <= flyoutGeo.menu.l + 6),
-  'the submenu sits BESIDE the menu, not on top of it — window coords and layer coords must not be mixed',
-  flyoutGeo.panel ? `menu=${flyoutGeo.menu.l}..${flyoutGeo.menu.r} panel=${flyoutGeo.panel.l}..${flyoutGeo.panel.r}` : 'n/a')
-check(flyoutGeo.panel !== undefined
-  && flyoutGeo.panel.l >= 0 && flyoutGeo.panel.r <= flyoutGeo.view.w
-  && flyoutGeo.panel.t >= 0,
-  'and it fits on screen', flyoutGeo.panel ? JSON.stringify(flyoutGeo.panel) : 'n/a')
-check(flyoutGeo.panel !== undefined && Math.abs(flyoutGeo.panel.t - flyoutGeo.row.t) < 40,
-  'and lines up with the row it belongs to',
-  flyoutGeo.panel ? `row.t=${flyoutGeo.row.t} panel.t=${flyoutGeo.panel.t}` : 'n/a')
-await page.evaluate(() => {
-  /* 菜单的键盘监听挂在 **window** 上，不是 document —— 发错目标菜单就不会关，
-     后面的键盘段会在"一个还没关掉的菜单"上重开，焦点状态全乱（就是这么挂掉三条的）。 */
-  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-})
+/* 级联子菜单的几何：**四个角落各测一次**。
+   她在角落里时菜单会被夹进视口（右下/左下往上推、右上往左推），
+   子面板必须跟着菜单的**实际**位置走 —— 用"请求坐标"算就会越靠角落偏得越多，
+   严重时压住主菜单。用户就是这样发现该 bug 的，所以这里直接把它编成回归检查。
+   假 DOM 没有布局，这一整类问题只有真浏览器能测。 */
+const cornerGeo = []
+for (const which of ['br', 'bl', 'tr', 'tl']) {
+  const geo = await page.evaluate(async (corner) => {
+    const wisp = window.__wisp
+    const box = document.querySelector('.wisp-root')
+    const bw = parseFloat(box.style.width) || 560
+    const bh = parseFloat(box.style.height) || 840
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const right = (corner === 'br' || corner === 'tr') ? 26 : Math.max(0, vw - 26 - bw)
+    const bottom = (corner === 'br' || corner === 'bl') ? 46 : Math.max(0, vh - 46 - bh)
+    wisp.configure({ right, bottom })
+    wisp.resetPosition()
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    /* 主菜单的入口是 .wisp-body 上的 Enter —— contextmenu 只挂在"躲起来"之后的迷你标签上。 */
+    const body = document.querySelector('.wisp-body')
+    body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    const menu = document.querySelector('.wisp-menu')
+    if (!menu) return { which: corner, noMenu: true }
+    const row = [...menu.querySelectorAll('.wisp-menu-item')].find((el) => el.dataset && el.dataset.group)
+    if (!row) return { which: corner, noRow: true }
+    row.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }))
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    const panel = document.querySelector('.wisp-submenu')
+    if (!panel) return { which: corner, noPanel: true }
+    const mr = menu.getBoundingClientRect()
+    const pr = panel.getBoundingClientRect()
+    const rr = row.getBoundingClientRect()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    return {
+      which: corner,
+      menu: { l: Math.round(mr.left), r: Math.round(mr.right), t: Math.round(mr.top) },
+      panel: { l: Math.round(pr.left), r: Math.round(pr.right), t: Math.round(pr.top) },
+      row: { t: Math.round(rr.top) },
+      vw, vh,
+    }
+  }, which)
+  cornerGeo.push(geo)
+}
+const withPanel = cornerGeo.filter((g) => g && g.panel)
+check(withPanel.length === 4, 'the submenu opens from every corner',
+  cornerGeo.map((g) => g.which + (g.panel ? '' : '✗')).join(' '))
+check(withPanel.every((g) => g.panel.r <= g.menu.l + 6 || g.panel.l >= g.menu.r - 6),
+  'BESIDE the menu in every corner — never on top of it',
+  withPanel.map((g) => `${g.which} menu=${g.menu.l}..${g.menu.r} panel=${g.panel.l}..${g.panel.r}`).join(' | '))
+check(withPanel.every((g) => g.panel.l >= 0 && g.panel.r <= g.vw && g.panel.t >= 0 && g.panel.t < g.vh),
+  'and inside the viewport in every corner',
+  withPanel.map((g) => `${g.which} l=${g.panel.l} r=${g.panel.r} t=${g.panel.t}`).join(' | '))
+check(withPanel.every((g) => Math.abs(g.panel.t - g.row.t) < 40),
+  'and lined up with its own row in every corner',
+  withPanel.map((g) => `${g.which} row.t=${g.row.t} panel.t=${g.panel.t}`).join(' | '))
+
 
 await browser.close()
 
