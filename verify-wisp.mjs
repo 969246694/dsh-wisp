@@ -320,6 +320,7 @@ function createHarness(options = {}) {
     },
     dispatch(type, event) { for (const fn of [...(documentListeners[type] ?? [])]) fn(event ?? {}) },
     get documentListenerCount() { return Object.values(documentListeners).reduce((n, l) => n + l.length, 0) },
+    documentListenerCountOf(type) { return (documentListeners[type] ?? []).length },
     createElement: (t) => makeEl(t),
     getElementById: (id) => created.find((e) => e.id === id && !e.removed) ?? null,
     /* 采样点上的元素栈：按"最上面优先"返回。窗口背景那一段要靠它判断
@@ -2828,8 +2829,11 @@ head('3y. dialogs: about her, and the action preview')
   dlg.document.dispatch('keydown', { key: 'Escape', preventDefault() {} })
   check(dlgApi.dialog === null && dialogGone(), 'Escape closes it',
     `dialog=${String(dlgApi.dialog)} 监听数=${dlg.document.documentListenerCount}`)
-  check(dlg.document.documentListenerCount === 1,
-    'exactly one document-level key listener exists', String(dlg.document.documentListenerCount))
+  check(dlg.document.documentListenerCountOf('keydown') === 1,
+    'exactly one document-level key listener exists', String(dlg.document.documentListenerCountOf('keydown')))
+  check(dlg.document.documentListenerCountOf('visibilitychange') === 1,
+    'and exactly one visibility listener (added for the come-back greeting)',
+    String(dlg.document.documentListenerCountOf('visibilitychange')))
 
   dlgApi.openActions()
   check(dlgApi.dialog === 'actions', 'the action preview opens', String(dlgApi.dialog))
@@ -2860,13 +2864,204 @@ head('3y. dialogs: about her, and the action preview')
   check(dlgApi.dialog === null, 'clicking the backdrop closes it too')
 
   for (let i = 0; i < 3; i++) { dlgApi.openAbout(); dlgApi.closeDialog() }
-  check(dlg.document.documentListenerCount === 1,
-    'opening and closing repeatedly does not stack listeners', String(dlg.document.documentListenerCount))
+  check(dlg.document.documentListenerCountOf('keydown') === 1,
+    'opening and closing repeatedly does not stack listeners',
+    String(dlg.document.documentListenerCountOf('keydown')))
 
   dlgApi.openAbout()
   dlgApi.destroy()
   check(dlgApi.dialog === null, 'destroy() takes the dialog with it')
   active = keepDlg
+}
+
+/* ============================== 3y-2. night / come back / streak =========== */
+head('3y-2. night nagging, coming back, and the streak')
+
+/* 这三件事都靠**可配置的时间**，所以不需要伪造时钟：
+   把深夜窗口套在当前那个小时上，行为就该发生；套偏一个小时，就不该发生。 */
+{
+  const hourNowReal = new Date().getHours()
+  const mk = (options) => {
+    const h = createHarness(Object.assign({ timer: true, composerText: '在打字' }, options))
+    h.evaluate(clientSrc)
+    return h
+  }
+  const liveSaid = (h) => h.all('wisp-say').filter((el) => el.removed !== true).map((el) => el.textContent)
+  const saidLines = (h) => liveSaid(h)
+  /* 推进 ms，把过程中出现过的每一句话都收集起来。 */
+  const watch = (h, ms, step = 250) => {
+    const seen = new Set(liveSaid(h))
+    for (let left = ms; left > 0; left -= step) {
+      h.advance(Math.min(step, left), Math.min(step, 200))
+      for (const t of liveSaid(h)) seen.add(t)
+    }
+    return [...seen]
+  }
+  const inPool = (pool, text) => Array.isArray(pool) && pool.includes(text)
+
+  /* ---- 深夜劝睡 ---------------------------------------------------------- */
+  const night = mk()
+  const keepNight = active
+  active = night
+  night.module().default.apply(night.ctx, {
+    reactions: true, wander: false, celebrate: false,
+    careAfterMs: 0, hungerMs: 0, sleepAfterMs: 3600000,
+    /* 让"现在"落在深夜窗口里：从当前小时开始，到下一个小时结束 */
+    bedtimeHour: hourNowReal, wakeHour: (hourNowReal + 1) % 24, nightMs: 60000,
+  })
+  night.advance(1300, 100)
+  const nightApi = night.win.__wisp
+  check(nightApi.doctor().night.enabled === true
+    && nightApi.doctor().night.deepFrom === (hourNowReal + 2) % 24,
+    'doctor reports the night window and where the deeper register starts',
+    JSON.stringify(nightApi.doctor().night))
+  const nightSaid = watch(night, 70000)
+  check(nightSaid.some((t) => inPool(linesInBundle()?.nightLate, t)),
+    'inside the window she speaks up, from the late pool',
+    nightSaid.slice(-2).join(' / ') || '(没说)')
+  check(nightApi.doctor().night.lastAt > 0, 'and the check time is recorded',
+    String(nightApi.doctor().night.lastAt))
+
+  /* 窗口外不该说话 */
+  const day = mk()
+  const keepDay = active
+  active = day
+  day.module().default.apply(day.ctx, {
+    reactions: true, wander: false, celebrate: false,
+    careAfterMs: 0, hungerMs: 0, sleepAfterMs: 3600000,
+    bedtimeHour: (hourNowReal + 3) % 24, wakeHour: (hourNowReal + 4) % 24, nightMs: 60000,
+  })
+  day.advance(1300, 100)
+  const daySaid = watch(day, 200000)
+  check(!daySaid.some((t) => inPool(linesInBundle()?.nightLate, t) || inPool(linesInBundle()?.nightDeep, t)),
+    'outside the window she says nothing about bedtime', saidLines(day).slice(-2).join(' / ') || '(没说)')
+  day.win.__wisp.destroy()
+  active = keepDay
+
+  /* 深度深夜：把 bedtime 往前挪两小时，当前小时就落进"嘴硬心软"那一档 */
+  const deep = mk()
+  const keepDeep = active
+  active = deep
+  deep.module().default.apply(deep.ctx, {
+    reactions: true, wander: false, celebrate: false,
+    careAfterMs: 0, hungerMs: 0, sleepAfterMs: 3600000,
+    bedtimeHour: (hourNowReal + 22) % 24, wakeHour: (hourNowReal + 1) % 24, nightMs: 60000,
+  })
+  deep.advance(1300, 100)
+  const deepSaid = watch(deep, 70000)
+  check(deepSaid.some((t) => inPool(linesInBundle()?.nightDeep, t)),
+    'two hours past bedtime the register changes', deepSaid.slice(-2).join(' / ') || '(没说)')
+
+  /* 两种关法 */
+  const nightLines = () => [].concat(linesInBundle()?.nightLate ?? [], linesInBundle()?.nightDeep ?? [])
+  deep.win.__wisp.configure({ night: false })
+  check(!watch(deep, 300000).some((t) => nightLines().includes(t)),
+    'night: false turns the whole thing off')
+  deep.win.__wisp.configure({ night: true, nightMs: 0 })
+  check(!watch(deep, 300000).some((t) => nightLines().includes(t)), 'so does nightMs: 0')
+  deep.win.__wisp.destroy()
+  active = keepDeep
+
+  /* ---- 离开又回来 -------------------------------------------------------- */
+  const back = mk()
+  const keepBack = active
+  active = back
+  back.module().default.apply(back.ctx, {
+    reactions: true, wander: false, celebrate: false, careAfterMs: 0, hungerMs: 0,
+    sleepAfterMs: 3600000, backAfterMs: 60000,
+  })
+  back.advance(1300, 100)
+  const backApi = back.win.__wisp
+  /* 替身没有 visibilityState，直接摆上再派发事件 —— 这正是真浏览器里发生的事。 */
+  back.document.visibilityState = 'hidden'
+  back.document.dispatch('visibilitychange', {})
+  back.advance(120000, 1000)
+  back.document.visibilityState = 'visible'
+  back.document.dispatch('visibilitychange', {})
+  const shortBack = watch(back, 400)
+  check(shortBack.some((t) => inPool(linesInBundle()?.backSoon, t)),
+    'coming back after a short while gets the short line', shortBack.slice(-2).join(' / ') || '(没说)')
+
+  back.document.visibilityState = 'hidden'
+  back.document.dispatch('visibilitychange', {})
+  back.advance(30 * 60000, 5000)
+  back.document.visibilityState = 'visible'
+  back.document.dispatch('visibilitychange', {})
+  const longBack = watch(back, 400)
+  check(longBack.some((t) => inPool(linesInBundle()?.backLong, t)),
+    'a long absence gets the other line', longBack.slice(-2).join(' / ') || '(没说)')
+
+  /* 走开一小会儿不该说话（只看"回来池"，别把别的行为的话算进来） */
+  const backLines = () => [].concat(linesInBundle()?.backSoon ?? [], linesInBundle()?.backLong ?? [])
+  back.document.visibilityState = 'hidden'
+  back.document.dispatch('visibilitychange', {})
+  back.advance(5000, 1000)
+  back.document.visibilityState = 'visible'
+  back.document.dispatch('visibilitychange', {})
+  check(!watch(back, 600).some((t) => backLines().includes(t)),
+    'a blink of absence is not worth a line')
+
+  back.win.__wisp.configure({ backAfterMs: 0 })
+  back.document.visibilityState = 'hidden'
+  back.document.dispatch('visibilitychange', {})
+  back.advance(30 * 60000, 5000)
+  back.document.visibilityState = 'visible'
+  back.document.dispatch('visibilitychange', {})
+  check(!watch(back, 600).some((t) => backLines().includes(t)),
+    'backAfterMs: 0 turns the greeting off')
+  back.win.__wisp.destroy()
+  active = keepBack
+
+  /* ---- 连续天数 ---------------------------------------------------------- */
+  /* 用 localStorage 直接种一段连续的记录：今天 + 往前三天 = 连续 4 天。 */
+  const keyFor = (offset) => {
+    const d = new Date(Date.now() - offset * 86400000)
+    return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate()
+  }
+  const memorySeed = {
+    'dsh-wisp:memory:v1': JSON.stringify({
+      days: [keyFor(3), keyFor(2), keyFor(1), keyFor(0)],
+      said: [], corners: {}, skins: {}, remarkDay: keyFor(0),
+    }),
+  }
+  const streak = mk({ storageSeed: memorySeed })
+  const keepStreak = active
+  active = streak
+  streak.module().default.apply(streak.ctx, {
+    reactions: true, wander: false, celebrate: false, careAfterMs: 0, hungerMs: 0, sleepAfterMs: 3600000,
+  })
+  const streakSaid = watch(streak, 5000)
+  const streakApi = streak.win.__wisp
+  check(streakApi.doctor().streak === 4, 'doctor reports a four-day streak', String(streakApi.doctor().streak))
+  const streakPool = [].concat(linesInBundle()?.streak ?? [], linesInBundle()?.milestone ?? [])
+    .map((t) => t.split('{n}').join('4'))
+  check(streakSaid.some((t) => streakPool.includes(t)),
+    'and she mentions it the next time you meet', streakSaid.slice(-3).join(' / ') || '(没说)')
+  streak.win.__wisp.destroy()
+  active = keepStreak
+
+  /* 断了就从头数：今天之前缺一天 */
+  const brokenSeed = {
+    'dsh-wisp:memory:v1': JSON.stringify({
+      days: [keyFor(5), keyFor(4), keyFor(0)], said: [], corners: {}, skins: {}, remarkDay: keyFor(0),
+    }),
+  }
+  const broken = mk({ storageSeed: brokenSeed })
+  const keepBroken = active
+  active = broken
+  broken.module().default.apply(broken.ctx, {
+    reactions: true, wander: false, celebrate: false, careAfterMs: 0, hungerMs: 0, sleepAfterMs: 3600000,
+  })
+  const brokenSaid = watch(broken, 5000)
+  check(broken.win.__wisp.doctor().streak === 1,
+    'a gap resets it to one (and one is not worth mentioning)',
+    String(broken.win.__wisp.doctor().streak))
+  const streakPool2 = [].concat(linesInBundle()?.streak ?? [], linesInBundle()?.milestone ?? [])
+    .map((t) => t.split('{n}').join('1'))
+  check(!brokenSaid.some((t) => streakPool2.includes(t)),
+    'so she stays quiet about it', brokenSaid.slice(-2).join(' / ') || '(没说)')
+  broken.win.__wisp.destroy()
+  active = keepBroken
 }
 
 /* ================================================== 3z. generation audit ==== */
