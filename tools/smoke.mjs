@@ -258,6 +258,7 @@ const skinCount = await page.evaluate(() => {
   const s = window.__wisp.skins
   return Array.isArray(s) ? s.length : Object.keys(s ?? {}).length
 })
+
 check(menu !== null && menu.items.length === 8, 'the menu lists every entry',
   `${menu?.items.length} items at the top level`)
 
@@ -580,6 +581,62 @@ check(skinSwap.layersDuringFade === 1, 'the cross-fade layer is gone once it set
 // 每个页面都要装下这份包与解码后的精灵图（单张就是 naturalWidth*naturalHeight*4 字节），
 // 多开一个页面 = 多一份；之前正是这样把浏览器推崩的，表现为随机的
 // "Target page, context or browser has been closed"，极难定位。
+/* 级联子菜单的几何检查：必须在**页面还活着**的时候跑（它要量真实布局），
+   也必须在键盘段之后（它会开关菜单、动焦点）。 */
+/* 级联子菜单的几何检查放在**最后**：它会开关菜单、动焦点，放在中间会扰动后面的键盘段。 */
+/* 级联子菜单的**几何**：它在旁边，不在上面。
+   这一条替身测不到（假 DOM 没有布局），而"子菜单遮住主菜单"那个 bug 正好出在这里 ——
+   混用了视口坐标（getBoundingClientRect）与图层坐标（菜单的 left/top）。 */
+const flyoutGeo = await page.evaluate(async () => {
+  const body = document.querySelector('.wisp-body')
+  const box = document.querySelector('.wisp-root')
+  if (!body || !box) return { noBody: true }
+  const r0 = box.getBoundingClientRect()
+  body.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, clientX: r0.left + r0.width / 2, clientY: r0.top + r0.height / 2,
+  }))
+  const menu = document.querySelector('.wisp-menu')
+  if (!menu) return { noMenu: true }
+  const row = [...menu.querySelectorAll('.wisp-menu-item')].find((el) => el.dataset && el.dataset.group)
+  if (!row) return { noRow: true }
+  row.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }))
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  const panel = document.querySelector('.wisp-submenu')
+  if (!panel) return { noPanel: true }
+  const mr = menu.getBoundingClientRect()
+  const pr = panel.getBoundingClientRect()
+  const rr = row.getBoundingClientRect()
+  const layer = menu.parentNode
+  const lr = layer.getBoundingClientRect ? layer.getBoundingClientRect() : { left: -999, top: -999, width: 0, height: 0 }
+  return {
+    menu: { l: Math.round(mr.left), r: Math.round(mr.right), w: Math.round(mr.width), styleL: menu.style.left, styleT: menu.style.top },
+    panel: { l: Math.round(pr.left), r: Math.round(pr.right), t: Math.round(pr.top), w: Math.round(pr.width), styleL: panel.style.left, styleT: panel.style.top },
+    row: { t: Math.round(rr.top), h: Math.round(rr.height) },
+    layer: { l: Math.round(lr.left), t: Math.round(lr.top), w: Math.round(lr.width), h: Math.round(lr.height), pos: getComputedStyle(layer).position },
+    view: { w: window.innerWidth, h: window.innerHeight },
+    rows: panel.querySelectorAll('.wisp-menu-item').length,
+  }
+})
+check(flyoutGeo.panel !== undefined && flyoutGeo.rows > 0,
+  'hovering a group row pops a submenu panel', JSON.stringify(flyoutGeo))
+check(flyoutGeo.panel !== undefined
+  && (flyoutGeo.panel.l >= flyoutGeo.menu.r - 6 || flyoutGeo.panel.r <= flyoutGeo.menu.l + 6),
+  'the submenu sits BESIDE the menu, not on top of it — window coords and layer coords must not be mixed',
+  flyoutGeo.panel ? `menu=${flyoutGeo.menu.l}..${flyoutGeo.menu.r} panel=${flyoutGeo.panel.l}..${flyoutGeo.panel.r}` : 'n/a')
+check(flyoutGeo.panel !== undefined
+  && flyoutGeo.panel.l >= 0 && flyoutGeo.panel.r <= flyoutGeo.view.w
+  && flyoutGeo.panel.t >= 0,
+  'and it fits on screen', flyoutGeo.panel ? JSON.stringify(flyoutGeo.panel) : 'n/a')
+check(flyoutGeo.panel !== undefined && Math.abs(flyoutGeo.panel.t - flyoutGeo.row.t) < 40,
+  'and lines up with the row it belongs to',
+  flyoutGeo.panel ? `row.t=${flyoutGeo.row.t} panel.t=${flyoutGeo.panel.t}` : 'n/a')
+await page.evaluate(() => {
+  /* 菜单的键盘监听挂在 **window** 上，不是 document —— 发错目标菜单就不会关，
+     后面的键盘段会在"一个还没关掉的菜单"上重开，焦点状态全乱（就是这么挂掉三条的）。 */
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+})
+
 await browser.close()
 
 /* ------------------------------------------------------ 8. 自己踱步 ------- */
@@ -645,6 +702,7 @@ await wanderBrowser.close()
 
 
 console.log(`\n${fail === 0 ? '=== SMOKE PASSED ===' : '=== SMOKE FAILED ==='}`)
+
 console.log(`  ${pass} passed, ${fail} failed  (real Chromium, ${headed ? 'headed' : 'headless'})`)
 console.log(`  playwright: ${playwright.from}`)
 if (executablePath) console.log(`  browser:    ${executablePath}`)
