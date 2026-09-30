@@ -16,8 +16,9 @@
      node tools/assets.mjs --from ./绿幕母版 --out ./assets
    ========================================================================== */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -42,9 +43,12 @@ const flag = (name, fallback) => {
   const at = argv.indexOf(name)
   return at >= 0 && argv[at + 1] !== undefined ? argv[at + 1] : fallback
 }
-const MOODS = ['idle', 'happy', 'sleepy', 'work']
+const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud']
 const srcDir = resolve(here, flag('--from', 'masters'))
-const outDir = resolve(here, flag('--out', 'assets'))
+/* 皮肤 = assets/ 下的一个子目录。--skin 决定输出到哪一套。
+   注意 build.mjs 会把每个子目录当成一套皮肤打进包里，所以皮肤越多包越大。 */
+const skin = flag('--skin', '')
+const outDir = resolve(here, flag('--out', skin === '' ? 'assets' : join('assets', skin)))
 
 const T0 = 14
 const T1 = 96
@@ -59,12 +63,9 @@ if (!existsSync(srcDir)) {
   console.error(`母版目录不存在: ${srcDir}`)
   process.exit(1)
 }
-for (const mood of MOODS) {
-  if (!existsSync(join(srcDir, `${mood}.png`))) {
-    console.error(`缺少母版: ${join(srcDir, `${mood}.png`)}`)
-    process.exit(1)
-  }
-}
+/* 这里**不**要求每个情绪都有母版：给已有皮肤补一个新情绪（例如后来加的 poked）时，
+   别的母版早就没了。缺哪个由下面的循环逐条打印，最后用"一张都没处理"兜底 ——
+   既不因为缺一张就整条停下，也不会把"文件名写错"静默吞掉。 */
 mkdirSync(outDir, { recursive: true })
 
 const sharp = loadSharp()
@@ -102,9 +103,20 @@ async function key(srcPath, outPath) {
 
 console.log(`母版: ${srcDir}\n出图: ${outDir}\n`)
 console.log('mood    键控(不透明/边缘)      档位      尺寸         体积')
+let processed = 0
 for (const mood of MOODS) {
   const src = join(srcDir, `${mood}.png`)
-  const keyed = join(outDir, `.${mood}.keyed.png`)
+  /* 缺某个情绪的母版**不是错误**：给已有皮肤补一个新情绪（例如新加的 poked）时，
+     别的母版早就没了，只有这一张。以前这里会直接中止，于是"补一个情绪"必须先凑齐全部母版。
+     但也不能静默跳过 —— 打出来，好让"文件名写错"和"本来就没有"分得清。 */
+  if (!existsSync(src)) {
+    console.log(`  ${mood.padEnd(7)} 跳过（这个目录里没有 ${mood}.png）`)
+    continue
+  }
+  /* 抠图后的全尺寸 PNG 是**中间产物**，写到系统临时目录而不是 outDir：
+     以前它写在发布目录里、最后再删，删除一旦失败就在 assets/ 里留下 0 字节的隐藏残骸
+     （实测 classic 4 个、night 5 个，而且会随包发布）。中间产物根本不该出现在发布目录。 */
+  const keyed = join(tmpdir(), `wisp-key-${skin || 'default'}-${mood}-${process.pid}.png`)
   let meta
   try {
     meta = await key(src, keyed)
@@ -120,18 +132,21 @@ for (const mood of MOODS) {
       .webp({ quality: tier.q, alphaQuality: 92, effort: 6 })
       .toFile(out)
   }
+  processed++
   console.log(
     `  ${mood.padEnd(7)} ${(meta.opaque * 100).toFixed(1)}% / ${(meta.soft * 100).toFixed(2)}%`.padEnd(30),
     (TIERS[0].suffix || '默认').padEnd(8),
     `${Math.round(meta.w / 2)}x${Math.round(meta.h / 2)}`.padEnd(13),
     kb(statSync(join(outDir, `${mood}.webp`)).size),
   )
-  // 中间产物不留：它是全尺寸 PNG，四张能占几十 MB
-  writeFileSync(keyed, '')
-  const { rmSync } = await import('node:fs')
-  rmSync(keyed, { force: true })
+  // 中间产物在系统临时目录里，删不掉也只是临时目录的事，不会污染发布内容
+  try { rmSync(keyed, { force: true }) } catch (e) { /* 临时目录的残留无害 */ }
 }
 
+if (processed === 0) {
+  console.error('\n这个目录里一张母版都没找到 —— 检查 --from 是否指对了目录。')
+  process.exit(1)
+}
 if (failed > 0) {
   console.error(`\n${failed} 张母版抠图失败 —— 素材未更新，请检查这些图是否是干净的纯绿背景。`)
   process.exit(1)
