@@ -3430,8 +3430,12 @@ head('3y-3. the focus timer, and going quiet while the page is hidden')
   quiet.document.visibilityState = 'hidden'
   quiet.document.dispatch('visibilitychange', {})
   const timers = quietApi.doctor().timers
-  check(timers.paused === true && timers.poll === false && timers.chatter === false && timers.wander === false,
-    'hiding the page stops all three timers', JSON.stringify(timers))
+  /* 絮叨与踱步停掉（只给看得见的人看），但**轮询放慢而不是停掉** ——
+     值班的前提是还看得见：你走开时跑完的轮次和出的错，都要被记下来。 */
+  check(timers.paused === true && timers.chatter === false && timers.wander === false,
+    'hiding the page stops the chatter and the wander', JSON.stringify(timers))
+  check(timers.poll === true && timers.pollMs === 5000,
+    'but the poll keeps a slow watch instead of stopping (she is on duty)', JSON.stringify(timers))
 
   /* 藏起来期间：来了一堆报错，她也不该有任何反应（轮询停了） */
   quiet.state.errors = 3
@@ -3454,6 +3458,55 @@ head('3y-3. the focus timer, and going quiet while the page is hidden')
   quiet.state.busy = false
   quiet.advance(3000, 200)
   check(moodOf(quiet) === 'worried', 'and now the same errors do get a reaction', moodOf(quiet))
+  /* ---- 值班：走开期间跑完的轮次与报错，回来要报账 ------------------------------ */
+  const saidNow = () => quiet.all('wisp-say').filter((el) => el.removed !== true)
+    .map((el) => el.textContent).join(' ')
+  quiet.document.visibilityState = 'hidden'
+  quiet.document.dispatch('visibilitychange', {})
+  quiet.state.busy = true
+  quiet.advance(60000, 5000)            // 你走开之后，她看着一轮跑了一分钟
+  quiet.state.errors = 5
+  quiet.state.busy = false
+  quiet.advance(180000, 5000)           // 一共走开三分钟（超过"回来问候"的门槛）
+  check(saidNow() === '', 'while you are away she takes notes but says nothing', saidNow())
+
+  quiet.document.visibilityState = 'visible'
+  quiet.document.dispatch('visibilitychange', {})
+  quiet.advance(1000, 200)
+  const report = saidNow()
+  check(/轮/.test(report) && /跑完/.test(report),
+    'coming back, she reports how many runs finished while you were away', report)
+  check(/错/.test(report), 'and she mentions the errors she saw', report)
+  const book = quietApi.doctor().today
+  check(book.runs >= 1 && book.errors >= 1 && book.longestMs > 0,
+    'and the day book recorded the runs, the errors and the longest one',
+    JSON.stringify(book))
+
+  /* ---- 单轮跑得异常久：她会中途说一声，而且同一轮只说一次 ---------------------- */
+  quiet.state.busy = true
+  /* 刚好推过"单轮跑太久"的阈值。推 11 分钟是不行的：她的话早就过期了（气泡有存活时间），
+     于是断言会看到空字符串 —— 断言本身没错，是喂给它的时间不对。 */
+  /* 多推几步：busySince 是在推进开始后的第一个轮询才记下的，卡在 601000 会差 200ms。 */
+  quiet.advance(604800, 1200)
+  const longLine = saidNow()
+  const during = quietApi.doctor()
+  check(/分钟/.test(longLine), 'a single run that drags on gets a check-in',
+    `她说的是「${longLine}」；runInFlight=${during.runInFlightMs} longRunSaid=${during.longRunSaid} paused=${during.timers.paused}`)
+  quiet.state.busy = false
+  quiet.advance(3000, 500)
+
+  /* ---- 今日小结：把她记着的东西一次说完 ---------------------------------------- */
+  quietApi.saySummary()
+  quiet.advance(200, 50)
+  const summaryLine = saidNow()
+  /* 词池里有三个变体（今天…／今天：…／这一天…），所以断言**内容**而不是某一个措辞 */
+  check(/轮/.test(summaryLine) && /错/.test(summaryLine) && /分钟/.test(summaryLine),
+    'the daily summary reads back what she has been tracking', summaryLine)
+  check(/\d/.test(summaryLine), 'with real numbers', summaryLine)
+  check(summaryLine.indexOf('{') < 0, 'and no placeholder is left unfilled', summaryLine)
+  check(typeof quietApi.today.runs === 'number' && quietApi.today.runs >= 1,
+    'the day book is also readable from the api', JSON.stringify(quietApi.today))
+
   quiet.win.__wisp.destroy()
   active = keepQuiet
 }
