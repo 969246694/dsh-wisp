@@ -78,7 +78,11 @@ const linesInBundle = () => {
   if (linesCache !== undefined) return linesCache
   linesCache = null
   if (typeof clientSrc === 'string') {
-    const match = clientSrc.match(/const LINES = (\{[\s\S]*?\n {4}\})/)
+    /* 中文池现在叫 LINES_ZH（英文是覆盖层，最后合并成 LINES）。
+       这里读**中文池**：测试验的是"她说的那句话确实来自对应池子"，
+       而中文字面量永远存在，不受语言环境影响。 */
+    const match = clientSrc.match(/const LINES_ZH = (\{[\s\S]*?\n {4}\})/)
+      || clientSrc.match(/const LINES = (\{[\s\S]*?\n {4}\})/)
     if (match) {
       try { linesCache = new Function(`return ${match[1]}`)() } catch (e) { linesCache = null }
     }
@@ -3506,6 +3510,40 @@ head('3y-3. the focus timer, and going quiet while the page is hidden')
   check(summaryLine.indexOf('{') < 0, 'and no placeholder is left unfilled', summaryLine)
   check(typeof quietApi.today.runs === 'number' && quietApi.today.runs >= 1,
     'the day book is also readable from the api', JSON.stringify(quietApi.today))
+
+  /* ---- 英文台词：英文环境下她说英文，而且**一个汉字都不该出现** -------------------
+     语言是加载时判定的（读 navigator.language），所以这个 harness 要在 evaluate 之前
+     把 navigator 摆好。中文是兜底：没翻的条目仍然会说中文，这一条只验"翻译层真的生效"。 */
+  const en = createHarness({ timer: true, composerText: '', storageSeed: { 'dsh-wisp-lang': 'en' } })
+  const keepEn = active
+  active = en
+  en.evaluate(clientSrc)
+  en.module().default.apply(en.ctx, { reactions: false, wander: false, celebrate: false })
+  en.advance(1000, 200)
+  en.win.__wisp.saySummary()
+  en.advance(200, 50)
+  const enLine = en.all('wisp-say').filter((el) => el.removed !== true)
+    .map((el) => el.textContent).join(' ')
+  check(/[A-Za-z]/.test(enLine), 'with an english locale she answers in english',
+    `${enLine} ｜ ${JSON.stringify(en.win.__wisp.doctor().lang)}`)
+  check(!/[\u4e00-\u9fa5]/.test(enLine), 'and the line contains no chinese characters', enLine)
+  en.win.__wisp.destroy()
+  active = keepEn
+
+  /* 对照组：强制中文时同一句话必须是中文 —— 否则上面那条可能只是"恰好没触发" */
+  const zh = createHarness({ timer: true, composerText: '', storageSeed: { 'dsh-wisp-lang': 'zh' } })
+  const keepZh = active
+  active = zh
+  zh.evaluate(clientSrc)
+  zh.module().default.apply(zh.ctx, { reactions: false, wander: false, celebrate: false })
+  zh.advance(1000, 200)
+  zh.win.__wisp.saySummary()
+  zh.advance(200, 50)
+  const zhLine = zh.all('wisp-say').filter((el) => el.removed !== true)
+    .map((el) => el.textContent).join(' ')
+  check(/[\u4e00-\u9fa5]/.test(zhLine), 'forcing chinese keeps her speaking chinese', zhLine)
+  zh.win.__wisp.destroy()
+  active = keepZh
 
   quiet.win.__wisp.destroy()
   active = keepQuiet

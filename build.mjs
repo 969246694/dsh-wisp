@@ -45,7 +45,10 @@ const assetsDir = resolve(here, flagValue('--from', 'assets'))
 const templatePath = join(here, 'lib', 'client.template.js')
 const outPath = join(here, 'lib', 'client.js')
 
-const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat']
+/* report = 抱着记录本汇报（值班汇报 / 今日小结 / 专注结束）。它和其它格子一样，
+   但**允许缺素材**：缺了就跳过，客户端由 SPRITE_FALLBACK 退回 idle。 */
+const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'report']
+const OPTIONAL_MOODS = ['report']
 
 /* 皮肤 = assets/ 下的一个子目录，里面是这套皮肤的 <mood>[_tier].webp。
    如果没有子目录含精灵图，就把 assets/ 本身当作一个名为 default 的皮肤 ——
@@ -102,6 +105,20 @@ if (skins.length === 0) {
   process.exit(1)
 }
 
+/* 音效：assets/audio/<名字>.mp3 -> { <名字>: "data:audio/mpeg;base64,…" }。
+   没有文件就是空对象 —— 客户端据此连菜单开关都不显示（点了没反应的开关更糟）。 */
+const audioDir = join(assetsDir, 'audio')
+const sounds = {}
+if (existsSync(audioDir)) {
+  const MIME = { '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.wav': 'audio/wav' }
+  for (const name of readdirSync(audioDir).sort()) {
+    const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
+    if (MIME[ext] === undefined) continue
+    sounds[name.slice(0, name.lastIndexOf('.'))] = `data:${MIME[ext]};base64,${readFileSync(join(audioDir, name)).toString('base64')}`
+  }
+}
+if (Object.keys(sounds).length > 0) console.log(`  audio: ${Object.keys(sounds).join(', ')}`)
+
 const sprites = {}
 let total = 0
 for (const skin of skins) {
@@ -111,6 +128,11 @@ for (const skin of skins) {
   for (const mood of MOODS) {
     const file = pickFile(dir, mood)
     if (!file) {
+      /* 可选心情（report）缺素材只警告不中断：客户端有回退表，缺它不会变成坏行为。 */
+      if (OPTIONAL_MOODS.includes(mood)) {
+        console.warn(`  ! ${skin}: 跳过可选心情 "${mood}"（还没有素材）`)
+        continue
+      }
       console.error(`build: skin "${skin}" has no sprite for mood "${mood}"`)
       process.exit(1)
     }
@@ -140,7 +162,11 @@ const literal = '{\n' + skins.map((skin) => (
   + MOODS.map((m) => `        ${m}: '${sprites[skin][m]}',`).join('\n')
   + '\n      },'
 )).join('\n') + '\n    }'
-const out = template.replace(PLACEHOLDER, literal)
+const soundsInlined = template.replace(
+  "const SOUNDS = (typeof __WISP_SOUNDS__",
+  `const __WISP_SOUNDS__ = ${JSON.stringify(sounds)}\nconst SOUNDS = (typeof __WISP_SOUNDS__`,
+)
+const out = soundsInlined.replace(PLACEHOLDER, literal)
 
 if (out.includes(PLACEHOLDER)) {
   console.error('build: placeholder survived the substitution; refusing to write a broken bundle')
@@ -174,8 +200,10 @@ if (stamped[1] !== pkg.version) {
 }
 
 // Prove the injected table survives parsing before writing anything.
+// 可选心情（report）允许缺失：客户端有 SPRITE_FALLBACK 兜底，缺它不会变成坏行为。
 const table = out.match(/const SPRITES = \{([\s\S]*?)\n {4}\}/)
-if (!table || MOODS.some((m) => !new RegExp(`\\b${m}:\\s*'data:image/`).test(table[1]))) {
+const requiredMoods = MOODS.filter((m) => !OPTIONAL_MOODS.includes(m))
+if (!table || requiredMoods.some((m) => !new RegExp(`\\b${m}:\\s*'data:image/`).test(table[1]))) {
   console.error('build: the injected SPRITES table is missing sprites; aborting')
   process.exit(1)
 }
@@ -187,6 +215,7 @@ try {
   const broken = []
   for (const skin of skins) {
     for (const mood of MOODS) {
+      if (OPTIONAL_MOODS.includes(mood)) continue      // 可缺：客户端由 SPRITE_FALLBACK 兜底
       const uri = value?.[skin]?.[mood]
       if (typeof uri !== 'string' || uri.indexOf('data:image/') !== 0) broken.push(`${skin}/${mood}`)
     }
