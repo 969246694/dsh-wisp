@@ -1350,6 +1350,128 @@ if (clientSrc !== null) {
     care.win.__wisp.destroy()
     active = keepCare
 
+    /* ---------------- 3d-octodecies. 干饭 ----------------------------------- */
+    head('3d-octodecies. she gets hungry and says so (the rice thing)')
+
+    /* 这是社区的设定里最像"她"的一条：白米饭是算力的硬通货。行为本身很简单 ——
+       连续活动够久就该吃一碗 —— 但要测的是**判据**：别一回来就喊饿、别连着喊、
+       能关掉。careAfterMs 关掉，免得住坐提醒和它互相干扰。 */
+    const eat = createHarness({ timer: true, composerText: '在打字' })
+    const keepEat = active
+    active = eat
+    eat.evaluate(clientSrc)
+    eat.module().default.apply(eat.ctx, {
+      reactions: true, wander: false, celebrate: false,
+      careAfterMs: 0, hungerMs: 600000, sleepAfterMs: 3600000,
+    })
+    eat.advance(1300, 100)
+    const eatApi = eat.win.__wisp
+    const eatMood = () => eat.find('wisp-root').dataset.mood
+    const eatUntil = (limitMs, chunk = 1000) => {
+      for (let left = limitMs; left > 0; left -= chunk) {
+        eat.advance(Math.min(chunk, left), 200)
+        if (eatMood() === 'eat') return true
+      }
+      return false
+    }
+    const bubbleIsEat = () => {
+      const text = eat.all('wisp-say').at(-1)?.textContent
+      return Array.isArray(linesInBundle()?.eat) && linesInBundle().eat.includes(text)
+    }
+
+    check(Array.isArray(linesInBundle()?.eat) && linesInBundle().eat.length >= 8,
+      'the rice pool exists and has some lines in it', `${linesInBundle()?.eat?.length ?? '?'} 句`)
+    check(eatApi.doctor().hunger.enabled === true && eatApi.doctor().hunger.everyMs === 600000,
+      'doctor reports the hunger setting', JSON.stringify(eatApi.doctor().hunger))
+
+    // 9 分钟：还没到
+    let sawEarlyEat = false
+    for (let left = 9 * 60000; left > 0; left -= 1000) {
+      eat.advance(1000, 200)
+      if (eatMood() === 'eat') { sawEarlyEat = true; break }
+    }
+    check(!sawEarlyEat, 'nine minutes in she is not hungry yet', eatMood())
+
+    check(eatUntil(200000), 'past the threshold she gets a bowl out')
+    check(bubbleIsEat(), 'and the line comes from the rice pool',
+      (eat.all('wisp-say').at(-1)?.textContent ?? '(无)'))
+    check(eatMood() === 'eat' && eatApi.currentMood === 'eat',
+      'and both the DOM and the reported mood say eat', `${eatMood()} / ${eatApi.currentMood}`)
+
+    // 稳态轮询不能把它抹掉
+    eat.advance(1000, 100)
+    check(eatMood() === 'eat', 'the reaction poll does not overwrite the meal', eatMood())
+
+    // 吃完自己回去（EAT_MS = 5.2 秒）
+    for (let left = 8000; left > 0; left -= 500) eat.advance(500, 100)
+    check(eatMood() === 'alert', 'and the meal ends on its own, back to alert', eatMood())
+
+    // 不该连着说
+    let saidAgain = false
+    for (let left = 60000; left > 0; left -= 1000) {
+      eat.advance(1000, 200)
+      if (eatMood() === 'eat') { saidAgain = true; break }
+    }
+    check(!saidAgain, 'she does not ask for rice again a minute later', eatMood())
+    check(eatUntil(600000), 'but another full stretch does bring it back')
+
+    // 离开很久之后回来：不该一进门就喊饿
+    eat.win.__wisp.configure({ hungerMs: 300000 })
+    eat.state.composerText = null
+    eat.advance(20 * 60000, 5000)
+    eat.state.composerText = '回来了'
+    eat.advance(1300, 100)
+    let instantHunger = false
+    for (let left = 120000; left > 0; left -= 1000) {
+      eat.advance(1000, 200)
+      if (eatMood() === 'eat') { instantHunger = true; break }
+    }
+    check(!instantHunger, 'after a long absence she does not ask for rice the moment you return', eatMood())
+    check(eatUntil(300000), 'only a fresh full stretch makes her hungry')
+    /* 让这一顿吃完（EAT_MS = 5.2 秒）再测关闭 —— 否则"还停在 eat"会被误判成"关不掉"。
+       （这个坑久坐提醒那节也踩过，同样用一段推进收尾。） */
+    eat.advance(8000, 500)
+
+    // 关掉这个行为（两种关法）
+    eat.win.__wisp.configure({ hungerMs: 0 })
+    let offByZero = false
+    for (let left = 20 * 60000; left > 0; left -= 5000) {
+      eat.advance(5000, 500)
+      if (eatMood() === 'eat') { offByZero = true; break }
+    }
+    check(!offByZero, 'hungerMs: 0 turns it off', eatMood())
+    eat.win.__wisp.configure({ hungerMs: 300000, hungry: false })
+    let offByFlag = false
+    for (let left = 20 * 60000; left > 0; left -= 5000) {
+      eat.advance(5000, 500)
+      if (eatMood() === 'eat') { offByFlag = true; break }
+    }
+    check(!offByFlag, 'and hungry: false turns it off even with a live timer', eatMood())
+    check(eatApi.config.hungry === false, 'and the config says so', String(eatApi.config.hungry))
+
+    // 菜单开关：先把菜单叫出来（菜单项是开菜单时才建的），点一下就该翻转
+    /* 主菜单的入口是 .wisp-body 上的 keydown（Enter / 空格 / ContextMenu / Shift+F10），
+       不是 contextmenu —— 后者只挂在"躲起来"之后的迷你标签上。事件对象同样自建：
+       ctxEvent 定义在文件后半部分，在这里用就是 TDZ。 */
+    eat.win.__wisp.configure({ hungry: true })
+    const eatBody = eat.find('wisp-root').querySelector('.wisp-body')
+    eatBody.dispatch('keydown', {
+      type: 'keydown', key: 'Enter', shiftKey: false, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true }, stopPropagation() {},
+    })
+    const eatToggle = eat.all('wisp-menu-item').filter((el) => el.removed !== true)
+      .find((el) => (el.textContent || '').includes('饿了'))
+    check(Boolean(eatToggle), 'the menu carries a rice toggle',
+      eat.all('wisp-menu-item').filter((el) => el.removed !== true).length + ' 项')
+    if (eatToggle) {
+      /* 元素上的点击走 harness 的 dispatch(type, event) —— 不是浏览器的 dispatchEvent（没有那个方法）。 */
+      eatToggle.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+      check(eat.win.__wisp.config.hungry === false, 'and clicking it turns the behaviour off',
+        String(eat.win.__wisp.config.hungry))
+    }
+    eat.win.__wisp.destroy()
+    active = keepEat
+
     /* 睡着了也得被叫醒：这条单独测，因为它需要 sleepAfterMs 很短 */
     const sleepCare = createHarness({ timer: true, composerText: '在打字' })
     const keepSleepCare = active
@@ -2118,12 +2240,12 @@ if (clientSrc !== null) {
     check(menuOf() !== null, 'the right-click opens a context menu')
     check(menuOf()?.getAttribute('role') === 'menu', 'the menu carries menu semantics')
     /* 项数从皮肤数**推导**，不写死：加一套皮肤不该让测试变红（那是数据的错，不是行为的错）。
-       固定部分 = 6 个动作 + 3 个开关 + 4 个角落 = 13；其余是每套皮肤一项。 */
+       固定部分 = 6 个动作 + 4 个开关 + 4 个角落 = 14；其余是每套皮肤一项。 */
     /* api.skins 是数组（SKIN_IDS 的拷贝），不是对象 —— 用 Object.keys 只是碰巧数对了。 */
     const skinCount = Array.isArray(api.skins) ? api.skins.length : Object.keys(api.skins ?? {}).length
-    check(itemsOf().length === 13 + skinCount,
+    check(itemsOf().length === 14 + skinCount,
       'the menu lists fixed actions and corners plus exactly one entry per skin',
-      `${itemsOf().length} items = 13 + ${skinCount} skin(s)`)
+      `${itemsOf().length} items = 14 + ${skinCount} skin(s)`)
     const byText = (t) => itemsOf().filter((i) => i.textContent.includes(t))
     const heads = menuOf().querySelectorAll('.wisp-menu-head')
     check(heads.length === 3, 'the behaviour, position and skin sections each get a header', `${heads.length} headers`)
@@ -2661,7 +2783,8 @@ if (clientSrc !== null) {
       const skins = Object.keys(value)
       const missing = []
       for (const skin of skins) {
-        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked']) {
+        /* 八个情绪：加了 eat（干饭）之后这里也要跟上 —— 漏一个就会让"每套皮肤都齐"变成假绿。 */
+        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat']) {
           const uri = value[skin]?.[mood]
           if (typeof uri !== 'string' || uri.indexOf('data:image/') !== 0) missing.push(`${skin}/${mood}`)
         }
@@ -2672,8 +2795,8 @@ if (clientSrc !== null) {
       skinReport = `table does not evaluate: ${error.message}`
     }
   }
-  if (skinsOk) ok('every skin carries all five moods as data URIs', skinReport)
-  else bad('every skin carries all five moods as data URIs', skinReport)
+  if (skinsOk) ok('every skin carries all eight moods as data URIs', skinReport)
+  else bad('every skin carries all eight moods as data URIs', skinReport)
 
   if (clientSrc.includes('__SPRITES__')) bad('no leftover build placeholder', 'run `node build.mjs`')
   else ok('no leftover build placeholder')

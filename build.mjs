@@ -45,7 +45,7 @@ const assetsDir = resolve(here, flagValue('--from', 'assets'))
 const templatePath = join(here, 'lib', 'client.template.js')
 const outPath = join(here, 'lib', 'client.js')
 
-const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud']
+const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat']
 
 /* 皮肤 = assets/ 下的一个子目录，里面是这套皮肤的 <mood>[_tier].webp。
    如果没有子目录含精灵图，就把 assets/ 本身当作一个名为 default 的皮肤 ——

@@ -232,15 +232,15 @@ check(cornerMenu !== null && cornerMenu.inside,
   cornerMenu ? `bottom ${cornerMenu.bottom} (was ${cornerMenu.naiveBottom}), right ${cornerMenu.right}` : 'n/a')
 
 const menu = await openMenu()
-// 项数从皮肤数推导（13 项固定 + 每套皮肤一项），不写死：加一套皮肤不该让测试变红 ——
+// 项数从皮肤数推导（14 项固定 + 每套皮肤一项），不写死：加一套皮肤不该让测试变红 ——
 // 那是数据的错，不是行为的错。
 // api.skins 是**数组**；用 Object.keys 数数组只是碰巧数对（预检里踩过这个坑，这里一并对齐）。
 const skinCount = await page.evaluate(() => {
   const s = window.__wisp.skins
   return Array.isArray(s) ? s.length : Object.keys(s ?? {}).length
 })
-check(menu !== null && menu.items.length === 13 + skinCount, 'the menu lists every entry',
-  `${menu?.items.length} items = 13 + ${skinCount} skin(s)`)
+check(menu !== null && menu.items.length === 14 + skinCount, 'the menu lists every entry',
+  `${menu?.items.length} items = 14 + ${skinCount} skin(s)`)
 
 // 键盘：打开即聚焦第一项，方向键移动，Esc 关闭并把焦点还给她
 const kbd = await page.evaluate(() => {
