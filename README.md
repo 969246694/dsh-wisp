@@ -404,6 +404,13 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 - **宿主半包**跑在 **vm 沙箱**里：`harness` 只有 `defineTool / registerTool / handle`，
   沙箱里还有 `nodeApiTraps()` 把 Node API 全挡了，允许的 `ctx` 动词白名单里**没有网络与文件系统**。
 
+**为什么要读两个源（npm + GitHub）取更高版本**：npm 的注册表是权威源，但发布可能长时间卡在它的
+**暂存区**里 —— 实测：`PUT 202`（已受理）之后等了 18 分钟，注册表和 tarball **仍然 404**，
+而同版本号重发被拒（`409 Cannot publish over previously staged version`）；
+同期 GitHub 的 `package.json` 是**立刻**更新的。
+所以检查同时读两个源、**取版本号更高的那个** —— 这样无论 npm 有没有追上都是对的。
+「npm 优先、GitHub 兜底」在这里是错的 ✗：它会读到 npm 那个旧号，然后告诉你"已经是最新的"。
+
 所以网络只能走**服务**：宿主半包 `inject: { optional: ['web'] }`，用 `ctx.web.fetch(...)` 抓远端
 `package.json`，再用 `harness.handle('checkUpdate', …)` 注册；浏览器半包 `host.call('checkUpdate')` 调。
 **客户端那边一点网络都没碰** —— `fetch` 陷阱原样留着。
@@ -440,6 +447,29 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 另外 `canSelfUpdate === false`、`hint` 里必须含包名、`why` 里必须说明沙箱原因，都有断言盯着。
 
 ## 变更
+
+### 1.26.0
+
+- **检查更新改为同时读两个源，取版本号更高的那个**（npm 注册表 + GitHub 的 package.json）。
+
+  起因是这次发布踩到的事：`npm publish` 返回 `PUT 202`（已受理）却**长时间不进注册表** ——
+  等了 18 分钟，`dsh-wisp/1.25.0` 与 tarball 都还是 404；同号重发被拒
+  （`409 Cannot publish over previously staged version`）；npm 状态页一切正常。
+  而 GitHub 上的 `package.json` 是立刻更新的。
+
+  于是设计成**取更高版本**而不是「npm 优先、GitHub 兜底」：
+  后者会读到 npm 那个旧号（当时是 0.6.0），然后告诉你「已经是最新的」✗。
+  取更高则无论 npm 有没有追上都是对的 ✓
+
+  - 宿主半包：`readVersion()` 单源 → `readPublishedVersion()` 多源并发，返回
+    `{ ok, latest, from, sources }`；每个源的成败**分别上报**，一个挂了不影响另一个；
+  - 客户端：把 `from` / `sources` 一起记进 `doctor().update.lastCheck` ——
+    两个源不一致时，「这个数字来自哪」比数字本身更需要能查；
+  - 预检 377 → **383 项**，含四种组合：两源一致 / npm 旧 GitHub 新 / npm 新 GitHub 旧 / 一个挂一个活。
+
+- 上一版 1.25.1 只是换号重发（内容与 1.25.0 完全一致），代码无改动。
+
+### 1.25.1
 
 ### 1.25.0
 

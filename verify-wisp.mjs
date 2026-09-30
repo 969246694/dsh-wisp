@@ -531,8 +531,10 @@ head('1b. the host half answers checkUpdate through the platform web service')
   check(Boolean(declaresWeb) && Array.isArray(inject.required) && !inject.required.includes('web'),
     'and not as a required one — a missing service must not hide her', JSON.stringify(inject))
 
-  const fakeWeb = (outcome) => ({
+  /* 每个 URL 一个态度：可以按 URL 给不同的结果，才能测"两个源"的组合。 */
+  const webWith = (byUrl) => ({
     fetch: async (request) => {
+      const outcome = byUrl[request.url] ?? { status: 404, body: 'nope' }
       if (outcome.throw) throw new Error(outcome.throw)
       return {
         url: request.url,
@@ -542,28 +544,68 @@ head('1b. the host half answers checkUpdate through the platform web service')
       }
     },
   })
+  const U = { npm: 'https://npm/x', github: 'https://gh/y' }
+  const only = (key, outcome) => webWith({ [U[key]]: outcome })
 
-  const good = await readPublishedVersion(fakeWeb({ body: '{"name":"dsh-wisp","version":"9.9.9"}' }), 'https://x/y')
-  check(good.ok === true && good.latest === '9.9.9', 'a 200 with a version field is read correctly', JSON.stringify(good))
+  const good = await readPublishedVersion(only('npm', { body: '{"name":"dsh-wisp","version":"9.9.9"}' }), U)
+  check(good.ok === true && good.latest === '9.9.9' && good.from === 'npm',
+    'a 200 with a version field is read correctly', JSON.stringify(good))
 
-  const notFound = await readPublishedVersion(fakeWeb({ status: 404, body: 'nope' }), 'https://x/y')
+  const notFound = await readPublishedVersion(only('npm', { status: 404, body: 'nope' }), U)
   check(notFound.ok === false && notFound.reason === 'http-404',
     'a non-2xx is a result, not a throw — and is reported as such', JSON.stringify(notFound))
 
-  const noWeb = await readPublishedVersion(undefined, 'https://x/y')
+  const noWeb = await readPublishedVersion(undefined, U)
   check(noWeb.ok === false && noWeb.reason === 'no-web-service',
     'without the web service it says so instead of throwing', JSON.stringify(noWeb))
 
-  const blewUp = await readPublishedVersion(fakeWeb({ throw: 'socket closed' }), 'https://x/y')
-  check(blewUp.ok === false && blewUp.reason === 'fetch-failed' && blewUp.detail === 'socket closed',
+  const blewUp = await readPublishedVersion(only('npm', { throw: 'socket closed' }), U)
+  check(blewUp.ok === false && blewUp.reason === 'fetch-failed',
     'a transport failure is caught and reported', JSON.stringify(blewUp))
 
-  const notJson = await readPublishedVersion(fakeWeb({ body: '<html>404</html>' }), 'https://x/y')
+  const notJson = await readPublishedVersion(only('npm', { body: '<html>404</html>' }), U)
   check(notJson.ok === false && notJson.reason === 'not-json', 'a non-JSON body is reported', JSON.stringify(notJson))
 
-  const noField = await readPublishedVersion(fakeWeb({ body: '{"name":"dsh-wisp"}' }), 'https://x/y')
+  const noField = await readPublishedVersion(only('npm', { body: '{"name":"dsh-wisp"}' }), U)
   check(noField.ok === false && noField.reason === 'no-version-field',
     'a manifest without a version is reported', JSON.stringify(noField))
+
+  /* ---- 两个源：取更高的那个，而不是"谁先谁赢" ---- */
+  const bothAgree = await readPublishedVersion(webWith({
+    [U.npm]: { body: '{"version":"1.25.1"}' },
+    [U.github]: { body: '{"version":"1.25.1"}' },
+  }), U)
+  check(bothAgree.ok === true && bothAgree.latest === '1.25.1',
+    'when both sources agree the answer is that version', JSON.stringify(bothAgree))
+  check(bothAgree.sources.npm.ok === true && bothAgree.sources.github.ok === true,
+    'and both sources are reported individually', JSON.stringify(bothAgree.sources))
+
+  /* 真实情况：npm 卡在旧的 0.6.0，GitHub 已经是 1.25.1 —— 必须报 1.25.1 */
+  const staleNpm = await readPublishedVersion(webWith({
+    [U.npm]: { body: '{"version":"0.6.0"}' },
+    [U.github]: { body: '{"version":"1.25.1"}' },
+  }), U)
+  check(staleNpm.ok === true && staleNpm.latest === '1.25.1' && staleNpm.from === 'github',
+    'a stale npm cannot mask a newer GitHub release', JSON.stringify(staleNpm))
+
+  /* 反过来也一样：npm 更新时必须报 npm 那个 */
+  const newerNpm = await readPublishedVersion(webWith({
+    [U.npm]: { body: '{"version":"2.0.0"}' },
+    [U.github]: { body: '{"version":"1.25.1"}' },
+  }), U)
+  check(newerNpm.ok === true && newerNpm.latest === '2.0.0' && newerNpm.from === 'npm',
+    'and a newer npm wins over an older GitHub', JSON.stringify(newerNpm))
+
+  /* 一个挂了、另一个还在：仍然要有答案，并且说清哪个挂了 */
+  const oneDown = await readPublishedVersion(webWith({
+    [U.github]: { body: '{"version":"1.25.1"}' },
+  }), U)
+  check(oneDown.ok === true && oneDown.latest === '1.25.1' && oneDown.sources.npm.ok === false,
+    'one dead source does not break the check', JSON.stringify(oneDown))
+
+  const bothDown = await readPublishedVersion(webWith({ [U.npm]: { throw: 'x' } }), U)
+  check(bothDown.ok === false && bothDown.sources.npm.ok === false && bothDown.sources.github.ok === false,
+    'when every source fails the check fails — with per-source reasons', JSON.stringify(bothDown))
 
   check(compareVersions('1.2.3', '1.2.4') === -1 && compareVersions('1.2.3', '1.2.3') === 0
     && compareVersions('1.3.0', '1.2.9') === 1, 'version comparison is numeric, not lexicographic',
@@ -573,16 +615,17 @@ head('1b. the host half answers checkUpdate through the platform web service')
   const previousSeat = globalThis.harness
   const handlers = new Map()
   globalThis.harness = { handle: (method, fn) => { handlers.set(method, fn); return () => handlers.delete(method) } }
-  const registered = registerHandlers({ web: fakeWeb({ body: '{"version":"9.9.9"}' }) }, {})
+  const registered = registerHandlers({ web: only('npm', { body: '{"version":"9.9.9"}' }) }, { urls: U })
   check(registered.registered === true && handlers.has('checkUpdate'),
     'registerHandlers puts checkUpdate on the harness seat', JSON.stringify({ registered: registered.registered }))
   const answer = await handlers.get('checkUpdate')({ current: '1.0.0' })
   check(answer.ok === true && answer.latest === '9.9.9' && answer.current === '1.0.0'
     && typeof answer.checkedAt === 'string',
     'the handler returns a plain, serializable verdict', JSON.stringify(answer))
-  const injectedUrl = handlers.size > 0 ? registered.url : null
-  check(typeof injectedUrl === 'string' && injectedUrl.startsWith('https://'),
-    'and it reads from a real https manifest URL', String(injectedUrl))
+  const urls = registered.urls ?? {}
+  check(typeof urls.npm === 'string' && urls.npm.startsWith('https://')
+    && typeof urls.github === 'string' && urls.github.startsWith('https://'),
+    'and it reads from two real https sources', JSON.stringify(urls))
 
   /* 座位不在时不许抛：宿主半包在别的运行时里也要能 import */
   delete globalThis.harness
@@ -596,7 +639,7 @@ head('1b. the host half answers checkUpdate through the platform web service')
   const effects = []
   let appliedThrew = false
   try {
-    mod.apply({ web: fakeWeb({ body: '{"version":"9.9.9"}' }), effect: (fn, label) => { effects.push(label); return () => {} } }, {})
+    mod.apply({ web: only('npm', { body: '{"version":"9.9.9"}' }), effect: (fn, label) => { effects.push(label); return () => {} } }, {})
   } catch (error) { appliedThrew = true }
   check(appliedThrew === false && handlers.has('checkUpdate') && effects.length === 1,
     'apply() registers the handler and keeps its disposer on the fiber', effects.join(', '))
