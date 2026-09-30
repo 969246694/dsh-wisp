@@ -2441,7 +2441,8 @@ if (clientSrc !== null) {
 
     /* ---- 位置：2×2 的方位控件 ---- */
     check(expand('位置'), 'the position group opens')
-    const gridButtons = menuOf().querySelectorAll('.wisp-corner')
+    /* 角落按钮现在在「位置」的子面板里 —— 面板是菜单的兄弟节点，所以查询落在 layer 上 */
+    const gridButtons = menuHost().querySelectorAll('.wisp-corner').filter((el) => el.removed !== true)
     check(gridButtons.length === 4, 'the four corners are a 2×2 compass, not four text rows',
       String(gridButtons.length) + ' 个')
     /* 她此刻并不在任何角落（位置是拖出来的），所以先点一个角落归位，再看标记。 */
@@ -2449,118 +2450,133 @@ if (clientSrc !== null) {
     toTopLeft.dispatch('click', itemEvent())
     body5.dispatch('contextmenu', rightClickOnHer().ev)
     check(expand('位置'), 'reopen the position group')
-    const marked = menuOf().querySelectorAll('.wisp-corner').filter((b) => b.dataset && b.dataset.current === 'true')
+    const marked = menuHost().querySelectorAll('.wisp-corner')
+      .filter((b) => b.removed !== true && b.dataset && b.dataset.current === 'true')
     check(marked.length === 1 && marked[0].dataset.corner === '左上角',
       'and the corner she is actually in is marked',
-      menuOf().querySelectorAll('.wisp-corner').map((b) => b.textContent + (b.dataset.current ? '*' : '')).join(' '))
+      menuHost().querySelectorAll('.wisp-corner').filter((b) => b.removed !== true)
+        .map((b) => b.textContent + (b.dataset.current ? '*' : '')).join(' '))
 
-    /* ---- 悬停展开 / 移开收起 ------------------------------------------------
-       这是"指针类"交互。替身里没有真鼠标，但它有**事件派发 + 虚拟时钟**，
-       所以这套逻辑能被完整测到：派 pointerenter、推进时钟、看菜单结构变没变。
-       测不到的是浏览器的命中测试本身（"指针真的在这一行上"）—— 那部分由冒烟里的
-       真 Chromium 兜着，这里测的是**状态机**：延迟、宽限、钉住、触屏、焦点保护。 */
-    const hoverBlock = (name) => menuHost().querySelectorAll('.wisp-menu-group')
-      .find((el) => el.dataset && el.dataset.groupBlock === name && el.removed !== true)
-    const hoverIn = (name, pointerType) => hoverBlock(name).dispatch('pointerenter', { pointerType })
-    const hoverOut = (name, pointerType) => hoverBlock(name).dispatch('pointerleave', { pointerType })
+    /* ---- 级联子菜单：悬停展开、移开收起 --------------------------------------
+       这是**菜单栏**的形状：悬停一行，在它**旁边**开一个独立面板，而不是把下面的内容推下去。
+       替身里没有真鼠标，但它有事件派发 + 虚拟时钟，所以状态机能被完整测到：
+       派 pointerenter/pointerleave、推进时钟、看面板有没有出现、出现在哪一侧。
+       测不到的是浏览器的命中测试本身（"指针真的在这一行上"）—— 那由冒烟里的真 Chromium 兜着。 */
+    const flyoutOf = (name) => menuHost().querySelectorAll('.wisp-submenu')
+      .find((el) => el.dataset && el.dataset.submenu === name && el.removed !== true) ?? null
+    const rowOf = (name) => groupRow(name)
+    const hoverIn = (name, pointerType) => rowOf(name).dispatch('pointerenter', { pointerType })
+    const hoverOut = (name, pointerType) => rowOf(name).dispatch('pointerleave', { pointerType })
     const isOpen = (name) => {
-      const row = groupRow(name)
+      const row = rowOf(name)
       return row !== undefined && row.dataset.open === 'true'
     }
 
-    ensureCollapsed('外观'); ensureCollapsed('行为'); ensureCollapsed('位置')
-    check(!isOpen('外观') && !isOpen('行为'), 'every group starts collapsed')
+    groupRow('外观').dispatch('click', itemEvent()); groupRow('外观').dispatch('click', itemEvent())
+    check(!isOpen('外观') && flyoutOf('外观') === null, 'no submenu is open at the start')
 
-    /* 悬停要**有延迟**：鼠标只是路过就展开会抖 —— 这是 hover intent，不是可有可无的润色 */
+    /* 悬停要**有延迟**：鼠标只是路过就弹出面板会抖 —— 这是 hover intent */
     hoverIn('外观', 'mouse')
-    check(!isOpen('外观'), 'hovering does not open it instantly (a passing mouse would twitch it)')
+    check(flyoutOf('外观') === null && !isOpen('外观'),
+      'hovering does not pop a submenu instantly (a passing mouse would twitch it)')
     h.advance(200, 40)
-    check(isOpen('外观'), 'after the intent delay it opens')
+    check(flyoutOf('外观') !== null && isOpen('外观'), 'after the intent delay the submenu appears')
+    check(rowOf('外观').getAttribute('aria-haspopup') === 'true'
+      && rowOf('外观').getAttribute('aria-expanded') === 'true',
+      'and the row says it has a submenu and that it is open',
+      `haspopup=${rowOf('外观').getAttribute('aria-haspopup')} expanded=${rowOf('外观').getAttribute('aria-expanded')}`)
 
-    /* 移开也要有宽限：斜着往子项移动时，中途不能收 */
+    /* 关键：面板是**菜单的兄弟**（浮在旁边），不是菜单里把内容推下去的块 */
+    const panel = flyoutOf('外观')
+    check(panel.parentNode === menuHost(),
+      'the submenu is a sibling of the menu, floating beside it')
+    check(String(panel.style.left) !== '' && String(panel.style.top) !== '',
+      'and it is positioned', `left=${panel.style.left} top=${panel.style.top}`)
+    check(String(panel.style.left) !== String(menuOf().style.left),
+      'not stacked on top of the menu', `panel=${panel.style.left} menu=${menuOf().style.left}`)
+
+    /* 移开：延迟后收起 */
     hoverOut('外观', 'mouse')
     h.advance(80, 40)
-    check(isOpen('外观'), 'leaving does not close it instantly either')
+    check(flyoutOf('外观') !== null, 'leaving the row does not close it instantly')
     h.advance(400, 40)
-    check(!isOpen('外观'), 'after the grace period it closes')
+    check(flyoutOf('外观') === null && !isOpen('外观'), 'after the grace period it closes')
 
-    /* 路过不展开：进去又马上出来，推进很久也不该开过 */
+    /* 指针移进**面板**本身：算同一区域，不能关 */
+    hoverIn('外观', 'mouse')
+    h.advance(200, 40)
+    const panel2 = flyoutOf('外观')
+    /* 顺序要照真实浏览器：指针从行移到面板，先触发行的 leave、再触发面板的 enter。
+       写反了的话"面板 enter 取消关闭"就被后面的 leave 又覆盖掉了。 */
+    hoverOut('外观', 'mouse')
+    panel2.dispatch('pointerenter', { pointerType: 'mouse' })
+    h.advance(600, 40)
+    check(flyoutOf('外观') !== null,
+      'moving the pointer onto the panel keeps it open (row and panel are one region)')
+    panel2.dispatch('pointerleave', { pointerType: 'mouse' })
+    h.advance(600, 40)
+    check(flyoutOf('外观') === null, 'leaving the panel closes it')
+
+    /* 路过不弹出 */
     hoverIn('行为', 'mouse')
     hoverOut('行为', 'mouse')
     h.advance(800, 40)
-    check(!isOpen('行为'), 'a mouse that just passes over never opens a group')
+    check(flyoutOf('行为') === null, 'a mouse that just passes over never pops a submenu')
 
-    /* 子项在**同一个悬停区**里 —— 这是"从标题移到子项不会关"的实现方式 */
-    hoverIn('外观', 'mouse')
-    h.advance(200, 40)
-    const blockEl = hoverBlock('外观')
-    const kids = blockEl.querySelector ? blockEl.querySelector('.wisp-menu-sub') : null
-    check(kids !== null && kids.parentNode === blockEl,
-      'the children sit inside the same hover area, so moving into them is not leaving',
-      kids === null ? '(没有子项容器)' : String(kids.parentNode === blockEl))
-
-    /* 触屏没有悬停：不判 pointerType 的话，手指一碰就会莫名其妙展开 */
-    hoverOut('外观', 'mouse')
-    h.advance(400, 40)
+    /* 触屏：不判 pointerType 的话，手指一碰就会弹面板 */
     hoverIn('外观', 'touch')
     h.advance(600, 40)
-    check(!isOpen('外观'), 'a touch pointer never opens a group by hovering')
+    check(flyoutOf('外观') === null, 'a touch pointer never opens a submenu by hovering')
     groupRow('外观').dispatch('click', itemEvent())
-    check(isOpen('外观'), 'but tapping it still works')
+    check(flyoutOf('外观') !== null, 'but tapping the row still works')
 
-    /* 点击 = 钉住：鼠标移开也不关（悬停是预览，点击是决定） */
+    /* 点击 = 钉住：移开也不关；再点一次收起 */
     hoverOut('外观', 'mouse')
     h.advance(800, 40)
-    check(isOpen('外观'), 'a group you clicked stays open when the mouse leaves')
+    check(flyoutOf('外观') !== null, 'a submenu you clicked stays open when the mouse leaves')
     groupRow('外观').dispatch('click', itemEvent())
-    check(!isOpen('外观'), 'clicking it again collapses it')
+    check(flyoutOf('外观') === null, 'clicking the row again closes it')
 
-    /* 手风琴：悬停到另一组时，被钉住的那一组会让位 */
+    /* 手风琴：悬停到另一行时，上一个面板让位 */
     groupRow('外观').dispatch('click', itemEvent())
-    check(isOpen('外观'), 'pin the appearance group again')
+    check(flyoutOf('外观') !== null, 'pin one open again')
     hoverIn('行为', 'mouse')
     h.advance(200, 40)
-    check(isOpen('行为') && !isOpen('外观'),
-      'hovering another group opens it and lets the pinned one go',
-      `外观=${isOpen('外观')} 行为=${isOpen('行为')}`)
-    hoverOut('行为', 'mouse')
-    h.advance(600, 40)
-    check(!isOpen('行为'), 'and it closes again after the grace')
+    check(flyoutOf('行为') !== null && flyoutOf('外观') === null,
+      'hovering another row opens its submenu and closes the previous one',
+      `外观=${flyoutOf('外观') !== null} 行为=${flyoutOf('行为') !== null}`)
 
-    /* 焦点在这一组里时，鼠标移开不该把它收掉（否则键盘用户正操作着，鼠标一动就没了） */
-    hoverIn('外观', 'mouse')
-    h.advance(200, 40)
-    check(isOpen('外观'), 'hover it open again (not pinned this time)')
-    const focusGroupRow = () => {
+    /* 键盘：→ 进子菜单、← 回父行、Esc 逐层退出 */
+    const focusedIs = (pred) => {
+      const el = h.document.activeElement
+      return Boolean(el && pred(el))
+    }
+    const focusRow = (name) => {
       pressKey('Home')
       for (let i = 0; i < 16; i++) {
-        const el = h.document.activeElement
-        if (el && el.dataset && el.dataset.group === '外观') return true
+        if (focusedIs((el) => el.dataset && el.dataset.group === name)) return true
         pressKey('ArrowDown')
       }
       return false
     }
-    check(focusGroupRow(), 'keyboard focus can land on the group row')
-    const focusOnGroupRow = () => {
-      const el = h.document.activeElement
-      return Boolean(el && el.dataset && el.dataset.group === '外观')
-    }
-    check(focusOnGroupRow(), 'the focus really is on that row')
-    hoverOut('外观', 'mouse')
-    h.advance(300, 40)
-    check(focusOnGroupRow(), 'hovering out does not move the focus')
-    h.advance(500, 40)
-    const activeNow = h.document.activeElement
-    check(isOpen('外观'), 'while focus is inside that group, leaving with the mouse does not close it',
-      `focus=${activeNow ? String(activeNow.className) + '/' + JSON.stringify(activeNow.dataset) : '(无)'}`)
-    /* 焦点挪走之后，它就该按规则收起了 */
-    pressKey('Home')
-    hoverOut('外观', 'mouse')
-    h.advance(800, 40)
-    check(!isOpen('外观'), 'once focus leaves, the hover rules apply again')
+    check(focusRow('位置'), 'keyboard focus can land on a group row')
+    pressKey('ArrowRight')
+    check(flyoutOf('位置') !== null, 'ArrowRight opens the submenu beside it')
+    check(focusedIs((el) => el.className.indexOf('wisp-corner') >= 0),
+      'and focus moves into it', String(h.document.activeElement && h.document.activeElement.className))
+    pressKey('ArrowLeft')
+    check(flyoutOf('位置') === null, 'ArrowLeft closes it')
+    check(focusedIs((el) => el.dataset && el.dataset.group === '位置'),
+      'and hands focus back to the row',
+      String(h.document.activeElement && h.document.activeElement.dataset && h.document.activeElement.dataset.group))
+    pressKey('ArrowRight')
+    check(flyoutOf('位置') !== null, 'open it again for the Escape check')
     pressKey('Escape')
-    check(menuOf() === null, 'Escape still closes the menu after all that hovering')
-    /* 后面的检查要看菜单，重新打开 */
+    check(flyoutOf('位置') === null && menuOf() !== null,
+      'Escape closes the submenu first and leaves the menu open (one layer at a time)',
+      `面板=${flyoutOf('位置') === null ? '关了' : '还开着'} 菜单=${menuOf() === null ? '被关了' : '还开着'}`)
+    pressKey('Escape')
+    check(menuOf() === null, 'and a second Escape closes the menu')
     body5.dispatch('contextmenu', rightClickOnHer().ev)
     check(menuOf() !== null, 'the menu reopens for the remaining structure checks')
 
@@ -2622,7 +2638,8 @@ if (clientSrc !== null) {
     body5.dispatch('contextmenu', secondClick.ev)
     check(menuOf() !== null, 'the menu reopens')
     check(expand('位置'), 'the corners live in the position group')
-    const homeBtn = menuOf().querySelectorAll('.wisp-corner').find((b) => b.dataset && b.dataset.corner === '右下角')
+    const homeBtn = menuHost().querySelectorAll('.wisp-corner')
+      .find((b) => b.removed !== true && b.dataset && b.dataset.corner === '右下角')
     check(Boolean(homeBtn), 'the corner button is there')
     homeBtn.dispatch('click', itemEvent())
     const homed = fifth.position
