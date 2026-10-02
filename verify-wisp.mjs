@@ -2223,6 +2223,41 @@ if (clientSrc !== null) {
     diagHarness.win.__wisp.destroy()
     active = keepDiag
 
+    /* 失败要说清是**哪一种**失败 —— 用户看到的只有那一句话，含糊地说成"没查到更新"
+       就等于让他去猜（"更新检查没成功"这次就是这么来的）。三条原因三条台词。 */
+    const failedWith = async (reason) => {
+      const hf = mkChecker(async () => ({
+        ok: false,
+        reason,
+        sources: { npm: { ok: false, reason }, github: { ok: false, reason } },
+      }))
+      const keep = active
+      active = hf
+      hf.evaluate(clientSrc)
+      hf.module().default.apply(hf.ctx, { reactions: false, wander: false, celebrate: false })
+      hf.advance(1300, 100)
+      await hf.win.__wisp.checkForUpdate()
+      hf.win.__wisp.showUpdate()
+      await new Promise((resolve) => setImmediate(resolve))
+      const said = String(hf.all('wisp-say').at(-1)?.textContent ?? '')
+      hf.win.__wisp.destroy()
+      active = keep
+      return said
+    }
+    const inPool = (pool, text) => (Array.isArray(pool) ? pool : []).some((line) => text.includes(line))
+
+    const noChannelSaid = await failedWith('no-web-service')
+    check(inPool(linesInBundle()?.updateNoChannel, noChannelSaid),
+      'with no network channel she says THAT, not the generic failure', noChannelSaid)
+    const noHostSaid = await failedWith('call-failed')
+    check(inPool(linesInBundle()?.updateNoHost, noHostSaid),
+      'a host that does not answer gets its own sentence', noHostSaid)
+    const networkSaid = await failedWith('fetch-failed')
+    check(inPool(linesInBundle()?.updateFailed, networkSaid),
+      'and a plain network failure keeps the ordinary line', networkSaid)
+    check(new Set([noChannelSaid, noHostSaid, networkSaid]).size === 3,
+      'the three failure kinds really are three different sentences')
+
     /* 宿主调用抛错：不能变成未处理的 rejection */
     const thrower = mkChecker('boom')
     const keepThrower = active
