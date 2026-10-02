@@ -504,9 +504,13 @@ function createHarness(options = {}) {
       // 默认不给 —— 这样"没有 host 时降级"才测得到；要测检查更新就传 hostCall。
       const hostSeat = typeof options.hostCall === 'function' ? { call: options.hostCall } : undefined
       // eslint-disable-next-line no-new-func
-      /* 追加 sourceURL：new Function 里的代码否则在堆栈里是 anonymous，定位不到行。 */
-      new Function('window', 'document', 'host', ...TRAPPED, src + '\n//# sourceURL=wisp-client-half.js')(
-        win, documentShim, hostSeat, ...TRAPPED.map((name) => traps[name]),
+      /* 追加 sourceURL：new Function 里的代码否则在堆栈里是 anonymous，定位不到行。
+         navigator 必须显式注入：浏览器里裸 navigator === window.navigator，而 **Node 21+
+         也有全局 navigator**（navigator.language = 系统语言）。不注入的话，客户端读到的是
+         Node 的 —— 中文机器上绿、英文 runner 上红（真踩过：Node 22 上 24 项台词池检查全红，
+         Node 20 上因为那个全局还不存在而"恰好"绿）。 */
+      new Function('window', 'document', 'host', 'navigator', ...TRAPPED, src + '\n//# sourceURL=wisp-client-half.js')(
+        win, documentShim, hostSeat, win.navigator ?? {}, ...TRAPPED.map((name) => traps[name]),
       )
     },
     module() {
@@ -4186,6 +4190,33 @@ head('3y-3. the focus timer, and going quiet while the page is hidden')
   check(summaryLine.indexOf('{') < 0, 'and no placeholder is left unfilled', summaryLine)
   check(typeof quietApi.today.runs === 'number' && quietApi.today.runs >= 1,
     'the day book is also readable from the api', JSON.stringify(quietApi.today))
+
+  /* ---- 语言判定不能取决于 Node 版本 -------------------------------------------
+     Node 21+ 自带全局 navigator（navigator.language = 系统语言）。harness 若不把它注入到
+     被求值的作用域里，客户端读到的就是 Node 的 —— 于是同一份代码在中文开发机上绿、
+     在英文 runner 上红。这条把 Node 的 navigator 特意伪装成 en-US，再断言她仍然按
+     harness 自己的（没有 language 的）navigator 说中文。 */
+  const nodeNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  try {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { language: 'en-US', languages: ['en-US'] }, configurable: true, writable: true,
+    })
+    const nodeNavHarness = createHarness({ timer: true, composerText: '' })
+    const keepNodeNav = active
+    active = nodeNavHarness
+    nodeNavHarness.evaluate(clientSrc)
+    nodeNavHarness.module().default.apply(nodeNavHarness.ctx, { reactions: false, wander: false, celebrate: false })
+    nodeNavHarness.advance(1000, 200)
+    const nodeNavSaid = String(nodeNavHarness.all('wisp-say').at(-1)?.textContent ?? '')
+    check(/[\u4e00-\u9fa5]/.test(nodeNavSaid),
+      'the harness hands the client its OWN navigator — Node 21+ has a global one and would leak its locale',
+      `${nodeNavSaid.slice(0, 40)} ｜ Node navigator=${globalThis.navigator.language}`)
+    nodeNavHarness.win.__wisp.destroy()
+    active = keepNodeNav
+  } finally {
+    if (nodeNav) Object.defineProperty(globalThis, 'navigator', nodeNav)
+    else delete globalThis.navigator
+  }
 
   /* ---- 英文台词：英文环境下她说英文，而且**一个汉字都不该出现** -------------------
      语言是加载时判定的（读 navigator.language），所以这个 harness 要在 evaluate 之前
