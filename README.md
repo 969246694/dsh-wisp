@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.44.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
+**当前版本 `1.45.0`** · 零依赖 · 单文件客户端半包（精灵图与帧动画都内嵌为 data URI）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -37,7 +37,8 @@ DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 | 她会注意你的指针 | 指针进到 **170px** 以内，她朝指针方向侧身（最多 3.5°，越近越多），出圈回正。睡着时不跟 |
 | 换表情会动 | `happy` / `poked` / `attn` 等有表情的状态切换时弹一下；**同一个表情再来一次也弹**（第二下不出声会被读成卡住） |
 | 溜达有方向 | 自己踱步时朝行进方向微微前倾（最多 2.5°），像"往那边去"而不是"被平移过去" |
-| 动作幅度可调 | 菜单「行为 → 动作幅度」三选一：**灵动 / 克制（半幅）/ 静止**。`静止` 连呼吸与 `z` 一起停 |
+| 动作幅度可调 | 菜单「行为 → 动作幅度」三选一：**灵动 / 克制（半幅）/ 静止**。`静止` 连呼吸、`z` 与帧动画一起停 |
+| 睡着时会动 | `sleep` 状态上叠一段 **alpha 视频循环**（她睡着时被子那点极小的起伏）—— 这是第一条真正的帧动画。**「静止」档与系统的「减少动态效果」会把它暂停并回到首帧**（只留静态立绘），躲起来时也停 |
 
 外层 `pointer-events:none`，只有**她自己的轮廓**可点：命中层带一层由 alpha 蒙版生成的
 `clip-path`，所以透明处是真的穿透 —— 她站在哪个按钮上都不影响你点它（1.40.0 之前
@@ -55,8 +56,10 @@ dsh-wisp-plugin/
 │   ├── index.js          host 半包：注册两个 handler（检查更新 / 查余额），不做别的
 │   ├── client.template.js  浏览器半包源码（唯一需要编辑的文件）
 │   └── client.js         由 build.mjs 生成，勿手改
-├── assets/               四张 256x384 透明 WebP（idle / happy / sleepy / work）
-├── build.mjs             注入精灵图 + 三道构建防线
+├── assets/               五套皮肤 × 8 张 1024x1536 透明 WebP
+│   ├── motion/           帧动画素材（alpha WebM，内联成 data URI）
+│   └── audio/            音效（可选，内联）
+├── build.mjs             注入精灵图 + 帧动画 + 建造防线
 ├── verify-wisp.mjs       预检：两套契约 + 真实执行
 ├── NOTICE.md             角色来源与许可
 └── README.md             本文件
@@ -65,20 +68,22 @@ dsh-wisp-plugin/
 ## 构建与预检
 
 ```bash
-node build.mjs        # 把 assets/*.webp 注入 lib/client.template.js → lib/client.js
+node build.mjs        # 把 assets/**/*.webp（+ assets/motion/*.webm）注入 lib/client.template.js → lib/client.js
 node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 ```
 
 **改了 `client.template.js` 就必须重新 `build.mjs`** —— `client.js` 是生成物。
 
-`build.mjs` 现在有四道防线，任何一道失败都拒绝写出文件：
+`build.mjs` 现在有五道防线，任何一道失败都拒绝写出文件：
 
-1. 占位符 `__SPRITES_LITERAL__` 必须恰好出现一次，且替换后不得残留；
-2. 注入后的 `SPRITES` 表要**真的被求值**，四个 key 都必须是 `data:image/` 开头；
-3. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
-4. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
+1. 占位符 `__SPRITES_LITERAL__` / `__MOTION_LITERAL__` 必须各出现一次，且替换后都不得残留；
+2. 注入后的 `SPRITES` 表要**真的被求值**，每个 key 都必须是 `data:image/` 开头；
+3. 注入后的 `MOTION` 表同样要**真的被求值**，每个值都必须是 `data:video/webm;base64,` 开头
+   （写错一个 key，客户端就会建一个永远不播的 `<video>`，而那是**静默**失败）；
+4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
+5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **685 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **713 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -144,19 +149,20 @@ node tools/pack-check.mjs
 **为什么不能靠"我看过 files[] 了"**：包里的文档指向包外、`tools/` 少声明一个、素材没打进去 ——
 这些都要真的解出副本才暴露。这个检查第一次跑就抓到了 README 里指向开发机绝对路径的死引用。
 
-当前包：**164 个文件 / 19 MB**，其中 `assets/` 占 140 个文件、14.0 MB —— 但**运行时只会读其中 35 张**：
+当前包：**64 个文件 / 11.7 MB**（tarball 9.4 MB），其中 `assets/` 占 41 个文件、4.5 MB —— 但**运行时只会读全部 41 个**：
 
 | 素材 | 数量 | 体积 | 运行时 |
 |---|---|---|---|
-| 默认档 1024×1536 | 35 | 3.8 MB | ✅ 就这一档被 base64 进 JS（5.2 MB） |
-| `_hi` 2048×3072 | 35 | 8.1 MB | ❌ 从不读取 |
+| 默认档 1024×1536 | 40 | 4.2 MB | ✅ 就这一档被 base64 进 JS（精灵图 5.96 MB + 帧动画 0.42 MB） |
+| `motion/sleepy.webm` | 1 | 0.3 MB | ✅ 同样是内联（+0.42 MB base64），`sleep` 时才解码 |
+| `_hi` 2048×3072 | 35 | 8.1 MB | ❌ 已从仓库删除（2026-09-30），要重新生成 |
 | `_md` 512×768 | 35 | 1.5 MB | ❌ 从不读取 |
 | `_sm` 256×384 | 35 | 0.6 MB | ❌ 从不读取 |
 
 后三档加起来 **105 个文件 / 9.9 MB**，唯一用途是「哪天想用 `node build.mjs --tier=hi   # 需要先 --all-tiers 生成 _hi；缺档会自动回退到默认档` 换个档重新打包」。
 而且 `_hi` 连**画质收益都测不出来**（见下面性能小节：DPR 2 下高频能量差 0.3%，DPR 1/3 下 1024 档反而高 4~5%）。
-**这 9.9 MB 已经省掉了**（2026-09-30）：`assets/` 现在只有默认档 35 个文件 / 3.8 MB，
-包从 19 MB 降到 **9 MB**。
+**这 9.9 MB 已经省掉了**（2026-09-30）：`assets/` 现在只有默认档 40 个文件 / 4.2 MB（外加一段 0.3 MB 的帧动画），
+包从 19 MB 降到 **11.7 MB**（tarball 9.4 MB）。
 
 要生成别的档位（例如想用 `--tier=hi` 重打包）先跑：
 
@@ -169,6 +175,14 @@ node tools/assets.mjs --from <绿幕母版目录> --skin <皮肤> --all-tiers   
 （历史原因：这段原本写的是「4 套皮肤 × 7 情绪 = 112 张、14.6 MB」，那是第五套皮肤 `canon` 加进来之前的数字。）
 classic 皮肤的绿幕原图已经不在了，那些分档是**唯一**的重建来源，所以 `build.mjs --tier=…` 在
 别人的机器上仍然可用。
+
+**帧动画素材（1.45.0 起）**：`assets/motion/sleepy.webm` 一个文件 —— **315.8 KB**，
+VP9 + alpha 平面（EBML `AlphaMode=1`）、480×854、24 fps、4.04 秒无缝循环，
+内容是"她睡着时被子那点极小的起伏"（画风与立绘同源）。内联成 data URI 后 **421.1 KB**，
+预检里有一条 **800 KB 的预算**盯着它：素材哪天涨了会红，不会悄悄进包。
+
+它和精灵图一样**只在真进入那个状态时解码**：挂载时连 `<video>` 都不建，`sleep` 时才建一个；
+`prefers-reduced-motion` / 静止档 / 躲起来时会被 `pause()` 并把 `currentTime` 写回 0（见变更日志）。
 
 ## 自检：`__wisp.doctor()`
 
@@ -228,6 +242,7 @@ node verify-wisp.mjs
 | 指标 | 数值 |
 |---|---|
 | 动画帧使用量 | **0**（走 `timer` 服务，根本不挂帧循环） |
+| 帧动画（v1.45.0 新增） | **0 帧**：`sleep` 时才建一个 `<video>`（muted / loop / playsinline），解码在浏览器的媒体通道上，JS 这边一次回调都不挂。静止档 / `prefers-reduced-motion` / 躲起来时 `pause()` + `currentTime = 0`，**不播也不解码** |
 | 动作层（v1.38 新增） | **0 帧**：姿势与一次性动作都是"事件写一次属性，浏览器自己算"。指针靠近只做算术，出圈即归零，变化不到 0.05° 不写样式 |
 | 定时器 | 1 个 `interval`（反应轮询）+ 3 个 `timeout` |
 | 反应轮询成本 | 每轮 3 次 `querySelector`，10 s 内共 **7.2–8.3 ms**（≈ **0.86 ms/轮**） |
@@ -271,7 +286,7 @@ node verify-wisp.mjs
 | — | — | — | 菜单里调过的 `size` 会**记在本地**并活过刷新；但配置里显式写了 `size` 时以配置为准 |
 | `sleepAfterMs` | number | `90000` | 静置多久打盹，限制 `5000–3600000` |
 | `reactions` | boolean | `true` | 是否跟随 Agent 忙碌 / 输入框内容变情绪 |
-| `motion` | string | `'full'` | 动作幅度：`full` 灵动 / `subtle` 克制（半幅）/ `off` 静止（连呼吸也停）。认不出的值退回 `full` |
+| `motion` | string | `'full'` | 动作幅度：`full` 灵动 / `subtle` 克制（半幅）/ `off` 静止（连呼吸、`z` 与帧动画一起停，视频 `pause()` 并回到首帧）。认不出的值退回 `full` |
 | `persist` | boolean | `true` | 是否跨刷新记住位置 |
 | `celebrate` | boolean | `true` | 一轮跑完是否庆祝一下 |
 | `celebrateAfterMs` | number | `2500` | 只庆祝跑够这么久的轮次（避免每次小工具调用都跳） |
@@ -541,6 +556,47 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 都有断言盯着。
 
 ## 变更
+
+### 1.45.0
+
+**她动起来了：第一条真正的帧动画 —— 睡着时那段 alpha 视频循环。**
+
+到这一版之前，她的"动作"全是**位移/缩放/旋转**：立绘本身一动不动。这一版给 `sleep`
+状态叠了一段 `<video>`：她睡着时被子那点极小的起伏，4.04 秒无缝循环。
+
+| 事项 | 实情 |
+|---|---|
+| 素材 | `assets/motion/sleepy.webm` —— VP9 + **alpha 平面**（`AlphaMode=1`）、480×854、24 fps、4.04 秒循环。同一套立绘的睡眠姿做的图生视频，角落是**透**的 |
+| 体积 | 原始 **315.8 KB** → 内联成 data URI **421.1 KB**。预检里有一条 **800 KB 预算**盯着它（超了就在详情里报出实际大小） |
+| 为什么是视频 | 同一段动作，视频比逐帧序列少一个数量级的字节，而 alpha 视频在 Chromium 里是原生解码。**代价是它必须有一条会动的播放通道** —— 所以冻结规则不是可选项 |
+
+**1. 叠加，不是替换。** `<video>` 和立绘在**同一个盒子**里（`.wisp-lean` 层，逐条复用
+`.wisp-img` 的 `inset:0 / 100% / contain / bottom center`），`pointer-events:none` ——
+她能不能被点到，仍然只由那张 alpha 蒙版生成的剪影命中层决定，透明处照旧整层穿透。
+字节走的是**和立绘同一条** data URI → Blob → object URL 通道（这个壳把 `data:` 源当坏图
+处理，视频没有理由不一样），失败时静默降级：藏掉视频、继续用静态立绘，不抛不冒泡。
+
+**2. 冻结规则（硬要求）："停住"不是"慢一点"。**
+`cfg.motion === 'off'`、`prefers-reduced-motion: reduce` 命中，或者她被**躲起来**时：
+
+```
+pause()  →  currentTime = 0  →  display: none
+```
+
+三件事一件都不能少。少了 `currentTime = 0`，静止档里的她会定格在循环的半途 ——
+同一个"静止"，每次按下开关停的地方都不一样。恢复时同一个元素接着播（不重建）。
+系统设置**在会话中途**改了也当场生效：CSS 的媒体查询是实时的，而播放状态是 JS 的，
+所以插件订阅了 `matchMedia` 的 change。
+
+**3. 不白解码。** 没有动作素材的状态**连 `<video>` 都不建**（挂载时不碰这 316 KB），
+`mood('sleep')` 时才建一个；`doctor().motion.frame` 会报 `asset / built / playing / frozen / failed`
+—— 帧动画的失败是**静默**的（画面回到静态立绘），所以它必须能被一眼看出来。
+
+**验证**：预检 685 → **713 项**，其中新增的 **28 条**盯这一版（含"静止档真的 `pause()` 且 `currentTime` 为 0"、
+"reduced-motion 下同样冻结"、"视频带 `pointer-events:none`"、"和立绘的行内盒模型逐条相同"、
+"800 KB 预算"、"内联的字节和磁盘上那份一样长"）。真引擎探针也补了一节 ——
+**假 DOM 证明不了这段视频解得开**：实测 `480x854 readyState=4`、四角 alpha `0/0/0/0`
+（alpha 平面真的出画了）、与立绘的盒子偏差 `0.00,0.00`、会话中途打开 reduced-motion 当场停住。
 
 ### 1.43.2
 

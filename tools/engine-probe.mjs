@@ -412,6 +412,107 @@ try {
   check(rm.bodyAnim === 'none' && rm.motionAnim === 'none',
     'and the media query stops every animation', `${rm.bodyAnim} / ${rm.motionAnim}`)
 
+  /* ---------------------- 帧动画：这一段只有真引擎能回答 ----------------------
+     假 DOM 能证明"调了 pause()、把 currentTime 写回了 0"，证明不了**这段视频真的
+     解得开**：VP9 + alpha 平面在浏览器里出不出画、`videoWidth` 是不是 480、叠在
+     立绘上有没有对齐、角落里是不是真的透明 —— 全是解码与合成的事，而它的失败
+     在页面上表现为"她还是不动"，和"没有素材"长得一模一样。 */
+  head('the first frame animation (a real alpha WebM loop)')
+  /* 上一节把 Emulation 设成了 reduce 而且没恢复 —— 先清掉，
+     否则下面看到的"冻结"其实是上一节那个设置还在（那不是这条要测的东西）。 */
+  await send('Emulation.setEmulatedMedia', { features: [] })
+  const clip = await evaluate(`(async () => {
+    const waitFor = async (ok, ms) => {
+      const until = Date.now() + ms
+      while (Date.now() < until) { if (ok()) return true; await new Promise((r) => setTimeout(r, 50)) }
+      return ok()
+    }
+    window.__wisp.configure({ motion: 'full' })
+    window.__wisp.mood('sleep')
+    await waitFor(() => document.querySelector('.wisp-video') !== null, 5000)
+    const video = document.querySelector('.wisp-video')
+    if (!video) return { built: false }
+    await waitFor(() => video.readyState >= 2 && video.videoWidth > 0, 8000)
+    const img = document.querySelector('.wisp-img')
+    const a = video.getBoundingClientRect()
+    const b = img.getBoundingClientRect()
+    /* 角落的 alpha：把她画进一张 8x8 的画布，读四个角的 alpha 通道。
+       不透明的话这里会是 255 —— 那说明 alpha 平面根本没解码出来（黑底）。 */
+    let corners = null
+    try {
+      const c = document.createElement('canvas'); c.width = 8; c.height = 8
+      const ctx = c.getContext('2d')
+      ctx.drawImage(video, 0, 0, 8, 8)
+      const d = ctx.getImageData(0, 0, 8, 8).data
+      corners = [0, 7, 56, 63].map((i) => d[i * 4 + 3])
+    } catch (e) { corners = String(e.name || e.message || e) }
+    return {
+      built: true, src: String(video.src).slice(0, 5), readyState: video.readyState,
+      w: video.videoWidth, h: video.videoHeight, paused: video.paused,
+      display: getComputedStyle(video).display,
+      pointerEvents: getComputedStyle(video).pointerEvents,
+      dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top),
+      dw: Math.abs(a.width - b.width), dh: Math.abs(a.height - b.height),
+      corners,
+    }
+  })()`)
+  check(clip.built === true && clip.w > 0 && clip.h > 0,
+    'the alpha WebM really decodes in the engine — the clip is not just a data URI sitting in the bundle',
+    clip.built ? `${clip.src}… ${clip.w}x${clip.h} readyState=${clip.readyState}` : 'no <video> was built')
+  check(clip.paused === false && clip.display !== 'none',
+    'and it is playing on its own (muted autoplay is allowed)', `paused=${clip.paused} display=${clip.display}`)
+  check(Array.isArray(clip.corners) && Math.min(...clip.corners) < 32,
+    'a corner of the frame is TRANSPARENT — that is the alpha plane, and the reason this asset had to be a WebM',
+    Array.isArray(clip.corners) ? `corner alpha ${clip.corners.join('/')}` : `canvas readback: ${clip.corners}`)
+  check(clip.dx < 1 && clip.dy < 1 && clip.dw < 1 && clip.dh < 1,
+    'and it lands on exactly the sprite box, so the loop does not make her jump',
+    `delta ${clip.dx.toFixed(2)},${clip.dy.toFixed(2)} size ${clip.dw.toFixed(2)}x${clip.dh.toFixed(2)}`)
+  check(clip.pointerEvents === 'none', 'the layer takes no pointer events', String(clip.pointerEvents))
+
+  const clipFrozen = await evaluate(`(() => {
+    const video = document.querySelector('.wisp-video')
+    video.currentTime = 2.4                    // 已经循环到一半
+    window.__wisp.configure({ motion: 'off' })
+    const img = document.querySelector('.wisp-img')
+    return {
+      paused: video.paused, t: video.currentTime,
+      display: getComputedStyle(video).display,
+      sprite: getComputedStyle(img).display !== 'none' && Number(getComputedStyle(img).opacity) > 0.5,
+    }
+  })()`)
+  check(clipFrozen.paused === true && clipFrozen.t === 0 && clipFrozen.display === 'none',
+    '"still" freezes the loop at the first frame in the real engine too',
+    JSON.stringify(clipFrozen))
+  check(clipFrozen.sprite === true, 'and the static sprite is still painted underneath', String(clipFrozen.sprite))
+
+  const clipBack = await evaluate(`(async () => {
+    window.__wisp.configure({ motion: 'full' })
+    await new Promise((r) => setTimeout(r, 400))
+    const v = document.querySelector('.wisp-video')
+    return { paused: v.paused, display: getComputedStyle(v).display }
+  })()`)
+  check(clipBack.paused === false && clipBack.display !== 'none',
+    'and putting the level back resumes it', JSON.stringify(clipBack))
+
+  /* 会话中途把系统设置改成"减少动态效果"：CSS 的媒体查询是实时的，而播放状态是 JS 的。
+     插件订阅了 matchMedia 的 change，所以这一下必须**当场**生效 —— 不订阅的话，
+     她会在你刚关掉动画之后继续动到下一次换表情。 */
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
+  await sleep(600)
+  const clipReduced = await evaluate(`(() => {
+    const v = document.querySelector('.wisp-video')
+    return {
+      reduced: window.__wisp.doctor().motion.reduced,
+      paused: v.paused, t: v.currentTime, display: getComputedStyle(v).display,
+    }
+  })()`)
+  check(clipReduced.reduced === true && clipReduced.paused === true && clipReduced.t === 0
+    && clipReduced.display === 'none',
+  'turning reduced motion on mid-session stops the loop where it stands, with no reload',
+  JSON.stringify(clipReduced))
+  await send('Emulation.setEmulatedMedia', { features: [] })
+  await evaluate(`window.__wisp.mood('idle')`)
+
   console.log(`\n=== ${failures === 0 ? 'ENGINE PROBE PASSED' : `${failures} PROBE CHECK(S) FAILED`} ===`)
 } finally {
   try { ws.close() } catch (e) { /* ignore */ }

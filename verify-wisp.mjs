@@ -247,6 +247,24 @@ function createHarness(options = {}) {
         },
       })
     }
+    if (String(tag).toLowerCase() === 'video') {
+      /* <video> 的替身（v1.45.0）。真实浏览器里 play()/pause() 是**方法**、
+         currentTime 是**可写属性**，而"冻结规则"（暂停 + 回到首帧）恰恰只由这三个
+         东西体现 —— 替身缺了它们，那条规则就只能靠读源码文本来断言，而读文本
+         证明不了行为。每一次 play/pause 都记在 harness 上，断言才看得见。 */
+      el.currentTime = 0
+      el.paused = true
+      el.play = () => {
+        el.paused = false
+        if (active) active.videoPlays.push(el)
+        return Promise.resolve()
+      }
+      el.pause = () => {
+        el.paused = true
+        if (active) active.videoPauses.push(el)
+      }
+      el.load = () => {}
+    }
     created.push(el)
     return el
   }
@@ -456,6 +474,9 @@ function createHarness(options = {}) {
   const harness = {
     state, ctx, win, document: documentShim, bodyEl, created, frames, timers, queries,
     srcs: [], urLs: [], revoked: [], blobs: [], styleInserts,
+    /* <video> 的播放记录（v1.45.0）：冻结规则是"暂停 + 回到首帧"，
+       所以"停过没有"必须是个可断言的数字，而不是从源码里读出来的一句话。 */
+    videoPlays: [], videoPauses: [],
     loaded: null,
     timerService,
     get teardown() { return runEffects },
@@ -2936,6 +2957,156 @@ if (clientSrc !== null) {
       `pointermove=${mo.win.listenerCount('pointermove')} blur=${mo.win.listenerCount('blur')}`)
     active = keepMo
 
+    /* ---------------- 3f-ter. 第一条帧动画（v1.45.0）----------------------- */
+    head('3f-ter. the first frame animation: an alpha loop that freezes on demand')
+
+    /* 这一段测的是"叠加在立绘上的那段视频循环"，而它有三个**只有行为能证明**的点：
+       与立绘同一格、不吃指针、以及"该停的时候真的停住并回到首帧"。
+       单开一个替身：这里要真的睡着（sleepAfterMs 在别的替身里是一小时，
+       而直接 mood('sleep') 更直接，也不会打乱别人的时间轴）。 */
+    const mv = createHarness({ timer: true, composerText: '' })
+    const keepMv = active
+    active = mv
+    mv.evaluate(clientSrc)
+    mv.module().default.apply(mv.ctx, {
+      reactions: false, wander: false, celebrate: false, sleepAfterMs: 3600000,
+    })
+    mv.advance(1200, 100)
+    const mvApi = mv.win.__wisp
+    const mvRoot = mv.find('wisp-root')
+    const mvLean = mv.find('wisp-lean')
+    const mvLive = () => mv.all('wisp-video').find((el) => el.removed !== true) ?? null
+
+    /* 没有动作素材的状态**连元素都不建**：摆一个永远不播的空盒子，代价是
+       316 KB 的 base64 白解一遍，收益是零。 */
+    check(mvRoot.querySelectorAll('video').length === 0,
+      'a mood with no clip does not even build a <video> — no element, no base64 decode',
+      `${mvRoot.querySelectorAll('video').length} video(s) while idle`)
+
+    mvApi.mood('sleep')
+    mv.advance(400, 100)
+    const mvVideo = mvLive()
+    const mvImgs = mvLean.querySelectorAll('.wisp-img')
+    const mvImg = mvImgs[0] ?? null
+    check(mvVideo !== null,
+      'a mood that HAS a clip builds the <video> overlay', String(mvVideo?.tagName))
+    check(mvVideo !== null && mvVideo.parentNode === mvLean && mvImgs.length === 1,
+      'the video sits in the same layer as the sprite, next to it — so it tilts and squashes with her',
+      `video in ${String(mvVideo?.parentNode?.className)}, ${mvImgs.length} sprite layer(s)`)
+    /* 与立绘**逐条同款**的行内盒模型：另起一套定位，就会出现"动起来时她跳了一下"
+       —— 那是只有真机上才看得见的错位。 */
+    const inlineBoxOf = (el) => ['position', 'top', 'left', 'width', 'height', 'objectFit', 'objectPosition']
+      .map((k) => String(el?.style?.[k] ?? ''))
+    const spriteBox = inlineBoxOf(mvImg)
+    const videoBox = inlineBoxOf(mvVideo)
+    check(mvImg !== null && videoBox.join('|') === spriteBox.join('|')
+      && videoBox[0] === 'absolute' && videoBox[3] === '100%' && videoBox[5] === 'contain'
+      && videoBox[6] === 'bottom center',
+    'and it is laid out exactly like the sprite it overlays (inset 0 / 100% / contain / bottom center)',
+    `video[${videoBox.join(',')}] vs sprite[${spriteBox.join(',')}]`)
+
+    const mvAttrs = ['muted', 'playsinline', 'autoplay', 'loop']
+    check(mvVideo !== null && mvAttrs.every((a) => mvVideo.getAttribute(a) === '')
+      && mvVideo.getAttribute('preload') === 'auto',
+    'muted + playsinline + autoplay + loop + preload=auto — muted must be true before the src, or autoplay is refused',
+    mvAttrs.map((a) => `${a}=${JSON.stringify(mvVideo?.getAttribute(a))}`).join(' ') + ` preload=${JSON.stringify(mvVideo?.getAttribute('preload'))}`)
+
+    const mvCss = String(mv.styleInserts[0] ?? '')
+    const mvRule = (mvCss.match(/\.wisp-video\{[^}]*\}/) ?? [''])[0]
+    check(mvVideo !== null && mvVideo.style.pointerEvents === 'none' && mvRule.includes('pointer-events:none'),
+      'the video never takes a pointer event — her silhouette hit layer still owns every click',
+      `inline=${mvVideo?.style.pointerEvents} rule=${mvRule.slice(0, 60)}…`)
+    /* reduced-motion 那条兜底：媒体查询够不着 JS 的播放状态，但它至少能让这层不出现在
+       画面上（JS 拿不到 matchMedia 的壳里，冻结就只剩这一道）。 */
+    const mvRmAt = mvCss.indexOf('@media (prefers-reduced-motion:reduce)')
+    check(mvRmAt >= 0 && mvCss.slice(mvRmAt).includes('.wisp-video{display:none!important}'),
+      'and the reduced-motion media query hides the layer as a second guard')
+    check(mvCss.includes('.wisp-root[data-mood="sleep"] .wisp-video{filter:'),
+      'the sleeping colour grade is applied to the video too, so the moving frame does not look like a different asset')
+
+    const mvBlob = mv.blobs.find((b) => String(b.type).startsWith('video/'))
+    check(mvVideo !== null && String(mvVideo.src).indexOf('blob:') === 0
+      && mvBlob !== undefined && mvBlob.type === 'video/webm' && mvBlob.size > 1024,
+    'the clip bytes reach the <video> through the same Blob pipeline as the sprites (this shell refuses data: sources)',
+    `${String(mvVideo?.src).slice(0, 28)} / ${mvBlob?.type} / ${mvBlob?.size ?? 0} B`)
+    check(mvVideo !== null && mvVideo.paused === false && mvVideo.style.display !== 'none',
+      'the loop is actually playing at the default level', `paused=${mvVideo?.paused} display=${mvVideo?.style.display || '(default)'}`)
+
+    /* ---- 冻结规则之一：静止档 ---- */
+    /* 先把"已经循环到一半"摆出来：不摆的话，currentTime 本来就是 0，
+       "回到首帧"这条断言会因为**没发生过任何事**而通过。 */
+    mvVideo.currentTime = 2.4
+    mvApi.configure({ motion: 'off' })
+    check(mvVideo.paused === true && mvVideo.currentTime === 0 && mvVideo.style.display === 'none',
+      'motion: off pauses the loop AND rewinds it to the first frame — "still" is not "slower"',
+      `paused=${mvVideo.paused} t=${mvVideo.currentTime} display=${mvVideo.style.display}`)
+    check(mvImg !== null && mvImg.removed !== true
+      && String(mvImg.style.opacity) !== '0' && String(mvImg.style.display) !== 'none',
+    'and the static sprite is what is left on screen — the fallback is the point of freezing',
+    `sprite opacity=${mvImg?.style.opacity || '(default)'} display=${mvImg?.style.display || '(default)'}`)
+
+    /* ---- 恢复：同一个元素接着播，不重建 ---- */
+    mvApi.configure({ motion: 'full' })
+    check(mvVideo.paused === false && mvVideo.style.display !== 'none' && mvLive() === mvVideo,
+      'putting the level back resumes that same element instead of rebuilding it',
+      `paused=${mvVideo.paused} display=${mvVideo.style.display || '(default)'}`)
+
+    /* ---- 躲起来（display:none）也不该占着解码器 ---- */
+    mvApi.hide()
+    check(mvVideo.paused === true && mvVideo.currentTime === 0,
+      'hiding her away stops the loop too — an invisible <video> must not keep decoding',
+      `paused=${mvVideo.paused} t=${mvVideo.currentTime}`)
+    mvApi.show()
+    check(mvVideo.paused === false, 'and calling her back resumes it', `paused=${mvVideo.paused}`)
+
+    /* ---- 冻结规则之二：系统要求减少动态效果 ---- */
+    const mvr = createHarness({ timer: true, composerText: '', reducedMotion: true })
+    active = mvr
+    mvr.evaluate(clientSrc)
+    mvr.module().default.apply(mvr.ctx, {
+      reactions: false, wander: false, celebrate: false, sleepAfterMs: 3600000,
+    })
+    mvr.advance(1200, 100)
+    const mvrApi = mvr.win.__wisp
+    mvrApi.mood('sleep')
+    mvr.advance(400, 100)
+    const mvrRoot = mvr.find('wisp-root')
+    const mvrVideo = mvr.all('wisp-video').find((el) => el.removed !== true) ?? null
+    check(mvrVideo !== null && mvrVideo.paused === true && mvrVideo.currentTime === 0
+      && mvrVideo.style.display === 'none',
+    'under prefers-reduced-motion the loop is frozen at the first frame, exactly like the "still" level',
+    `paused=${mvrVideo?.paused} t=${mvrVideo?.currentTime} display=${mvrVideo?.style.display}`)
+    check(mvrRoot.querySelectorAll('.wisp-img').length === 1 && mvrApi.doctor().motion.frame.frozen === true,
+      'and the static sprite is the whole picture, with doctor() saying why',
+      `sprites=${mvrRoot.querySelectorAll('.wisp-img').length} doctor.frozen=${mvrApi.doctor().motion.frame.frozen}`)
+    mvrApi.destroy()
+    active = mv
+
+    /* ---- 加载失败：静默降级，不冒泡、不留一个空盒子 ---- */
+    let mvErrThrow = null
+    try { mvVideo.dispatch('error', {}) } catch (error) { mvErrThrow = error }
+    check(mvErrThrow === null && mvVideo.style.display === 'none' && mvVideo.paused === true
+      && mvRoot.querySelectorAll('.wisp-img').length === 1,
+    'a clip that fails to load degrades silently: the video hides, the sprite stays, nothing throws',
+    `threw=${mvErrThrow === null ? 'no' : String(mvErrThrow.message)} display=${mvVideo.style.display} paused=${mvVideo.paused}`)
+    check(mvApi.doctor().motion.frame.failed === true,
+      'and doctor() reports the degraded frame animation instead of leaving it a mystery',
+      JSON.stringify(mvApi.doctor().motion.frame))
+    /* 失败之后不再反复重试：重试一个已经坏掉的源只会每 1.2 秒烧一次解码。 */
+    mvApi.mood('idle')
+    mvApi.mood('sleep')
+    mv.advance(200, 100)
+    check(mvVideo.paused === true && mvVideo.style.display === 'none' && mvLive() === mvVideo,
+      'and it is not re-created or retried on the next nap', `paused=${mvVideo.paused} display=${mvVideo.style.display}`)
+    /* 每一次 syncMotion 都喊一遍 play() 是个隐蔽的浪费（每次都造一个 promise 没人接），
+       而"稳态重算"这条路（轮询里的 setMood）会把它放大成一个持续的噪声。
+       计数钉住的是"只在状态真的变了的时候动"：这一整段里播放意图只切换了三次。 */
+    check(mv.videoPlays.length <= 4 && mv.videoPauses.length >= 3,
+      'play()/pause() follow the state transitions instead of every recompute',
+      `${mv.videoPlays.length} play(s), ${mv.videoPauses.length} pause(s) across the whole section`)
+    mvApi.destroy()
+    active = keepMv
+
     /* ------------------------------------------------------ 3g. teardown --- */
     head('3g. teardown')
 
@@ -3818,10 +3989,17 @@ if (clientSrc !== null) {
     check(counts.say <= 1, 'at most one speech bubble exists', `${counts.say}`)
     check(counts.img <= 2, 'at most the two cross-fade layers exist', `${counts.img}`)
 
-    /* 皮肤来回换 120 次，如果 blob URL 每轮都新建，这里会是 120+ —— 缓存命中应该是常数 */
-    check(soak.urLs.length <= 12,
+    /* 皮肤来回换 120 次，如果 blob URL 每轮都新建，这里会是 120+ —— 缓存命中应该是常数。
+       上限 12 -> 13：v1.45.0 起那段帧动画素材也走同一条 Blob 通道。它**只该解一次**
+       （这一轮里她睡着了 60 次），下面那条断言把这件事单独钉住 —— 只把常数从 12 抬到 13，
+       等于允许"每次入睡都新建一个"，而那种退化在 60 次里会变成 60 个。 */
+    check(soak.urLs.length <= 13,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
+    const clipBlobs = soak.blobs.filter((b) => String(b.type).startsWith('video/'))
+    check(clipBlobs.length === 1 && clipBlobs[0].type === 'video/webm' && clipBlobs[0].size > 1024,
+      'the frame-animation clip is decoded once, not once per nap',
+      `${clipBlobs.length} video blob(s), ${clipBlobs[0]?.size ?? 0} bytes`)
 
     soakApi.destroy()
     check(soak.pendingTimers().length === 0 && soak.revoked.length === soak.urLs.length,
@@ -4430,6 +4608,66 @@ if (patchPath && existsSync(patchPath)) {
 
 if (!pkg.dsh?.client?.inject && !pkg.dsh?.client?.shared) ok('no inject/shared declarations')
 else bad('inject/shared declared', 'a local-path install cannot satisfy them')
+
+/* ============================ 4b. 帧动画素材进包了吗 ====================== */
+
+head('4b. the frame-animation clip is inlined in the bundle (and inside its budget)')
+
+/* 素材是**内联**的（单文件交付，见 build.mjs 的头注释），所以它的体积是包的一部分，
+   而"涨了多少"从来不会自己冒出来 —— 只有这一条盯着它。
+   预算 800 KB 是 base64 之后的长度：这一版实测 421.1 KB（原始 315.8 KB）。
+   它记在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
+   一个数写两遍就是下一次漂移的起点。 */
+const MOTION_BUDGET_KB = 800
+{
+  const kb = (n) => (n / 1024).toFixed(1)
+  if (clientSrc === null) {
+    bad('the motion clip ships inside the bundle', 'lib/client.js is missing')
+  } else {
+    /* 表必须真的能求值：正则匹配到一段文本、而文本是注释里的，是踩过的坑
+       （SPRITES 那次的注释占位符事故）。 */
+    const motionTable = clientSrc.match(/const MOTION = (\{[\s\S]*?\n {4}\})/)
+    let motionValue = null
+    try { motionValue = motionTable ? new Function(`return ${motionTable[1]}`)() : null } catch (error) { motionValue = null }
+    const keys = motionValue && typeof motionValue === 'object' ? Object.keys(motionValue) : []
+    const inlined = keys.filter((k) => typeof motionValue[k] === 'string' && motionValue[k].startsWith('data:video/webm;base64,'))
+    check(keys.length > 0 && inlined.length === keys.length,
+      'the clip is embedded as a data URI — a share carries no .webm path to resolve',
+      keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]]).slice(0, 22)}…` : 'no MOTION table in the bundle')
+
+    const bytes = keys.reduce((n, k) => n + String(motionValue[k]).length, 0)
+    check(bytes > 0 && bytes <= MOTION_BUDGET_KB * 1024,
+      `the inlined clip stays inside its ${MOTION_BUDGET_KB} KB budget`,
+      `${kb(bytes)} KB of ${MOTION_BUDGET_KB} KB (${keys.length} clip(s))`)
+
+    /* 字节是不是**那份素材**：base64 解出来必须和磁盘上的文件一样长。
+       只数长度不比内容，但"内联了另一份/半份素材"这件事一定会在这里露出来。 */
+    const mismatch = []
+    for (const key of keys) {
+      const file = join(here, 'assets', 'motion', `${key}.webm`)
+      if (!existsSync(file)) { mismatch.push(`${key}: assets/motion/${key}.webm 不在`); continue }
+      const decoded = Buffer.from(String(motionValue[key]).slice(String(motionValue[key]).indexOf(',') + 1), 'base64')
+      const onDisk = readFileSync(file)
+      if (decoded.length !== onDisk.length) mismatch.push(`${key}: ${decoded.length} vs ${onDisk.length} bytes`)
+    }
+    check(mismatch.length === 0,
+      'and those bytes are exactly the asset on disk (same length, decoded out of the bundle)',
+      mismatch.length ? mismatch.join(' | ') : keys.map((k) => `${k} ${kb(String(motionValue[k]).length)} KB inline`).join(', '))
+
+    const moodMap = (/const MOTION_OF = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
+    let wired = null
+    try { wired = moodMap ? new Function(`return ${moodMap}`)() : null } catch (error) { wired = null }
+    const orphans = Object.keys(wired ?? {}).filter((m) => typeof motionValue?.[wired[m]] !== 'string')
+    check(wired !== null && wired.sleep !== undefined && orphans.length === 0,
+      'and the sleeping state is wired to a clip that is really in the bundle',
+      wired ? JSON.stringify(wired) : 'no MOTION_OF map found')
+
+    check(!/['"][^'"]*\.webm['"]/.test(clientSrc),
+      'the bundle references no external video file')
+    check(!clientSrc.includes('__MOTION_LITERAL__'),
+      'no leftover motion placeholder', 'run `node build.mjs`')
+  }
+}
 
 /* ---- 5. shipping readiness: sprites inlined, attribution present ---- */
 
