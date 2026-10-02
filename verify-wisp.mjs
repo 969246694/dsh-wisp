@@ -555,7 +555,7 @@ head('1b. the host half answers checkUpdate through the platform web service')
 {
   const mod = await import(pathToFileURL(hostPath).href + '?probe=update')
   const { readPublishedVersion, compareVersions, registerHandlers, inject } = mod
-  const { readBalance, accountClientMetadata, normalizeWallets, resolveWebService } = mod
+  const { readBalance, accountClientMetadata, normalizeWallets, resolveWebService, readManagedVersion } = mod
 
   /* web 服务必须声明为**可选**：硬依赖一个没加载的服务会让 fiber 永远 waiting，
      她会直接从界面上消失。这条是安全属性，不是风格偏好。 */
@@ -667,18 +667,71 @@ head('1b. the host half answers checkUpdate through the platform web service')
   /* ---- 服务在**调用时**解析，而不是吃启动那一刻的快照 ----
      宿主半包由 bundle patch 插进来，可能比 web 服务先就位；而 optional 依赖在启动时缺席
      并不会事后补上 —— `ctx.web` 会永远是 undefined，检查更新从此永久失效。
-     `ctx.get('web')` 是调用时查表，所以这条竞态修得掉。 */
-  const lateService = { fetch: async () => ({ statusCode: 200, body: { kind: 'text', content: '{"version":"9.9.9"}' } }) }
+     `ctx.get('web')` 是调用时查表，所以这条竞态修得掉。 */  const lateService = { fetch: async () => ({ statusCode: 200, body: { kind: 'text', content: '{"version":"9.9.9"}' } }) }
   const declaredService = { fetch: async () => ({ statusCode: 200, body: { kind: 'text', content: '{"version":"1.0.0"}' } }) }
-  check(resolveWebService({ get: () => lateService, web: declaredService }) === lateService,
+  check(resolveWebService({ get: () => lateService, web: declaredService }).service === lateService,
     'the web service is resolved at CALL time, not from the startup-time property')
-  check(resolveWebService({ get: () => undefined, web: declaredService }) === declaredService,
+  check(resolveWebService({ get: () => undefined, web: declaredService }).service === declaredService,
     'with ctx.get answering nothing, the declared property is still the fallback')
-  check(resolveWebService({ get: () => { throw new Error('restricted ctx') }, web: declaredService }) === declaredService,
+  check(resolveWebService({ get: () => { throw new Error('restricted ctx') }, web: declaredService }).service === declaredService,
     'a throwing ctx.get falls back instead of breaking the check')
-  check(resolveWebService({ web: { notAFetchService: true } }) === undefined
-    && resolveWebService(undefined) === undefined,
-  'a shell with no usable web service reports undefined rather than crashing')
+  /* "有个对象但不是 web 服务"也算 partial：把形状说出来，让 readVersion 去报
+     "有服务但没有 fetch" —— 那比一句"没有通道"更能指认问题在哪一层。 */
+  check(resolveWebService({ web: { notAFetchService: true } }).how === 'partial'
+    && resolveWebService({ web: { notAFetchService: true } }).service !== undefined
+    && resolveWebService(undefined).service === undefined,
+  'a non-service object is passed through as partial so the failure can name its shape')
+
+  /* ---- 拿不到服务时，必须能说清"看见了什么" ------------------------------------
+     真机上出现过"两条路都拿不到、界面只说没有联网通道"，而那句话没法追问。
+     诊断至少要回答：ctx.get 是不是函数、拿到的东西有没有 fetch。 */
+  const blind = resolveWebService({ get: () => ({ search: () => {} }) })
+  check(blind.service !== undefined && blind.how === 'partial' && blind.why.includes('-fetch'),
+    'a service without a callable fetch is reported as partial, with its shape spelled out',
+    JSON.stringify({ how: blind.how, why: blind.why }))
+  const nothing = resolveWebService({})
+  check(nothing.service === undefined && nothing.how === 'none'
+    && nothing.why.includes('ctx.get("web")→undefined') && nothing.why.includes('ctx.web→undefined'),
+  'and a genuinely missing service says which lookups came back undefined', nothing.why)
+  const noGet = resolveWebService(undefined)
+  check(noGet.service === undefined && noGet.how === 'none', 'no ctx at all is reported, not thrown', noGet.why)
+
+  /* ---- 兜底通道：web 拿不到时问插件管理器"这个包是什么版本" ---------------------
+     它走的是应用自己的网络出口（安装前 inspect 本来就要去 registry 问），
+     所以这条路不依赖插件能否拿到 web 服务。 */
+  const managedCtx = {
+    get: (name) => (name === 'pluginManager'
+      ? { inspect: async (spec) => ({ status: 'accepted', name: spec, version: '7.7.7', registry: 'https://mirror.example' }) }
+      : undefined),
+  }
+  const managed = await readManagedVersion(managedCtx, 'dsh-wisp', 500)
+  check(managed.ok === true && managed.version === '7.7.7' && managed.registry === 'https://mirror.example',
+    'the plugin manager can be asked for the published version as a fallback channel',
+    JSON.stringify(managed))
+  const noManager = await readManagedVersion({ get: () => undefined }, 'dsh-wisp', 500)
+  check(noManager.ok === false && noManager.reason === 'no-plugin-manager',
+    'and its absence is a named reason, not an exception', JSON.stringify(noManager))
+  const refused = await readManagedVersion({ get: () => ({ inspect: async () => ({ status: 'refused', reason: 'no such package' }) }) }, 'dsh-wisp', 500)
+  check(refused.ok === false && refused.reason === 'inspect-refused' && refused.detail === 'no such package',
+    'a refusal keeps the manager\'s own words', JSON.stringify(refused))
+
+  /* 端到端：没有 web 服务、但有插件管理器 → 检查更新照样能给出答案，并说明走的哪条通道 */
+  {
+    const handlers = new Map()
+    const originalHarness = globalThis.harness
+    globalThis.harness = { handle: (name, fn) => { handlers.set(name, fn); return () => handlers.delete(name) } }
+    try {
+      registerHandlers(managedCtx, { urls: U })
+      const viaManager = await handlers.get('checkUpdate')({ current: '1.0.0' })
+      check(viaManager.ok === true && viaManager.latest === '7.7.7' && viaManager.from === 'npm'
+        && viaManager.diag && viaManager.diag.via === 'pluginManager',
+      'with no web service but a plugin manager, the check still answers — through the fallback',
+      JSON.stringify(viaManager))
+    } finally {
+      if (originalHarness === undefined) delete globalThis.harness
+      else globalThis.harness = originalHarness
+    }
+  }
 
   /* ---- 每个源一个自己的截止时间 ----
      共用一个信号时，一个卡住的源到点会把另一个**已经拿到结果**的源一起作废，
