@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.43.4`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
+**当前版本 `1.44.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -78,7 +78,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 3. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 4. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **684 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **685 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
