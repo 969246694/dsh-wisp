@@ -551,7 +551,7 @@ head('1b. the host half answers checkUpdate through the platform web service')
 {
   const mod = await import(pathToFileURL(hostPath).href + '?probe=update')
   const { readPublishedVersion, compareVersions, registerHandlers, inject } = mod
-  const { readBalance, accountClientMetadata, normalizeWallets } = mod
+  const { readBalance, accountClientMetadata, normalizeWallets, resolveWebService } = mod
 
   /* web 服务必须声明为**可选**：硬依赖一个没加载的服务会让 fiber 永远 waiting，
      她会直接从界面上消失。这条是安全属性，不是风格偏好。 */
@@ -643,6 +643,43 @@ head('1b. the host half answers checkUpdate through the platform web service')
   const bothDown = await readPublishedVersion(webWith({ [U.npm]: { throw: 'x' } }), U)
   check(bothDown.ok === false && bothDown.sources.npm.ok === false && bothDown.sources.github.ok === false,
     'when every source fails the check fails — with per-source reasons', JSON.stringify(bothDown))
+
+  /* ---- 服务在**调用时**解析，而不是吃启动那一刻的快照 ----
+     宿主半包由 bundle patch 插进来，可能比 web 服务先就位；而 optional 依赖在启动时缺席
+     并不会事后补上 —— `ctx.web` 会永远是 undefined，检查更新从此永久失效。
+     `ctx.get('web')` 是调用时查表，所以这条竞态修得掉。 */
+  const lateService = { fetch: async () => ({ statusCode: 200, body: { kind: 'text', content: '{"version":"9.9.9"}' } }) }
+  const declaredService = { fetch: async () => ({ statusCode: 200, body: { kind: 'text', content: '{"version":"1.0.0"}' } }) }
+  check(resolveWebService({ get: () => lateService, web: declaredService }) === lateService,
+    'the web service is resolved at CALL time, not from the startup-time property')
+  check(resolveWebService({ get: () => undefined, web: declaredService }) === declaredService,
+    'with ctx.get answering nothing, the declared property is still the fallback')
+  check(resolveWebService({ get: () => { throw new Error('restricted ctx') }, web: declaredService }) === declaredService,
+    'a throwing ctx.get falls back instead of breaking the check')
+  check(resolveWebService({ web: { notAFetchService: true } }) === undefined
+    && resolveWebService(undefined) === undefined,
+  'a shell with no usable web service reports undefined rather than crashing')
+
+  /* ---- 每个源一个自己的截止时间 ----
+     共用一个信号时，一个卡住的源到点会把另一个**已经拿到结果**的源一起作废，
+     整次检查失败 —— 而这台机器上 raw.githubusercontent.com 恰好就是连不上的那个。 */
+  const halfHanging = {
+    fetch: async (request, signal) => {
+      if (request.url === U.github) {
+        return new Promise((resolve, reject) => {
+          if (signal && typeof signal.addEventListener === 'function') {
+            signal.addEventListener('abort', () => reject(new Error('aborted')))
+          }
+        })
+      }
+      return { statusCode: 200, body: { kind: 'text', content: '{"version":"1.40.0"}' } }
+    },
+  }
+  const survived = await readPublishedVersion(halfHanging, U, undefined, 60)
+  check(survived.ok === true && survived.latest === '1.40.0' && survived.from === 'npm'
+    && survived.sources.github.ok === false && survived.sources.npm.ok === true,
+  'a source that never answers is cut off on its own — it cannot sink the healthy one',
+  JSON.stringify(survived))
 
   check(compareVersions('1.2.3', '1.2.4') === -1 && compareVersions('1.2.3', '1.2.3') === 0
     && compareVersions('1.3.0', '1.2.9') === 1, 'version comparison is numeric, not lexicographic',
@@ -2160,6 +2197,31 @@ if (clientSrc !== null) {
       hc.win.__wisp.destroy()
       active = keepHc
     }
+
+    /* 失败时也要能追问：doctor() 必须留下**每个源各自的**原因，
+       否则"没查成"就是一句没法追的话（这正是用户实际遇到的情形）。 */
+    const diagHarness = mkChecker(async () => ({
+      ok: false,
+      reason: 'no-web-service',
+      sources: {
+        npm: { ok: false, reason: 'no-web-service' },
+        github: { ok: false, reason: 'fetch-failed', detail: 'getaddrinfo ENOTFOUND' },
+      },
+    }))
+    const keepDiag = active
+    active = diagHarness
+    diagHarness.evaluate(clientSrc)
+    diagHarness.module().default.apply(diagHarness.ctx, { reactions: false, wander: false, celebrate: false })
+    diagHarness.advance(1300, 100)
+    await diagHarness.win.__wisp.checkForUpdate()
+    const diagLast = diagHarness.win.__wisp.doctor().update.lastCheck
+    check(diagLast.state === 'failed' && diagLast.reason === 'no-web-service'
+      && diagLast.sources && diagLast.sources.npm.reason === 'no-web-service'
+      && diagLast.sources.github.detail === 'getaddrinfo ENOTFOUND',
+    'a failed check keeps every source reason, so doctor() can say WHY it failed',
+    JSON.stringify(diagLast))
+    diagHarness.win.__wisp.destroy()
+    active = keepDiag
 
     /* 宿主调用抛错：不能变成未处理的 rejection */
     const thrower = mkChecker('boom')

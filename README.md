@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.40.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
+**当前版本 `1.41.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -78,7 +78,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 3. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 4. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **643 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **649 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -521,6 +521,32 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 另外 `canSelfUpdate === false`、`hint` 里必须含包名、`why` 里必须说明沙箱原因，都有断言盯着。
 
 ## 变更
+
+### 1.41.0
+
+**检查更新更耐得住，而且失败时能追问。**
+
+起因是一个真实的报错：界面上只说"更新检查没成功"，没有任何办法知道为什么。查下来是两个
+**真缺陷**（都不是"环境问题"）：
+
+1. **两个源共用一个 8 秒截止时间。** `readPublishedVersion` 把同一个 `AbortSignal` 传给
+   npm 与 GitHub 两条请求 —— 一个卡住的源到点会把这个信号 abort 掉，**另一个已经拿到
+   结果的源也跟着作废**，整次检查失败。而这台机器上 `raw.githubusercontent.com`
+   恰好就是连不上的那个（实测：同一时刻 npm 返回 200）。
+   现在**每个源有自己的截止时间**，谁卡住谁自己出局。
+
+2. **`ctx.web` 是启动那一刻的快照。** 宿主半包由 bundle patch 插进来，可能比 `web` 服务
+   先就位；而 `inject.optional` 的依赖**在启动时缺席不会事后补上** —— `ctx.web` 会永远是
+   `undefined`，检查更新从此永久失效，且看起来像"今天网不好"。
+   现在服务在**调用时**解析：先 `ctx.get('web')`（调用时查表），再退回 `ctx.web`。
+
+3. **失败不再是一句没法追的话。** 客户端以前把 `sources` 丢掉，只留一个 `reason`；
+   现在每个源各自的原因与 detail 都会留在 `doctor().update.lastCheck` 里 ——
+   "这个壳里没有网络服务"和"两个源都没连上"是两件完全不同的事。
+
+顺带说清一件事实：**这台机器读不到 GitHub**（`raw.githubusercontent.com` 超时，
+`registry.npmjs.org` 正常），所以在这台机器上 npm 是**唯一**可用的源 ——
+更新能不能被看见，完全取决于有没有发到 npm。
 
 ### 1.40.0
 
