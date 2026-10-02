@@ -1,0 +1,76 @@
+name: Publish
+
+# Publishes to npm through a TRUSTED PUBLISHER (OIDC): no NPM_TOKEN, no 2FA
+# prompt on anyone's machine. GitHub mints a short-lived OIDC token, npm verifies
+# it came from this repository + this workflow file, and the publish is allowed.
+#
+# One-time setup on npmjs.com (package dsh-wisp -> Settings -> Trusted Publisher):
+#   Publisher          GitHub Actions
+#   Organization/user  969246694
+#   Repository         dsh-wisp
+#   Workflow filename  publish.yml      <- must match this file exactly
+#   Environment        (leave empty)
+#
+# Release flow after that:
+#   node build.mjs                       # bump package.json + template VERSION first
+#   git commit -am "release: 1.43.0"     # then
+#   git tag v1.43.0 && git push origin main --tags
+#
+# `workflow_dispatch` is here so a release can be re-run by hand after a failure.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Pack and verify only, do not publish'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write        # required: this is what OIDC trusted publishing exchanges
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm >= 11.5.1; the runner's bundled npm can be
+      # older than that, and an old npm fails with a confusing E404/EOTP.
+      - name: npm must support trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # The tag is the release. If it disagrees with package.json, the published
+      # version would not be the one anybody asked for — stop instead.
+      - name: The tag must match package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tag  package.json=$version"
+          if ($tag -ne $version) {
+            Write-Error "tag $tag does not match package.json $version"
+            exit 1
+          }
+
+      # prepublishOnly runs build.mjs + verify-wisp.mjs, so a red suite blocks the
+      # upload before anything leaves the machine (653 checks at the time of writing).
+      - name: Publish
+        if: ${{ !inputs.dry-run }}
+        run: npm publish
+
+      - name: Dry run (pack + verify only)
+        if: ${{ inputs.dry-run }}
+        run: npm publish --dry-run
