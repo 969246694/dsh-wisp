@@ -1,6 +1,6 @@
 {
   "name": "dsh-wisp",
-  "version": "1.37.0",
+  "version": "1.40.0",
   "description": "DeepSeek娘 — an unofficial floating desktop companion for the DeepSeek Harness UI. Zero dependencies; sprites inlined as data URIs; schedules on the Client timer service instead of the trapped browser timer globals.",
   "type": "module",
   "main": "lib/index.js",
@@ -31,6 +31,7 @@
     "build.mjs",
     "verify-wisp.mjs",
     "tools/smoke.mjs",
+    "tools/engine-probe.mjs",
     "tools/keyout.mjs",
     "tools/assets.mjs",
     "tools/tiers.mjs",

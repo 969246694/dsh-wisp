@@ -752,6 +752,278 @@ check(wanderMounted && wander.maxStep <= 400, 'no observed step exceeds twice th
 check(wanderMounted && wander.gliding, 'and it is a glide, not a teleport', 'data-gliding was observed during the stroll')
 await wanderBrowser.close()
 
+/* ------------------------------------------------------ 10. 动作层（真引擎） --- */
+head('10. the motion layer, in a real engine')
+
+/* 假 DOM 只能证明"属性写对了"，证明不了 **CSS 真的接住了它**：关键帧里的 var()、
+   属性选择器、以及 prefers-reduced-motion 的媒体查询，都得真引擎说一次才算数。
+   这一段就是 verify-wisp.mjs 里新增替身能力（matchMedia）在真实浏览器侧的对应检查。 */
+const motionBrowser = await chromium.launch({ headless: !headed, executablePath })
+const motionLogs = []
+const motionPage = await motionBrowser.newPage({ viewport: { width: 1440, height: 900 } })
+motionPage.on('console', (msg) => { if (msg.type() === 'error') motionLogs.push(msg.text()) })
+motionPage.on('pageerror', (err) => motionLogs.push('pageerror: ' + err.message))
+await motionPage.setContent('<!doctype html><html><head></head><body>' +
+  '<div id="under" style="position:fixed;inset:0;z-index:0">' +
+  '<button id="underBtn" style="position:absolute;inset:0;width:100%;height:100%;opacity:.02">under</button></div>' +
+  '</body></html>')
+await motionPage.evaluate((src) => {
+  window.__clicks = 0
+  document.getElementById('underBtn').addEventListener('click', () => { window.__clicks++ })
+  window.__ML = { def: null }
+  window.__ModuleLoader__ = { load: (d) => { window.__ML.def = d } }
+  new Function(src)()
+  window.__ML.def.factory(() => ({})).apply({
+    get: (n) => (n === 'timer'
+      ? { timeout: (cb, ms) => { const i = setTimeout(cb, ms); return () => clearTimeout(i) }, interval: (cb, ms) => { const i = setInterval(cb, ms); return () => clearInterval(i) } }
+      : n === 'styles' ? { insert: (css) => { const s = document.createElement('style'); s.textContent = css; document.head.append(s); return () => s.remove() } } : undefined),
+    on: () => () => {}, effect: () => () => {},
+  }, { wander: false, reactions: false, sleepAfterMs: 3600000, persist: false })
+}, bundle)
+await motionPage.waitForTimeout(1200)
+
+const motionUp = await motionPage.evaluate(() =>
+  typeof window.__wisp === 'object' && window.__wisp !== null && document.querySelector('.wisp-lean') !== null)
+check(motionUp, 'a motion-enabled mount comes up with both layers',
+  motionUp ? 'ok' : `console: ${motionLogs.join(' | ') || '(empty)'}`)
+
+if (motionUp) {
+  /* 指针靠近 → .wisp-lean 的**计算后 transform** 真的转了。
+     这是替身给不了的东西：它的 style 是普通对象，没有级联，也没有 matrix。 */
+  const pointNear = () => motionPage.evaluate(() => {
+    const p = window.__wisp.position
+    window.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: p.x + 280 + 60, clientY: p.y + 420, bubbles: true,
+    }))
+  })
+  await pointNear()
+  await motionPage.waitForTimeout(700)      // 姿势有 0.5s 的过渡，读太早只会读到中途
+  const leanState = await motionPage.evaluate(() => {
+    const root = document.querySelector('.wisp-root')
+    const m = /matrix(?:3d)?\(([^)]+)\)/.exec(getComputedStyle(document.querySelector('.wisp-lean')).transform)
+    return {
+      tilt: root.style.getPropertyValue('--wisp-tilt'),
+      shear: m ? Math.abs(Number(m[1].split(',')[1])) : 0,   // b = sin(θ)
+      amp: getComputedStyle(root).getPropertyValue('--wisp-amp').trim(),
+    }
+  })
+  check(leanState.tilt !== '0deg' && leanState.shear > 0.005,
+    'the pointer lean reaches the real cascade — the posture layer is genuinely rotated',
+    `--wisp-tilt=${leanState.tilt}, sin(θ)=${leanState.shear.toFixed(4)}`)
+  check(leanState.amp === '1', 'and the amplitude variable resolves on the root', `--wisp-amp=${leanState.amp}`)
+
+  /* 按下 → .wisp-motion 上真的有一条在跑的 CSS 动画 */
+  const pressRun = await motionPage.evaluate(async () => {
+    const p = window.__wisp.position
+    const body = document.querySelector('.wisp-body')
+    const motion = document.querySelector('.wisp-motion')
+    const ev = new PointerEvent('pointerdown', {
+      button: 0, clientX: p.x + 280, clientY: p.y + 420, bubbles: true, cancelable: true,
+    })
+    body.dispatchEvent(ev)
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    const names = motion.getAnimations().map((a) => a.animationName).filter(Boolean)
+    const accent = document.querySelector('.wisp-root').dataset.accent
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+    return { names, accent, grabbed: ev.defaultPrevented }
+  })
+  check(pressRun.grabbed, 'a press on her body is grabbed in the real browser too')
+  check(pressRun.accent === 'press', 'and it sets the press accent', String(pressRun.accent))
+  check(pressRun.names.includes('wisp-press'),
+    'the engine really starts those keyframes — the attribute selector and the calc() in them both resolve',
+    pressRun.names.join(', ') || '(no running animation)')
+
+  /* 拖完松手 = 落地（顿一下）＋ 姿势回正 */
+  const landRun = await motionPage.evaluate(async () => {
+    const p = window.__wisp.position
+    const body = document.querySelector('.wisp-body')
+    const motion = document.querySelector('.wisp-motion')
+    const root = () => document.querySelector('.wisp-root')
+    body.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, clientX: p.x + 280, clientY: p.y + 420, bubbles: true, cancelable: true,
+    }))
+    window.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: p.x + 280 + 40, clientY: p.y + 420, bubbles: true,
+    }))
+    const midTilt = root().style.getPropertyValue('--wisp-tilt')
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    return {
+      midTilt,
+      accent: root().dataset.accent,
+      names: motion.getAnimations().map((a) => a.animationName),
+      afterTilt: root().style.getPropertyValue('--wisp-tilt'),
+    }
+  })
+  check(Number.parseFloat(landRun.midTilt) < 0,
+    'dragging her to the right leans her top backwards — she lags the motion', landRun.midTilt)
+  check(landRun.accent === 'land' && landRun.names.includes('wisp-land'),
+    'releasing after a real drag lands her instead of teleporting upright',
+    `${landRun.accent} / ${landRun.names.join(', ') || '(none)'}`)
+  check(landRun.afterTilt === '0deg', 'and the posture goes back to upright on release', landRun.afterTilt)
+
+  /* 换表情会弹一下；但**同一个表情再来一次不许弹** —— 那是稳态重算走的路
+     （attn 每 1.2 秒重算一次），把它也弹起来就是 1.2 秒一抽。
+     手势路径反过来：戳两下必须弹两下，靠 a/b 交替让第二次真的重播。 */
+  const popRun = await motionPage.evaluate(async () => {
+    const motion = document.querySelector('.wisp-motion')
+    const root = () => document.querySelector('.wisp-root')
+    const body = document.querySelector('.wisp-body')
+    const wait = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    const names = () => motion.getAnimations().map((a) => a.animationName)
+    /* 先让上一步可能挂着的 flashHappy 计时器烧掉 —— 它到点会把 mood 打回 idle，
+       那会让"同一个表情"那一步其实又变了一次（这个假警报真出现过）。 */
+    await new Promise((r) => setTimeout(r, 1600))
+    window.__wisp.mood('idle')
+    await wait()
+    window.__wisp.mood('happy')
+    await wait()
+    const changed = { accent: root().dataset.accent, names: names(), mood: window.__wisp.currentMood }
+    await new Promise((r) => setTimeout(r, 600))
+    window.__wisp.mood('happy')
+    await wait()
+    const steady = { accent: root().dataset.accent ?? null, names: names(), mood: window.__wisp.currentMood }
+    const p = window.__wisp.position
+    const tap = async () => {
+      body.dispatchEvent(new PointerEvent('pointerdown', {
+        button: 0, clientX: p.x + 280, clientY: p.y + 420, bubbles: true, cancelable: true,
+      }))
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+      await wait()
+      return { accent: root().dataset.accent, names: names() }
+    }
+    await new Promise((r) => setTimeout(r, 500))
+    const tap1 = await tap()
+    await new Promise((r) => setTimeout(r, 500))
+    const tap2 = await tap()
+    return { changed, steady, tap1, tap2 }
+  })
+  const popOk = (r) => /^pop-/.test(String(r.accent)) && r.names.includes('wisp-' + r.accent)
+  check(popOk(popRun.changed), 'a mood change pops instead of only cross-fading',
+    `${popRun.changed.accent}:${popRun.changed.names.join(',')}`)
+  check(popRun.steady.mood === 'happy' && popRun.steady.accent === null
+    && !popRun.steady.names.some((n) => String(n).startsWith('wisp-pop')),
+  're-asserting the same mood stays silent — the attention poll takes that path every 1.2s',
+  `mood=${popRun.steady.mood} accent=${popRun.steady.accent} animations=${popRun.steady.names.join(',') || '(none)'}`)
+  check(popOk(popRun.tap1) && popOk(popRun.tap2) && popRun.tap1.accent !== popRun.tap2.accent,
+    'and two taps in a row both pop, with alternating names',
+    `${popRun.tap1.accent} -> ${popRun.tap2.accent}`)
+
+  /* 静止档：不只是新动作停了，连呼吸也停 */
+  await pointNear()
+  const beforeStill = await motionPage.evaluate(() =>
+    document.querySelector('.wisp-root').style.getPropertyValue('--wisp-tilt'))
+  const stillState = await motionPage.evaluate(() => {
+    window.__wisp.configure({ motion: 'off' })
+    const root = document.querySelector('.wisp-root')
+    const p = window.__wisp.position
+    window.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: p.x + 280 + 60, clientY: p.y + 420, bubbles: true,
+    }))
+    return {
+      attr: root.dataset.motion,
+      amp: getComputedStyle(root).getPropertyValue('--wisp-amp').trim(),
+      bodyAnim: getComputedStyle(document.querySelector('.wisp-body')).animationName,
+      tilt: root.style.getPropertyValue('--wisp-tilt'),
+    }
+  })
+  /* 先把她推到一个非零角再切档 —— 否则"没动"与"被归零"在断言里长得一模一样。 */
+  check(beforeStill !== '0deg' && stillState.tilt === '0deg',
+    '"still" brings the posture back to upright at once, and then the pointer cannot move it',
+    `${beforeStill} -> ${stillState.tilt}`)
+  check(stillState.attr === 'off' && stillState.amp === '0',
+    'the level reaches the element and the amplitude variable', `${stillState.attr} / ${stillState.amp}`)
+  check(stillState.bodyAnim === 'none',
+    'and it stops the idle breathing too, so "still" means still', String(stillState.bodyAnim))
+
+  /* 系统级 reduced motion：真引擎里用 emulateMedia 模拟，而不是读 CSS 文本 */
+  await motionPage.evaluate(() => window.__wisp.configure({ motion: 'full' }))
+  await motionPage.emulateMedia({ reducedMotion: 'reduce' })
+  /* 等一拍再读：上一步可能还有一个动作挂在属性上，没跑完就断言会把它当成
+     "reduced motion 下新放的动作"（第一次跑就是这么误报的）。 */
+  await motionPage.waitForTimeout(750)
+  const rmState = await motionPage.evaluate(() => {
+    const root = document.querySelector('.wisp-root')
+    const p = window.__wisp.position
+    window.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: p.x + 280 + 60, clientY: p.y + 420, bubbles: true,
+    }))
+    document.querySelector('.wisp-body').dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, clientX: p.x + 280, clientY: p.y + 420, bubbles: true, cancelable: true,
+    }))
+    const out = {
+      reduced: window.__wisp.doctor().motion.reduced,
+      tilt: root.style.getPropertyValue('--wisp-tilt'),
+      accent: root.dataset.accent ?? null,
+      bodyAnim: getComputedStyle(document.querySelector('.wisp-body')).animationName,
+      motionAnim: getComputedStyle(document.querySelector('.wisp-motion')).animationName,
+    }
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+    return out
+  })
+  check(rmState.reduced === true, 'the plugin reads the system setting through matchMedia',
+    String(rmState.reduced))
+  check(rmState.tilt === '0deg' && rmState.accent === null,
+    'under reduced motion neither the posture nor an accent is applied — the media query cannot reach a JS-written variable, so this second guard is load-bearing',
+    `--wisp-tilt=${rmState.tilt}, accent=${rmState.accent}`)
+  check(rmState.bodyAnim === 'none' && rmState.motionAnim === 'none',
+    'and the media query stops everything in the real engine as well',
+    `${rmState.bodyAnim} / ${rmState.motionAnim}`)
+
+  /* ---- 命中判定：透明处必须整层穿透到下面的应用 ----
+     假 DOM 没有命中判定，所以"下面那个应用到底收没收到"只有真引擎能给答案。
+     这里用 elementFromPoint（它同时考虑 pointer-events 与 clip-path）加一次真点击。 */
+  const wasAt = await motionPage.evaluate(() => window.__wisp.position)
+  const picks = await motionPage.evaluate(() => {
+    window.__wisp.move(600, 150)
+    const img = document.querySelector('.wisp-img')
+    const c = document.createElement('canvas'); c.width = 96; c.height = 144
+    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, 96, 144)
+    const data = ctx.getImageData(0, 0, 96, 144).data
+    const p = window.__wisp.position
+    const clear = [], solid = []
+    for (let row = 2; row < 142; row += 4) {
+      for (let col = 2; col < 94; col += 4) {
+        const a = data[(row * 96 + col) * 4 + 3]
+        const x = Math.round(p.x + (col + 0.5) * (560 / 96))
+        const y = Math.round(p.y + (row + 0.5) * (840 / 144))
+        if (a === 0) clear.push({ x, y })
+        else if (a > 240) solid.push({ x, y })
+      }
+    }
+    return { clear, solid }
+  })
+  check(picks.clear.length > picks.solid.length,
+    'most of her box is transparent — which is why the box must not be the hit area',
+    `${picks.solid.length} opaque vs ${picks.clear.length} transparent samples`)
+  const clearPoint = picks.clear[Math.floor(picks.clear.length / 2)]
+  const solidPoint = picks.solid[Math.floor(picks.solid.length / 2)]
+  const topAt = (pt) => motionPage.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y)
+    return el ? (el.id || el.className || el.tagName) : null
+  }, pt)
+  const clearTop = await topAt(clearPoint)
+  check(clearTop === 'underBtn', 'at a transparent pixel the topmost element is the APP, not her', clearTop)
+  const clicksBeforeClear = await motionPage.evaluate(() => window.__clicks)
+  await motionPage.mouse.click(clearPoint.x, clearPoint.y)
+  const clicksAfterClear = await motionPage.evaluate(() => window.__clicks)
+  check(clicksAfterClear === clicksBeforeClear + 1, 'a real click there reaches the app underneath',
+    `${clicksBeforeClear} → ${clicksAfterClear}`)
+  const solidTop = await topAt(solidPoint)
+  check(solidTop === 'wisp-hit', 'on her body the topmost element is her hit layer', solidTop)
+  const clicksBeforeSolid = await motionPage.evaluate(() => window.__clicks)
+  await motionPage.mouse.click(solidPoint.x, solidPoint.y)
+  const clicksAfterSolid = await motionPage.evaluate(() => window.__clicks)
+  check(clicksAfterSolid === clicksBeforeSolid, 'and clicking her does NOT fall through',
+    `${clicksBeforeSolid} → ${clicksAfterSolid}`)
+  const focusAfter = await motionPage.evaluate(() =>
+    document.activeElement ? String(document.activeElement.className || document.activeElement.tagName) : null)
+  check(focusAfter.includes('wisp-body'),
+    'clicking her still hands her the keyboard focus (Enter still opens the menu)', focusAfter)
+  await motionPage.evaluate(({ x, y }) => window.__wisp.move(x, y), wasAt)
+}
+await motionBrowser.close()
+
 
 
 console.log(`\n${fail === 0 ? '=== SMOKE PASSED ===' : '=== SMOKE FAILED ==='}`)

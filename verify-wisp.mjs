@@ -43,8 +43,9 @@ const clientRel = pkg.exports?.['./client']?.default
 const clientPath = clientRel ? resolve(here, clientRel) : null
 
 let failures = 0
-const ok = (l, d = '') => console.log(`  PASS  ${l}${d ? '  — ' + d : ''}`)
-const bad = (l, d = '') => { failures++; console.log(`  FAIL  ${l}${d ? '  — ' + d : ''}`) }
+let checks = 0
+const ok = (l, d = '') => { checks++; console.log(`  PASS  ${l}${d ? '  — ' + d : ''}`) }
+const bad = (l, d = '') => { checks++; failures++; console.log(`  FAIL  ${l}${d ? '  — ' + d : ''}`) }
 const head = (t) => console.log(`\n=== ${t} ===`)
 const check = (cond, l, d = '') => (cond ? ok(l, d) : bad(l, d))
 
@@ -391,6 +392,13 @@ function createHarness(options = {}) {
         return (options.backgrounds && cls && options.backgrounds[cls]) || 'rgba(0, 0, 0, 0)'
       },
     }),
+    /* prefers-reduced-motion：CSS 那边由媒体查询负责，但**姿势是 JS 写进去的**，
+       媒体查询管不到它 —— 所以"系统要求别动时她真的不动"必须能被问一次。
+       替身缺 matchMedia 时那条只能靠读 CSS 文本，而读文本证明不了行为。 */
+    matchMedia: (query) => ({
+      media: String(query),
+      matches: options.reducedMotion === true && String(query).indexOf('reduce') >= 0,
+    }),
     addEventListener(type, fn) { (winListeners[type] ??= []).push(fn) },
     removeEventListener(type, fn) {
       const list = winListeners[type]
@@ -543,6 +551,7 @@ head('1b. the host half answers checkUpdate through the platform web service')
 {
   const mod = await import(pathToFileURL(hostPath).href + '?probe=update')
   const { readPublishedVersion, compareVersions, registerHandlers, inject } = mod
+  const { readBalance, accountClientMetadata, normalizeWallets } = mod
 
   /* web 服务必须声明为**可选**：硬依赖一个没加载的服务会让 fiber 永远 waiting，
      她会直接从界面上消失。这条是安全属性，不是风格偏好。 */
@@ -551,6 +560,13 @@ head('1b. the host half answers checkUpdate through the platform web service')
     'web is declared as an OPTIONAL inject', JSON.stringify(inject))
   check(Boolean(declaresWeb) && Array.isArray(inject.required) && !inject.required.includes('web'),
     'and not as a required one — a missing service must not hide her', JSON.stringify(inject))
+  /* 余额服务同理：桌面版有、别的壳可能没有。硬依赖它 = 在那些壳里她整个人消失。 */
+  check(Boolean(declaresWeb) && inject.optional.includes('deepseekAccount')
+    && !inject.required.includes('deepseekAccount'),
+  'deepseekAccount is optional too — the balance must degrade, not take her down',
+  JSON.stringify(inject))
+  check(mod.VERSION === pkg.version, 'the host half stamps the packaged version',
+    `${mod.VERSION} vs ${pkg.version}`)
 
   /* 每个 URL 一个态度：可以按 URL 给不同的结果，才能测"两个源"的组合。 */
   const webWith = (byUrl) => ({
@@ -647,6 +663,113 @@ head('1b. the host half answers checkUpdate through the platform web service')
   check(typeof urls.npm === 'string' && urls.npm.startsWith('https://')
     && typeof urls.github === 'string' && urls.github.startsWith('https://'),
     'and it reads from two real https sources', JSON.stringify(urls))
+
+  /* ---------------- 余额：走平台自己的账户服务，插件不碰 API key -------------- */
+  /* 为什么不能自己打平台 API：`ctx.web.fetch` 的请求体只有 `{ url }`（实测的
+     服务契约），**设不了 Authorization 头**；而 DSH 自己读余额用的是
+     platform.deepseek.com 上的 x-dsh-auth-token（账户授权，不是 API key）。
+     所以唯一干净的路是服务本身 —— 凭据留在平台手里，插件连读都读不到。 */
+  const CLIENT = { version: 'x', locale: 'zh-CN', timezoneOffsetSeconds: 28800 }
+  const accountWith = (result, state) => ({
+    getBalance: async () => {
+      if (result && result.throw) throw new Error(result.throw)
+      return result
+    },
+    getState: async () => state,
+  })
+  const wallet = (currency, balance) => ({ currency, balance })
+
+  const ready = await readBalance(accountWith({
+    status: 'ready',
+    value: [wallet('CNY', '110.00')],
+    bonusWallets: [wallet('CNY', '10.00')],
+  }), CLIENT)
+  check(ready.ok === true && ready.status === 'ready' && ready.wallets.length === 1
+    && ready.wallets[0].currency === 'CNY' && ready.wallets[0].balance === '110.00'
+    && ready.bonusWallets[0].balance === '10.00',
+    'a ready answer carries the wallets through unchanged', JSON.stringify(ready))
+
+  const platformFailed = await readBalance(accountWith({ status: 'failed' }), CLIENT)
+  check(platformFailed.ok === true && platformFailed.status === 'failed' && platformFailed.wallets.length === 0,
+    'a platform "failed" is a result, not a throw — and it never becomes a zero balance',
+    JSON.stringify(platformFailed))
+
+  /* null 同时意味着两件事，而这两句"话"不一样：没登录 vs 授权在查询途中换了。 */
+  const signedOut = await readBalance(accountWith(null, { status: 'signed-out' }), CLIENT)
+  check(signedOut.ok === true && signedOut.status === 'signed-out' && signedOut.signedIn === false,
+    'a null balance while signed out is reported as signed out', JSON.stringify(signedOut))
+
+  const grantMoved = await readBalance(accountWith(null, { status: 'credential-stored' }), CLIENT)
+  check(grantMoved.ok === true && grantMoved.status === 'unavailable' && grantMoved.signedIn === true,
+    'a null balance while STILL signed in is "try again", not "log in" — telling the wrong one is worse than silence',
+    JSON.stringify(grantMoved))
+
+  /* getState() 也失败时，我们**不知道**是不是未登录 —— 这时必须说"没读到"，
+     而不是替平台断言"你没登录"（叫人去登录一个已经登录的账户，比什么都不说糟）。 */
+  const stateBlewUp = await readBalance({
+    getBalance: async () => null,
+    getState: async () => { throw new Error('state unavailable') },
+  }, CLIENT)
+  check(stateBlewUp.ok === true && stateBlewUp.status === 'unavailable' && stateBlewUp.signedIn === null,
+    'when even getState() fails it admits it does not know, instead of claiming "signed out"',
+    JSON.stringify(stateBlewUp))
+
+  const noService = await readBalance(undefined, CLIENT)
+  check(noService.ok === false && noService.reason === 'no-account-service',
+    'without the account service it says so instead of throwing', JSON.stringify(noService))
+
+  const balanceBlewUp = await readBalance(accountWith({ throw: 'socket closed' }), CLIENT)
+  check(balanceBlewUp.ok === false && balanceBlewUp.reason === 'call-failed'
+    && balanceBlewUp.detail === 'socket closed',
+  'a platform error is caught and reported', JSON.stringify(balanceBlewUp))
+
+  /* 服务不接受 AbortSignal，所以只能竞速 —— 没有这一条，一个挂住的调用
+     会让她永远不说话（气泡停在"看一下……"）。 */
+  const hung = await readBalance({ getBalance: () => new Promise(() => {}) }, CLIENT, 20)
+  check(hung.ok === false && hung.reason === 'timeout',
+    'a call that never settles is bounded by the timeout, not left hanging', JSON.stringify(hung))
+
+  const junk = await readBalance(accountWith({
+    status: 'ready',
+    value: [null, { currency: 'CNY' }, { currency: 'CNY', balance: '1.00' }, 'nope'],
+    bonusWallets: 'not-an-array',
+  }), CLIENT)
+  check(junk.status === 'ready' && junk.wallets.length === 1 && junk.bonusWallets.length === 0,
+    'malformed wallets are dropped instead of crashing the client', JSON.stringify(junk))
+  check(normalizeWallets(new Array(50).fill(wallet('CNY', '1'))).length === 8,
+    'and an unbounded list is capped before it crosses the sandbox',
+    `${normalizeWallets(new Array(50).fill(wallet('CNY', '1'))).length} wallets`)
+
+  const meta = accountClientMetadata('en-US')
+  check(meta.version === pkg.version && meta.locale === 'en-US'
+    && meta.timezoneOffsetSeconds === -new Date().getTimezoneOffset() * 60,
+  'the request metadata carries version, locale and the UTC offset in the sign the service wants',
+  JSON.stringify(meta))
+  check(accountClientMetadata('').locale === 'zh-CN' && accountClientMetadata(undefined).locale === 'zh-CN',
+    'a missing locale falls back instead of sending an empty string')
+
+  /* handler：注册、回答、以及**两个一起摘掉** */
+  const bothHandlers = registerHandlers({
+    web: only('npm', { body: '{"version":"9.9.9"}' }),
+    deepseekAccount: accountWith({ status: 'ready', value: [wallet('USD', '4.20')], bonusWallets: [] }, { status: 'credential-stored' }),
+  }, { urls: U })
+  check(handlers.has('checkBalance'), 'registerHandlers puts checkBalance on the harness seat',
+    [...handlers.keys()].join(', '))
+  const balanceAnswer = await handlers.get('checkBalance')({ locale: 'zh-CN' })
+  check(balanceAnswer.ok === true && balanceAnswer.status === 'ready'
+    && balanceAnswer.wallets[0].balance === '4.20' && typeof balanceAnswer.checkedAt === 'string',
+    'the handler returns a plain, serializable verdict', JSON.stringify(balanceAnswer))
+
+  const withoutAccount = registerHandlers({ web: only('npm', { body: '{}' }) }, { urls: U })
+  const degraded = await handlers.get('checkBalance')({})
+  check(degraded.ok === false && degraded.reason === 'no-account-service',
+    'with the service missing the handler degrades to a reason the client can speak',
+    JSON.stringify(degraded))
+  check(typeof withoutAccount.dispose === 'function', 'and it still registers')
+
+  bothHandlers.dispose()
+  check(!handlers.has('checkUpdate') && !handlers.has('checkBalance'),
+    'dispose releases BOTH handlers, not just the update one', [...handlers.keys()].join(', ') || '(none left)')
 
   /* 座位不在时不许抛：宿主半包在别的运行时里也要能 import */
   delete globalThis.harness
@@ -773,6 +896,45 @@ if (clientSrc !== null) {
       `${layerEl.querySelectorAll('.wisp-say').length} attached`)
     check(api.element.querySelectorAll('.wisp-say').length === 0,
       'the bubble is not inside the mirrored root', 'a child of the root would render its text backwards')
+
+    /* 气泡的淡出时长必须**等于它的寿命**。样式表里写死一个数、代码里另活一个数，
+       两边就会漂（曾经是 4.2s 的淡出配 4.4s 的寿命：气泡提前淡完再干等）。
+       这里不硬编码 4.4 —— 读它自己声明的时长，再按那个时间推进虚拟时钟。
+
+       **单开一个替身**：这一条要推进 4.4 秒，而主替身后面还有一堆与时间有关的断言
+       （第一次跑就把「同一批错误不重复播报」的计数从 11 推成了 12）。断言不能靠
+       打乱别人的时间轴来成立，所以它有自己的时钟。
+       存储里预置"右键提示已经说过了"：那句提示在挂载后 3.6 秒会冒出来，而 say()
+       是**替换**而不是排队 —— 不挡住它，被测的那个气泡会在 4.2 秒检查点之前
+       被提示顶掉（这个假警报也真出现过，两次）。 */
+    const bt = createHarness({
+      timer: true,
+      storageSeed: { 'dsh-wisp:hint:v1': JSON.stringify({ told: true }) },
+    })
+    const keepBt = active
+    active = bt
+    bt.evaluate(clientSrc)
+    bt.module().default.apply(bt.ctx, { wander: false, reactions: false })
+    /* 挂载后 800ms 她会先打一句招呼（按时段选池子）—— 等它说完再放我们要测的那句，
+       否则 say() 的**替换**语义会把被测量对象换成问候语。 */
+    bt.advance(1000)
+    const btApi = bt.win.__wisp
+    btApi.say('测时长')
+    const btSay = bt.all('wisp-say').filter((el) => el.removed !== true).at(-1)
+    const declaredMs = Number.parseFloat(String(btSay?.style.animationDuration ?? '')) * 1000
+    check(Number.isFinite(declaredMs) && declaredMs > 0,
+      'the bubble declares its own lifetime instead of trusting the stylesheet',
+      `${btSay?.style.animationDuration}`)
+    bt.advance(declaredMs - 200, 100)
+    check(btSay !== undefined && btSay.removed !== true,
+      'the bubble is still on screen just before that deadline',
+      `removed=${btSay?.removed}, text=${JSON.stringify(btSay?.textContent)}`)
+    bt.advance(400, 100)
+    check(btSay !== undefined && btSay.removed === true,
+      'and it is gone right after it — the CSS fade and the removal share one clock',
+      `${declaredMs}ms`)
+    btApi.destroy()
+    active = keepBt
     api.mood('happy')
     check(root.dataset.mood === 'happy', 'mood() control works')
     check(h.srcs[h.srcs.length - 1] !== h.srcs[0], 'sprite switches with mood', String(h.srcs[h.srcs.length - 1]))
@@ -873,6 +1035,17 @@ if (clientSrc !== null) {
     h.advance(6000, 300)
     check(bubbles() === afterFirst, 'she does not repeat herself for the same item', `${bubbles()} vs ${afterFirst}`)
     check(root.dataset.mood === 'attn', 'and she stays on attention while it is unanswered')
+
+    /* 稳态重算**不许**放动作。poll 每一轮都会重算 setMood('attn')，而 attn 在
+       POPPY_MOODS 里 —— 弹一下曾经挂在去重**之前**，于是你盯着审批卡片等的
+       时候她每 1.2 秒抽一下（真机实测：6 秒 5 次 animationstart）。这条盯着那个回归。 */
+    check(root.dataset.accent === undefined,
+      'the poll re-asserting attn does not fire an accent — a steady state that pulses is a twitch',
+      String(root.dataset.accent))
+    h.advance(5000, 200)                 // 四轮轮询
+    check(root.dataset.accent === undefined &&
+      root.querySelectorAll('.wisp-zzz').length === 0,
+    'and it stays quiet across several poll ticks', String(root.dataset.accent))
     h.state.pending = 'q-2'
     h.advance(1300, 100)
     check(bubbles() > afterFirst, 'a different item is announced again', `${bubbles()}`)
@@ -2052,6 +2225,139 @@ if (clientSrc !== null) {
     sameVer.win.__wisp.destroy()
     active = keepSame
 
+    /* ------------- 3d-sexdecies. she can look up your balance ----------------- */
+    head('3d-sexdecies. she can look up your balance, and says which kind of "no" it is')
+
+    /* 余额这条路和检查更新同形：浏览器半包没有网络，宿主半包拿平台自己的
+       `deepseekAccount` 服务（凭据留在平台手里），这边用 host.call 问它。
+       四种"没读到"必须是四句不同的话 —— 全说成"查不到"就是在骗人。 */
+    const balanceHarness = (reply) => createHarness({
+      timer: true, composerText: '',
+      hostCall: async (method, args) => {
+        if (method !== 'checkBalance') throw new Error('unexpected method ' + method)
+        return typeof reply === 'function' ? reply(args) : reply
+      },
+    })
+    const spoken = async (hh) => {
+      await new Promise((resolve) => setImmediate(resolve))
+      return String(hh.all('wisp-say').at(-1)?.textContent ?? '')
+    }
+    const fromPool = (pool, text, n) => (Array.isArray(pool) ? pool : [])
+      .some((line) => text.startsWith(line.split('{n}').join(n)))
+
+    const bal = balanceHarness({ ok: true, status: 'ready', wallets: [{ currency: 'CNY', balance: '110.00' }], bonusWallets: [{ currency: 'CNY', balance: '10.00' }] })
+    const keepBal = active
+    active = bal
+    bal.evaluate(clientSrc)
+    bal.module().default.apply(bal.ctx, { reactions: true, wander: false, celebrate: false })
+    bal.advance(1300, 100)
+    const balApi = bal.win.__wisp
+    const balState = await balApi.checkBalance()
+    check(balState.state === 'ready' && balState.wallets[0].balance === '110.00',
+      'a ready answer lands in the ready state', JSON.stringify(balState))
+    const balLine = await spoken(bal)
+    check(balLine.includes('¥110.00') && fromPool(linesInBundle()?.balance, balLine, '¥110.00'),
+      'she says the amount, from the balance pool', balLine)
+    check(balLine.includes('¥10.00'),
+      'and mentions the credit part instead of hiding it', balLine)
+    check(balApi.doctor().balance.state === 'ready' && balApi.doctor().balance.hostSeat === true,
+      'doctor() reports the balance result and that a host seat exists',
+      JSON.stringify(balApi.doctor().balance))
+
+    /* 菜单里那一行：点一下就该出声（菜单点完就关，光返回状态等于没反应）。
+       它在「行为」分组的子面板里 —— 主菜单上只有分组行，所以要先展开那一组。 */
+    const balBody = bal.find('wisp-body')
+    const balClick = { preventDefault() {}, stopPropagation() {} }
+    /* 右键必须落在**她身上**（onContext 会先过命中蒙版），所以坐标取她的中心。 */
+    const balPos = balApi.position
+    balBody.dispatch('contextmenu', {
+      clientX: balPos.x + 280, clientY: balPos.y + 420, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true }, stopPropagation() {},
+    })
+    const liveMenuItem = () => bal.all('wisp-menu-item').filter((el) => el.removed !== true)
+    const behaviourRow = liveMenuItem().find((el) => el.dataset.group === '行为')
+    check(behaviourRow !== undefined, 'the behaviour group is on the menu',
+      liveMenuItem().map((el) => el.textContent).join(' | '))
+    if (behaviourRow !== undefined) behaviourRow.dispatch('click', balClick)
+    const balRow = liveMenuItem().find((el) => String(el.textContent).includes('看看余额'))
+    check(balRow !== undefined, 'and it has a balance entry',
+      liveMenuItem().map((el) => el.textContent).join(' | '))
+    if (balRow !== undefined) {
+      bal.all('wisp-say').forEach((el) => { el.textContent = '' })
+      balRow.dispatch('click', balClick)
+      const menuLine = await spoken(bal)
+      check(menuLine.includes('¥110.00'), 'clicking it makes her speak the balance', menuLine)
+    }
+    bal.win.__wisp.destroy()
+    active = keepBal
+
+    const cases = [
+      ['signed-out', { ok: true, status: 'signed-out', wallets: [], bonusWallets: [] }, linesInBundle()?.balanceSignedOut],
+      ['unavailable', { ok: true, status: 'unavailable', wallets: [], bonusWallets: [] }, linesInBundle()?.balanceUnavailable],
+      ['failed', { ok: false, reason: 'no-account-service' }, linesInBundle()?.balanceFailed],
+    ]
+    for (const [expected, reply, pool] of cases) {
+      const hb = balanceHarness(reply)
+      const keepHb = active
+      active = hb
+      hb.evaluate(clientSrc)
+      hb.module().default.apply(hb.ctx, { reactions: true, wander: false, celebrate: false })
+      hb.advance(1300, 100)
+      const res = await hb.win.__wisp.checkBalance()
+      const line = await spoken(hb)
+      check(res.state === expected, `a "${expected}" answer lands in that state`, JSON.stringify(res))
+      check(fromPool(pool, line, ''), `and she says it in that pool's words`, line)
+      check(!/110\.00/.test(line), 'without inventing a number for a read that failed', line)
+      hb.win.__wisp.destroy()
+      active = keepHb
+    }
+
+    /* 没有 host 座位（默认替身）：如实说"这个壳里查不了"，不许抛 */
+    const balNoHost = createHarness({ timer: true, composerText: '' })
+    const keepBalNoHost = active
+    active = balNoHost
+    balNoHost.evaluate(clientSrc)
+    balNoHost.module().default.apply(balNoHost.ctx, { reactions: true, wander: false, celebrate: false })
+    balNoHost.advance(1300, 100)
+    const unsupportedBalance = await balNoHost.win.__wisp.checkBalance()
+    check(unsupportedBalance.state === 'unsupported',
+      'with no host seat she reports that the balance cannot be read here',
+      JSON.stringify(unsupportedBalance))
+    check(fromPool(linesInBundle()?.balanceUnsupported, await spoken(balNoHost), ''),
+      'and says it out loud instead of staying silent', await spoken(balNoHost))
+    balNoHost.win.__wisp.destroy()
+    active = keepBalNoHost
+
+    /* 宿主调用炸了：不能变成未处理的 rejection */
+    const balThrower = balanceHarness(async () => { throw new Error('boom') })
+    const keepBalThrower = active
+    active = balThrower
+    balThrower.evaluate(clientSrc)
+    balThrower.module().default.apply(balThrower.ctx, { reactions: true, wander: false, celebrate: false })
+    balThrower.advance(1300, 100)
+    const balThrew = await balThrower.win.__wisp.checkBalance()
+    check(balThrew.state === 'failed' && balThrew.reason === 'call-failed' && balThrew.detail === 'boom',
+      'a throwing host call is caught and reported', JSON.stringify(balThrew))
+    balThrower.win.__wisp.destroy()
+    active = keepBalThrower
+
+    /* 英文覆盖层：余额这几句也要有，而且一个汉字都不许有 —— 1.36 的英文是覆盖层，
+       新加的池子漏翻就会让英文界面的人看到中文。 */
+    const enBundle = readFileSync(join(here, 'lib', 'client.js'), 'utf8')
+    const enLiteral = enBundle.match(/const LINES_EN = (\{[\s\S]*?\n {4}\})/)
+    let enPools = null
+    try { enPools = enLiteral ? new Function('return ' + enLiteral[1])() : null } catch (error) { enPools = null }
+    const enKeys = ['balanceChecking', 'balance', 'balanceBonus', 'balanceEmpty', 'balanceSignedOut',
+      'balanceUnavailable', 'balanceFailed', 'balanceUnsupported']
+    const enMissing = enKeys.filter((k) => !Array.isArray(enPools?.[k]) || enPools[k].length === 0)
+    check(enMissing.length === 0, 'every new balance line has an English pool',
+      enMissing.length ? 'missing ' + enMissing.join(', ') : `${enKeys.length} pools`)
+    const enHan = []
+    for (const key of enKeys) {
+      for (const line of (enPools?.[key] ?? [])) if (/[\u4e00-\u9fff]/.test(line)) enHan.push(key + ': ' + line)
+    }
+    check(enHan.length === 0, 'and none of them contains a Han character', enHan.join(' | ') || 'clean')
+
     /* ------------------------------------------------------ 3e. theme ------ */
     head('3e. theme follows the shell')
 
@@ -2109,14 +2415,45 @@ if (clientSrc !== null) {
     check(api.position.x === held.x && api.position.y === held.y, 'a click does not move her')
 
     /* ---- the transparent margin must not swallow the app's clicks ------ */
+    /* 注意这条**只能**证明"她没认领这次按下"。真正的"下面那个应用收到了点击"是浏览器
+       的命中判定给的，假 DOM 里没有命中判定 —— 那一条在 tools/engine-probe.mjs 里
+       用 elementFromPoint + 真 CDP 点击验。 */
     const edge = press(api.position.x + 4, api.position.y + BOX_H / 2)
     check(edge.defaultPrevented === false,
-      'a press on her transparent margin passes through to the app', `defaultPrevented=${edge.defaultPrevented}`)
+      'a press on her transparent margin is not claimed by her', `defaultPrevented=${edge.defaultPrevented}`)
     const stillHeld = api.position
     h.win.dispatch('pointermove', { clientX: 0, clientY: 0 })
     h.win.dispatch('pointerup', {})
     check(api.position.x === stillHeld.x && api.position.y === stillHeld.y,
       'a margin press does not start a drag', `${api.position.x},${api.position.y}`)
+
+    /* ---- 命中层：让**浏览器**按她的轮廓做判定，而不是她那个 560x840 的盒子 ---
+       背景：盒子以前是 pointer-events:auto 铺满的，透明处的点击虽然不触发拖动，
+       但事件**已经被派给她了**，下面的应用什么也收不到（真引擎实测：透明处
+       elementFromPoint 返回 wisp-body，下面的按钮 0 次点击）。现在是一个空盒子
+       带 alpha 蒙版生成的 clip-path —— 透明处是真的穿透。 */
+    const hitLayer = bodyWisp.querySelector('.wisp-hit')
+    check(hitLayer !== null, 'there is a dedicated hit layer', hitLayer?.className)
+    check(String(bodyWisp.style.pointerEvents) === 'none'
+      && String(hitLayer?.style.pointerEvents) === 'auto',
+    'the body takes no pointer events and the hit layer takes them all',
+    `body=${bodyWisp.style.pointerEvents} hit=${hitLayer?.style.pointerEvents}`)
+    const hitClip = String(hitLayer?.style.clipPath ?? '')
+    check(hitClip.startsWith('path("M') && hitClip.endsWith('z")'),
+      'the hit layer carries a clip path built from the alpha mask', hitClip.slice(0, 60) + '…')
+    /* 替身的 canvas 假 alpha 是"中间一半不透明"（96 格里的 24..71），再经蒙版的
+       3×3 膨胀各扩一格 → 23..72 共 50 列。默认盒子 560x840，所以每列 5.833px：
+       x=23×5.833=134.2，w=50×5.833=291.7，整高 840。这条同时证明坐标系按**当前盒子**算。 */
+    check(hitClip === 'path("M134.2 0.0h291.7v840.0h-291.7z")',
+      'and the shape equals the dilated mask, scaled to her box', hitClip)
+    /* 改尺寸必须重算：clip-path 里的坐标是 px，不是百分比。 */
+    api.configure({ size: 2 })
+    const resizedClip = String(hitLayer?.style.clipPath ?? '')
+    check(resizedClip === 'path("M67.1 0.0h145.8v420.0h-145.8z")',
+      'resizing her rebuilds the clip for the new box', resizedClip)
+    api.configure({ size: 4 })
+    check(String(hitLayer?.style.clipPath ?? '') === hitClip,
+      'and going back restores the original shape', String(hitLayer?.style.clipPath))
 
     /* ---- she is grabbable wherever she is drawn ------------------------ */
     // Deliberate product decision: she does not yield to a control underneath,
@@ -2149,6 +2486,248 @@ if (clientSrc !== null) {
         `translate ${tr.x},${tr.y} for position 0,300`)
     }
     api.move(after.x, after.y)   // put her back for the teardown/persistence checks
+
+    /* ------------------------- 3f-bis. the motion layer (v1.38) ------------ */
+    head('3f-bis. she has a body: press, drag tilt, landing, and noticing you')
+
+    /* 为什么单开一个替身：这一段要反复按下/拖动/推指针，如果借用上面那个 h，
+       她已经在拖动测试里被挪来挪去，姿势和位置的断言会互相污染。
+       sleepAfterMs 拉到一小时：这里测的是手势，不是打盹。 */
+    const mo = createHarness({ timer: true, composerText: '' })
+    const keepMo = active
+    active = mo
+    mo.evaluate(clientSrc)
+    mo.module().default.apply(mo.ctx, {
+      reactions: true, wander: false, celebrate: false, sleepAfterMs: 3600000,
+    })
+    mo.advance(1200, 100)
+    const moApi = mo.win.__wisp
+    const moRoot = mo.find('wisp-root')
+    const moBody = mo.find('wisp-body')
+    const moMotion = mo.find('wisp-motion')
+    const moLean = mo.find('wisp-lean')
+    const MO_W = 140 * 4
+    const MO_H = 210 * 4
+    const moCentre = () => ({ x: moApi.position.x + MO_W / 2, y: moApi.position.y + MO_H / 2 })
+    const moTilt = () => moRoot.style.getPropertyValue('--wisp-tilt')
+    const moTiltNum = () => Number.parseFloat(moTilt())
+    const moPress = (x, y) => {
+      const ev = {
+        button: 0, clientX: x, clientY: y, defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true }, stopPropagation() {},
+      }
+      moBody.dispatch('pointerdown', ev)
+      return ev
+    }
+
+    /* 两层空盒子，各管一件事。CSS 的 transform 在同一个元素上是覆盖不是叠加，
+       所以"姿势"和"一次性动作"必须落在不同的元素上 —— 结构塌了，动作就互相
+       覆盖（先侧倾再压扁，其中一个会丢）。 */
+    check(moMotion !== null && moLean !== null, 'two motion layers exist',
+      `${moMotion?.className} / ${moLean?.className}`)
+    check(moMotion !== null && moMotion.parentNode === moBody && moLean !== null && moLean.parentNode === moMotion,
+      'accent wraps posture wraps the sprite (body > motion > lean)')
+    check(moLean !== null && moLean.querySelectorAll('.wisp-img').length === 1,
+      'the sprite lives inside the posture layer, so it tilts with her',
+      `${moLean?.querySelectorAll('.wisp-img').length} sprite layer(s)`)
+
+    /* CSS 契约：每个一次性动作都有自己的关键帧，而且 **reduced-motion 必须把它们
+       一起关掉** —— 新加的动画漏在这个媒体查询外面，是这类改动最常见的半成品。 */
+    const moCss = String(mo.styleInserts[0] ?? '')
+    const missingKeyframes = ['wisp-press', 'wisp-land', 'wisp-pop-a', 'wisp-pop-b']
+      .filter((name) => !moCss.includes('@keyframes ' + name + '{'))
+    check(missingKeyframes.length === 0, 'every accent has its own keyframes',
+      missingKeyframes.length ? 'missing ' + missingKeyframes.join(', ') : '4/4')
+    const rmAt = moCss.indexOf('@media (prefers-reduced-motion:reduce)')
+    const rmBlock = rmAt < 0 ? '' : moCss.slice(rmAt)
+    check(rmAt >= 0 && rmBlock.includes('.wisp-motion{animation:none!important}')
+      && rmBlock.includes('.wisp-lean{transform:none!important'),
+    'reduced motion neutralises the accent and the posture, not just the breathing')
+    check(moCss.includes('.wisp-root[data-motion="subtle"]{--wisp-amp:.5}')
+      && moCss.includes('.wisp-root[data-motion="off"]{--wisp-amp:0}'),
+    'the level variable drives every amplitude from one place')
+    check(moCss.includes('.wisp-root[data-motion="off"] .wisp-body'),
+      'the "still" level stops the idle breathing too, so she is genuinely still')
+
+    /* ---- 按下 → 压一下；松手（没拖动）→ 由点击反应接管 ---- */
+    check(moRoot.dataset.accent === undefined, 'nothing is running before she is touched',
+      String(moRoot.dataset.accent))
+    const moC1 = moCentre()
+    const moDown = moPress(moC1.x, moC1.y)
+    check(moDown.defaultPrevented === true, 'the press lands on her body', `${moC1.x},${moC1.y}`)
+    check(moRoot.dataset.accent === 'press', 'pressing her runs the press accent immediately',
+      String(moRoot.dataset.accent))
+    check(moRoot.dataset.dragging === 'true', 'and she is marked as held', String(moRoot.dataset.dragging))
+    mo.win.dispatch('pointerup', {})
+    /* 一次轻点里有两个动作抢同一个通道（CSS 的一个元素一次只能跑一条动画）：
+       按下那一下已经演完了，接着是**点击反应**（换表情 → 弹一下）。后到的赢 ——
+       "她换了个表情"比"手指抬起来了"更值得一次动作，所以没有单独的 release 关键帧。 */
+    const moTapAccent = String(moRoot.dataset.accent)
+    check(moTapAccent === 'pop-a' || moTapAccent === 'pop-b',
+      'a tap hands the accent over to the click reaction instead of a separate release',
+      moTapAccent)
+    mo.advance(600, 50)
+    check(moRoot.dataset.accent === undefined,
+      'the accent clears itself when it is over — no half-finished state is left on the element',
+      String(moRoot.dataset.accent))
+
+    /* ---- 拖动：朝运动的反方向倾，松手落地并回正 ---- */
+    const moC2 = moCentre()
+    moPress(moC2.x, moC2.y)
+    mo.win.dispatch('pointermove', { clientX: moC2.x + 30, clientY: moC2.y })
+    const moDragged = moTiltNum()
+    check(moDragged < 0 && Math.abs(moDragged) >= 3,
+      'dragging her to the right leans her top backwards — she lags the motion',
+      `${moTilt()} for a 30px step`)
+    mo.win.dispatch('pointerup', {})
+    check(moRoot.dataset.accent === 'land', 'a real drag ends with a landing, not a spring',
+      String(moRoot.dataset.accent))
+    check(moTilt() === '0deg', 'and the posture goes back to upright on release', moTilt())
+    mo.advance(700, 50)
+
+    /* ---- 指针靠近：她朝指针侧身；出圈归零 ---- */
+    const moC3 = moCentre()
+    mo.win.dispatch('pointermove', { clientX: moC3.x + 60, clientY: moC3.y })
+    const moNearRight = moTiltNum()
+    mo.win.dispatch('pointermove', { clientX: moC3.x - 60, clientY: moC3.y })
+    const moNearLeft = moTiltNum()
+    check(moNearRight > 0 && moNearLeft < 0 && Math.abs(moNearRight + moNearLeft) <= 0.2,
+      'a pointer to her right leans her right, and to her left leans her left',
+      `${moNearRight}° vs ${moNearLeft}°`)
+    mo.win.dispatch('pointermove', { clientX: moC3.x + 900, clientY: moC3.y })
+    check(moTilt() === '0deg', 'a pointer out of range leaves her upright', moTilt())
+
+    /* ---- 镜像：同一侧倾在左半边必须写反号，否则"只在半张屏幕上错" ---- */
+    moApi.move(0, 300)
+    const moFace = boxAt(moRoot.style.transform)
+    check(moFace !== null && moFace.facing === -1, 'she is mirrored on the left half',
+      `scaleX(${moFace?.facing})`)
+    const moC4 = moCentre()
+    mo.win.dispatch('pointermove', { clientX: moC4.x + 60, clientY: moC4.y })
+    check(moTiltNum() < 0,
+      'the mirrored half gets the opposite sign, so the lean still points at the pointer',
+      moTilt())
+    const moFullTilt = Math.abs(moTiltNum())
+
+    /* ---- 克制档 = 半幅 ---- */
+    moApi.configure({ motion: 'subtle' })
+    check(moRoot.dataset.motion === 'subtle', 'the level is applied to the element at once',
+      String(moRoot.dataset.motion))
+    mo.win.dispatch('pointermove', { clientX: moC4.x + 60, clientY: moC4.y })
+    const moHalfTilt = Math.abs(moTiltNum())
+    check(Math.abs(moHalfTilt * 2 - moFullTilt) <= 0.2,
+      '"restrained" really halves the amplitude instead of merely looking calmer',
+      `${moHalfTilt}° vs ${moFullTilt}°`)
+
+    /* ---- 表情变化：弹一下，而且连着的两次都要能弹 ---- */
+    moApi.configure({ motion: 'full' })
+    moApi.mood('happy')
+    const moPop1 = String(moRoot.dataset.accent)
+    moApi.mood('poked')
+    const moPop2 = String(moRoot.dataset.accent)
+    check(moPop1 === 'pop-a' || moPop1 === 'pop-b',
+      'a mood change pops instead of only cross-fading', moPop1)
+    check(moPop2 === 'pop-a' || moPop2 === 'pop-b', 'and so does the next one', moPop2)
+    /* 同一个 data-accent 值再写一次，浏览器**不会**重播动画 —— 连戳两下要看到
+       两次弹，就必须换名字。这条断言盯的正是那个"第二次没动"的退化。 */
+    check(moPop1 !== moPop2,
+      'back-to-back pops alternate their keyframe names, so the second one really plays',
+      `${moPop1} -> ${moPop2}`)
+    mo.advance(600, 50)
+    moApi.mood('idle')
+    check(moRoot.dataset.accent === undefined,
+      'returning to idle is not an accent — steady states must not twitch',
+      String(moRoot.dataset.accent))
+
+    /* 已经是这个表情时，再来一次**也要弹** —— 但这条只对**手势**成立。
+       setMood 的弹一下挂在"真的换了表情"之后（否则轮询每 1.2 秒重算的 attn 会变成
+       抽搐，见 3d-ter 那两条），"连戳两下"由 flashHappy/flashPoked 自己补。
+       所以这里走真实的点击路径，而不是直接调 mood()。 */
+    const moTapOnce = () => {
+      const c = moCentre()
+      moPress(c.x, c.y)
+      mo.win.dispatch('pointerup', {})
+      const accent = String(moRoot.dataset.accent)
+      mo.advance(600, 50)
+      return accent
+    }
+    const moTap1 = moTapOnce()
+    const moTap2 = moTapOnce()
+    check(/^pop-/.test(moTap1) && /^pop-/.test(moTap2) && moTap1 !== moTap2,
+      'two taps in a row both pop, with alternating names — a silent second poke reads as "stuck"',
+      `${moTap1} -> ${moTap2}`)
+    moApi.mood('happy')          // 已经是 happy：这条路不该弹
+    check(moRoot.dataset.accent === undefined,
+      'but re-asserting the same mood programmatically stays silent — that is the path attn takes',
+      String(moRoot.dataset.accent))
+
+    /* ---- 静止档：不做动作、不侧身、呼吸也停 ---- */
+    /* 先让上一个动作自己收尾：属性是**异步**清掉的，不等它，"静止档没放动作"
+       会被残留的旧值顶掉 —— 这条假警报在真引擎探针里也出现过一次。 */
+    mo.advance(600, 50)
+    check(moRoot.dataset.accent === undefined, 'the accent from before has cleared by now',
+      String(moRoot.dataset.accent))
+    moApi.configure({ motion: 'off' })
+    check(moRoot.dataset.motion === 'off', 'the "still" level reaches the element',
+      String(moRoot.dataset.motion))
+    const moC5 = moCentre()
+    moPress(moC5.x, moC5.y)
+    check(moRoot.dataset.accent === undefined, 'on "still" a press runs no accent',
+      String(moRoot.dataset.accent))
+    mo.win.dispatch('pointermove', { clientX: moC5.x + 60, clientY: moC5.y })
+    check(moTilt() === '0deg', 'and the pointer posture stays at zero', moTilt())
+    mo.win.dispatch('pointerup', {})
+    check(moRoot.dataset.accent === undefined, 'nor does letting go', String(moRoot.dataset.accent))
+    moApi.configure({ motion: 'full' })
+
+    /* 写坏的档位名不该让她变成"不动也不报错"的坏状态 —— 一律退回默认档。 */
+    moApi.configure({ motion: 'zoom' })
+    check(moRoot.dataset.motion === 'full' && moApi.config.motion === 'full',
+      'an unknown level falls back to the default instead of landing in the config',
+      String(moApi.config.motion))
+
+    /* ---- 零动画帧：整套动作都是"事件写一次属性，浏览器自己算" ---- */
+    check(mo.frames.length === 0,
+      'the whole motion layer runs without arming a single animation frame',
+      `${mo.frames.length} frame(s)`)
+
+    const moDoc = moApi.doctor().motion
+    check(moDoc && typeof moDoc.level === 'string' && typeof moDoc.tilt === 'number',
+      'doctor() reports the motion state, so "why is she leaning" is answerable',
+      JSON.stringify(moDoc))
+
+    /* ---- 系统要求别动时：CSS 关掉动画，JS 那边姿势也不写 ---- */
+    const rmh = createHarness({ timer: true, composerText: '', reducedMotion: true })
+    const keepRm = active
+    active = rmh
+    rmh.evaluate(clientSrc)
+    rmh.module().default.apply(rmh.ctx, {
+      reactions: true, wander: false, celebrate: false, sleepAfterMs: 3600000,
+    })
+    rmh.advance(1200, 100)
+    const rmApi = rmh.win.__wisp
+    const rmRoot = rmh.find('wisp-root')
+    const rmBody = rmh.find('wisp-body')
+    const rmCentre = { x: rmApi.position.x + MO_W / 2, y: rmApi.position.y + MO_H / 2 }
+    rmh.win.dispatch('pointermove', { clientX: rmCentre.x + 60, clientY: rmCentre.y })
+    check(rmRoot.style.getPropertyValue('--wisp-tilt') === '0deg',
+      'under prefers-reduced-motion the pointer never moves her posture — the CSS media query cannot reach a JS-written variable, so this is a real second guard',
+      rmRoot.style.getPropertyValue('--wisp-tilt'))
+    rmBody.dispatch('pointerdown', {
+      button: 0, clientX: rmCentre.x, clientY: rmCentre.y, preventDefault() {}, stopPropagation() {},
+    })
+    check(rmRoot.dataset.accent === undefined, 'and no accent runs either', String(rmRoot.dataset.accent))
+    rmh.win.dispatch('pointerup', {})
+    check(rmApi.doctor().motion.reduced === true, 'doctor() says the system asked for less motion',
+      JSON.stringify(rmApi.doctor().motion))
+    rmApi.destroy()
+    active = keepRm
+
+    moApi.destroy()
+    check(mo.win.listenerCount('pointermove') === 0 && mo.win.listenerCount('blur') === 0,
+      'the posture listeners are removed on destroy',
+      `pointermove=${mo.win.listenerCount('pointermove')} blur=${mo.win.listenerCount('blur')}`)
+    active = keepMo
 
     /* ------------------------------------------------------ 3g. teardown --- */
     head('3g. teardown')
@@ -3644,6 +4223,46 @@ if (existsSync(join(here, 'README.md'))) {
 }
 
 if (clientSrc !== null) {
+  /* ---------------------------------------------------------------------------
+     配置键是这套"多端"里最容易漂的一处：它在**三个地方**各出现一次 ——
+     CONFIG_SPEC（声明有哪些键、怎么夹紧）、DEFAULTS（默认值）、README 的配置表
+     （用户看到的那一份）。
+
+     实测漂过两次，都是真的：
+       · `motion` 加进了 README 表却漏了 cordis.patch.yml 的注释（同一份清单的两个副本）；
+       · `soundVolume` **只在 CONFIG_SPEC 里声明、DEFAULTS 里没有** → 默认值是
+         undefined → `Number(undefined)` = NaN → `clip.volume = NaN` 在浏览器里抛，
+         被 playSound 的 try/catch 吞掉 —— "打开音效"整条路静默失效。
+
+     所以这里钉两条不变量：① 每个声明过的键都有默认值；② 每个键都写进了 README 表。
+     cordis.patch.yml 的那份副本已经删掉（改成指向 README），重复清单本身就是漂移源。
+     --------------------------------------------------------------------------- */
+  const specBlock = clientSrc.match(/const CONFIG_SPEC = \{([\s\S]*?)\n {4}\}/)
+  const defaultsBlock = clientSrc.match(/const DEFAULTS = \{([\s\S]*?)\n {4}\}/)
+  const keysOf = (block) => (block ? [...block[1].matchAll(/^ {6}([A-Za-z][A-Za-z0-9]*):/gm)].map((m) => m[1]) : [])
+  const specKeys = keysOf(specBlock)
+  const defaultKeys = new Set(keysOf(defaultsBlock))
+  /* 先证明解析没落空：正则失配会让下面两条"全部满足"变成假绿。 */
+  check(specKeys.length >= 25 && defaultKeys.size >= 25,
+    'the config tables are parsed out of the bundle', `CONFIG_SPEC ${specKeys.length} / DEFAULTS ${defaultKeys.size}`)
+
+  const noDefault = specKeys.filter((key) => !defaultKeys.has(key))
+  check(noDefault.length === 0,
+    'every declared config key also has a DEFAULTS entry — a missing one silently becomes undefined',
+    noDefault.length ? 'missing defaults: ' + noDefault.join(', ') : `${specKeys.length} keys covered`)
+
+  const readmeSource = existsSync(join(here, 'README.md')) ? readFileSync(join(here, 'README.md'), 'utf8') : ''
+  const undocumented = specKeys.filter((key) => !readmeSource.includes('| `' + key + '` |'))
+  check(undocumented.length === 0,
+    'and every config key is documented in the README table (the single source of truth)',
+    undocumented.length ? 'undocumented: ' + undocumented.join(', ') : `${specKeys.length} keys documented`)
+
+  /* 反方向：README 表里不许有代码里不存在的键（写了但没用的开关比没有更糟）。 */
+  const documented = [...readmeSource.matchAll(/^\| `([A-Za-z][A-Za-z0-9]*)` \| (?:number|boolean|string) \|/gm)].map((m) => m[1])
+  const phantom = documented.filter((key) => !specKeys.includes(key))
+  check(phantom.length === 0, 'and the README table invents no keys the code does not accept',
+    phantom.length ? 'not in CONFIG_SPEC: ' + phantom.join(', ') : `${documented.length} rows checked`)
+
   /* 每一套皮肤都必须凑齐四个情绪。只数 data: URI 的总数是不够的 —— 总数对上
      也可能是某一套缺一张、另一套多一张，而缺一张的皮肤切过去就是空白。 */
   const table = clientSrc.match(/const SPRITES = (\{[\s\S]*?\n {4}\})/)
@@ -3711,6 +4330,22 @@ else if (missingFiles.length === 0) ok('every path in files[] exists', `${declar
 else bad('every path in files[] exists', `missing: ${missingFiles.join(', ')}`)
 
 /* ============================================================= done ====== */
+
+/* 最后一条，也是"多端"里最不起眼的一端：README 里那个**项数**。
+   它每加一条检查就该动一次，而它没有任何守卫 —— 实测漂过（544/546/588/631…），
+   读者看到的是一个没人核对过的数字。这里让它等于**真实项数**（含这一条自己）。
+   注意：它必须放在所有检查之后，且用 ok()/bad() 自己计数，所以比较时 +1。 */
+if (existsSync(join(here, 'README.md'))) {
+  const readmeText = readFileSync(join(here, 'README.md'), 'utf8')
+  const quoted = Number((/当前 \*\*(\d+) 项全 PASS/.exec(readmeText) ?? [])[1])
+  const total = checks + 1
+  if (quoted === total) {
+    ok('the README quotes the real check count', `${total} 项`)
+  } else {
+    bad('the README quotes the real check count',
+      `README 写着 ${Number.isFinite(quoted) ? quoted : '(没写)'}，实际 ${total} —— 改了检查就顺手改那一行`)
+  }
+}
 
 head(failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`)
 console.log(failures === 0

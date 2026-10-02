@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `0.6.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
+**当前版本 `1.39.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -30,8 +30,18 @@ DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 | 先躲起来 | 菜单里选「先躲起来」后她整个消失，只在右下角留一个 56px 迷你按钮（用当前皮肤的图），点一下回来。状态记在本地，刷新后仍然躲着 |
 | 拖动 | 按住本体拖动，带边界约束；**松手即记住位置**，下次刷新回到原处 |
 | 说话 | 挂载问候、点击、睡着、醒来、跑完各有一组台词 |
+| 按轮廓命中 | 只有**她自己的像素**可点：命中层带一层由 alpha 蒙版生成的 `clip-path`，透明处整层穿透到下面的应用（hover / 点击 / 右键 / 滚轮全都不受影响）。抓着光标也只在她的轮廓上出现 |
+| 看余额 | 菜单「行为 → **看看余额**」（或 `__wisp.checkBalance()`）。**按需查，不轮询** —— 稳态开销那条承诺不破。数字来自平台自己的账户服务，**插件从头到尾不碰 API key**；未登录 / 刚没读到 / 这个壳里没有该服务，是三句不同的话 |
+| 按下有反馈 | 按住她 → 身体压一下再弹回来（**按下那一刻**就有反应，不用等松手） |
+| 拖着有重量 | 拖动中她朝**运动的反方向**侧倾（最多 8°），松手时顿一下再站稳。无过渡跟手，松手才走弹簧 |
+| 她会注意你的指针 | 指针进到 **170px** 以内，她朝指针方向侧身（最多 3.5°，越近越多），出圈回正。睡着时不跟 |
+| 换表情会动 | `happy` / `poked` / `attn` 等有表情的状态切换时弹一下；**同一个表情再来一次也弹**（第二下不出声会被读成卡住） |
+| 溜达有方向 | 自己踱步时朝行进方向微微前倾（最多 2.5°），像"往那边去"而不是"被平移过去" |
+| 动作幅度可调 | 菜单「行为 → 动作幅度」三选一：**灵动 / 克制（半幅）/ 静止**。`静止` 连呼吸与 `z` 一起停 |
 
-外层 `pointer-events:none`，只有本体可点 —— 它不会挡住你对应用的操作。
+外层 `pointer-events:none`，只有**她自己的轮廓**可点：命中层带一层由 alpha 蒙版生成的
+`clip-path`，所以透明处是真的穿透 —— 她站在哪个按钮上都不影响你点它（1.40.0 之前
+这句是错的：她的 560×840 盒子整块盖在应用上面，透明处的点击被吃掉）。
 
 ---
 
@@ -42,7 +52,7 @@ dsh-wisp-plugin/
 ├── package.json          dsh.bundle.patch + dsh.client.platform，零依赖
 ├── cordis.patch.yml      插入一行 host 入口（指向 dsh-wisp，绝不能是 dsh-wisp/client）
 ├── lib/
-│   ├── index.js          host 半包：刻意为空的 ES 模块
+│   ├── index.js          host 半包：注册两个 handler（检查更新 / 查余额），不做别的
 │   ├── client.template.js  浏览器半包源码（唯一需要编辑的文件）
 │   └── client.js         由 build.mjs 生成，勿手改
 ├── assets/               四张 256x384 透明 WebP（idle / happy / sleepy / work）
@@ -68,7 +78,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 3. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 4. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **248 项全 PASS，exit 0**。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **642 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红）。
 
 ---
 
@@ -78,9 +88,14 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 `display:none` 是否真的让她不挡点击）全都只有真实浏览器能发现，所以这些检查留在仓库里：
 
 ```bash
-node tools/smoke.mjs           # 46 项：挂载 / 菜单几何与键盘入口 / 躲起来 / 换皮肤 / attn / worried / 踱步 / 内存 / 体积
+node tools/smoke.mjs           # 挂载 / 菜单几何与键盘入口 / 躲起来 / 换皮肤 / attn / worried / 踱步 / 动作层（真引擎）/ 内存 / 体积
 node tools/smoke.mjs --headed  # 看着它跑
 ```
+
+末尾会打印这一轮实际跑了多少项。**第 10 节（动作层）验的是假 DOM 验不了的东西**：
+关键帧里的 `calc()`/`var()` 有没有真的解析、`getAnimations()` 里有没有那条动画、
+`prefers-reduced-motion`（`page.emulateMedia`）下计算后的 `animationName` 是不是 `none`。
+没有 Playwright 时整节跳过 —— 所以换机器后值得跑一次，别只看"预检全过"。
 
 **退出码是有意义的**：`0` 通过；`1` 有检查没过；`2` 环境中断。
 
@@ -92,6 +107,28 @@ been closed"。它与本插件的正确性无关，所以脚本**只对这类中
 （这条是被真实崩溃逼出来的：原来踱步那节另开一个页面，随即开始随机崩溃。）
 
 Playwright 是**可选依赖**：找不到就以 0 退出并说明原因 —— CI 上不该因为缺浏览器而红。
+
+### 没装 Playwright 时：`tools/engine-probe.mjs`
+
+上面那节的能力上限就是 Playwright 有没有装。**装不上时"预检全过 + 冒烟跳过"等于没有任何
+视觉验证**，而假 DOM 恰恰验不了 CSS：关键帧里的 `calc()`/`var()` 有没有真的解析、
+`rotate()` 有没有真的转、媒体查询有没有真的生效。
+
+这个探针用 Node 自带的 `fetch` + `WebSocket` 直接走 CDP，驱动机器上已有的
+Edge / Chrome —— **零依赖、零安装**：
+
+```bash
+node tools/engine-probe.mjs                    # 找到浏览器就跑，找不到就说清楚并以 0 退出
+WISP_CHROME=/path/to/chrome node tools/engine-probe.mjs
+```
+
+它读的是**引擎算出来的东西**，不是源码文本：计算后的 `matrix`（证明 `rotate(var())` 真的转）、
+`getAnimations()` + `getKeyframes()`（证明关键帧**解析后有效** —— 动画"在跑"不等于有效，
+`calc()` 写错时浏览器会静默丢掉那一条 keyframe，动画照跑但什么都不动）、
+以及 `Emulation.setEmulatedMedia` 下的 `animationName` 与姿势变量。
+
+退出码：`0` 通过或跳过 · `1` 有检查没过 · `2` 环境起不来。几何与布局仍由 `smoke.mjs` 负责，
+两者**不互相替代**。
 pnpm 布局下顶层没有 `playwright-core` 这个名字（只有 `.pnpm/playwright-core@<ver>/`），
 所以脚本会显式扫 `.pnpm`。
 
@@ -191,6 +228,7 @@ node verify-wisp.mjs
 | 指标 | 数值 |
 |---|---|
 | 动画帧使用量 | **0**（走 `timer` 服务，根本不挂帧循环） |
+| 动作层（v1.38 新增） | **0 帧**：姿势与一次性动作都是"事件写一次属性，浏览器自己算"。指针靠近只做算术，出圈即归零，变化不到 0.05° 不写样式 |
 | 定时器 | 1 个 `interval`（反应轮询）+ 3 个 `timeout` |
 | 反应轮询成本 | 每轮 3 次 `querySelector`，10 s 内共 **7.2–8.3 ms**（≈ **0.86 ms/轮**） |
 | 每帧平均间隔 | 无插件 **4.194 ms** vs 挂载后 **4.217 ms** → **+0.023 ms**（4 轮交替重复） |
@@ -233,11 +271,25 @@ node verify-wisp.mjs
 | — | — | — | 菜单里调过的 `size` 会**记在本地**并活过刷新；但配置里显式写了 `size` 时以配置为准 |
 | `sleepAfterMs` | number | `90000` | 静置多久打盹，限制 `5000–3600000` |
 | `reactions` | boolean | `true` | 是否跟随 Agent 忙碌 / 输入框内容变情绪 |
+| `motion` | string | `'full'` | 动作幅度：`full` 灵动 / `subtle` 克制（半幅）/ `off` 静止（连呼吸也停）。认不出的值退回 `full` |
 | `persist` | boolean | `true` | 是否跨刷新记住位置 |
 | `celebrate` | boolean | `true` | 一轮跑完是否庆祝一下 |
 | `celebrateAfterMs` | number | `2500` | 只庆祝跑够这么久的轮次（避免每次小工具调用都跳） |
 | `happyMs` | number | `1100` | 高兴状态持续多久 |
+| `hungry` | boolean | `true` | 干饭：连续活动太久她会说饿了 |
+| `hungerMs` | number | `2700000` | 连续活动多久算该吃一碗了（45 分钟）；`0` = 关 |
+| `night` | boolean | `true` | 深夜劝睡 |
+| `bedtimeHour` | number | `23` | 几点算深夜（0–23） |
+| `wakeHour` | number | `5` | 几点算天亮（0–23）；`bedtimeHour > wakeHour` 时窗口跨零点 |
+| `nightMs` | number | `1800000` | 深夜每隔这么久说一句（30 分钟）；`0` = 关 |
+| `backAfterMs` | number | `120000` | 离开超过这么久，回来时她会说一句（2 分钟）；`0` = 关 |
+| `focusMinutes` | number | `25` | 菜单里「专注 N 分钟」的默认时长 |
+| `lang` | string | `'auto'` | 台词语言：`auto` 跟随界面 / `zh` 强制中文 / `en` 强制英文（菜单里也能选，等价） |
+| `sound` | boolean | `false` | 音效开关。**默认关**，而且只有 `assets/audio/` 里有素材时这个开关才存在 |
+| `soundVolume` | number | `0.7` | 音效音量，限制 `0–1` |
+| `skin` | string | `''` | 点名一套皮肤（`assets/<skin>/`）；`''` = 上次选的那套 |
 | `hidden` | boolean | `false` | 挂载时就是躲起来的（只能强制隐藏，叫回来走菜单或 `__wisp.show()`） |
+| `backdrop` | boolean | `false` | 清掉铺满视口的不透明底色，让窗口的 Mica/Acrylic 露出来。**影响整个应用的外观**，所以默认关 |
 | `chatterMs` | number | `0` | `>0` 时按此间隔随机说句话；`0` = 安静 |
 | `careAfterMs` | number | `5400000` | 连续活动多久提醒你起来动动（90 分钟）；`0` = 关 |
 | `milestones` | boolean | `true` | 今日轮次到里程碑时得意一下 |
@@ -269,6 +321,9 @@ window.__wisp.move(200, 300)
 window.__wisp.position                     // { x, y }
 window.__wisp.resetPosition()              // 清掉记忆位置，回到右下角
 window.__wisp.clock                        // 'timer-service' | 'animation-frame'
+window.__wisp.checkBalance()               // 查一次余额并说出来；返回 { state: 'ready' | 'signed-out' | 'unavailable' | 'failed' | 'unsupported', wallets, … }
+window.__wisp.doctor().balance             // 上一次余额查询的结果 + 有没有 host 座位（**从不含凭据**）
+window.__wisp.doctor().motion              // { level, amp, reduced, tilt, tiltLocal, accent, pressed }
 window.__wisp.destroy()
 ```
 
@@ -313,6 +368,24 @@ ctx.get('timer').interval(fn, ms)  // → disposer
 
 两者都是壳为自家用户渲染的东西，比内部服务契约更抗版本升级。
 
+### 6. 两个半包都没有"自己联网"的能力 —— 只能走服务
+
+这一节是 1.39.0 加余额时用两条独立的实测（读发行版里的包 + 查运行时服务目录）确认下来的，
+两条都会在别的地方继续咬人：
+
+- **浏览器半包**：`fetch` / `XMLHttpRequest` 那一侧是陷阱，调用即抛。
+- **宿主半包**：跑在 vm 沙箱里，`require` / `fetch` / `setTimeout` 全是抛异常的陷阱
+  （沙箱只给 `{ defineTool, registerTool, handle }`，外加平台注入的服务）。
+- **平台给的网络通道 `ctx.web.fetch` 设不了请求头**：它的请求类型就是 `{ url: string }`，
+  provider 只读 `url`，方法硬编码 GET、请求头硬编码 UA/Accept。所以**任何需要鉴权头的接口
+  在插件里都打不通** —— 这和有没有 key 无关，是通道本身的形状。
+- **能拿到的是服务**：`ctx.get('<name>')` 无需声明即可取；`ctx.<name>` 属性访问需要在
+  `inject` 里声明。两者都要**声明成 optional** —— 硬依赖一个没提供的服务会让 fiber 永远
+  `waiting`，她就直接从界面上消失了（`web` 与 `deepseekAccount` 都是这么声明的）。
+- **凭据不属于插件**：余额走 `deepseekAccount`（"only Host consumers can obtain a request
+  credential"），插件拿到的是归一化后的结果。`doctor().balance` 里只有数字和状态，
+  没有任何 token —— 这是设计，不是巧合。
+
 ---
 
 ## 安装
@@ -338,10 +411,11 @@ plugin_manager install_bundle  https://github.com/969246694/dsh-wisp
 ### 装好后这样验
 
 - [ ] 右下角出现发光桌宠
-- [ ] Console 有 `[wisp] mounted — DeepSeek娘 v0.5.0 (timers: …)`，且括号里是 `timer-service`
+- [ ] Console 有 `[wisp] mounted — DeepSeek娘 v1.39.0 (timers: …)`，且括号里是 `timer-service`
 - [ ] 打字 → 变琥珀色；清空 → 回青色
 - [ ] 让她跑一轮 → 结束时会庆祝一下
 - [ ] 拖到别处 → 硬刷新 → **还在原处**
+- [ ] 菜单 → 行为 → **看看余额** → 她报出数字；没登录时她会如实说没登录
 - [ ] `window.__wisp` 存在
 
 ---
@@ -447,6 +521,226 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 另外 `canSelfUpdate === false`、`hint` 里必须含包名、`why` 里必须说明沙箱原因，都有断言盯着。
 
 ## 变更
+
+### 1.40.0
+
+**她的透明处真的点不到了。**
+
+在这之前，"透明处不响应"只做了一半：`hitsBody()` 会按 alpha 蒙版做像素判定，但它判的是
+**"要不要开始拖动"** —— 事件早已经被浏览器派给她那个 560×840 的盒子了（盒子是
+`pointer-events:auto` 铺满的），JS 再 `return` 也追不回来。真引擎实测：
+
+```
+她盒子里抽样 363 格：只有 88 格是她（约 24%），其余全透明
+在透明格 (615,165)：elementFromPoint → wisp-body    下面那个按钮收到 0 次点击
+```
+
+也就是说她站在哪个按钮上，那个按钮的 hover 和点击就都没了。旧检查
+（`a press on her transparent margin passes through to the app`）只断言
+`defaultPrevented === false`——**那是"她没认领"，不等于"应用收到了"**，一条典型的假绿。
+
+#### 怎么修的：把命中判定交还给浏览器
+
+新增一个**不画任何东西**的空盒子 `.wisp-hit` 铺在她的位置，带一层由**同一张 alpha 蒙版**
+生成的 `clip-path`；`.wisp-body` 改成 `pointer-events:none`。
+
+```
+path("M245 0h46.7v5.8h-46.7z M239.2 5.8h64.2v5.8h-64.2z …")   // 实测某套皮肤约 4 KB
+```
+
+形状是这么来的：蒙版是 96×144 的格，每行把连续的不透明格合并成矩形，再和上一行同列同宽的
+矩形纵向合并 —— 段数通常几十段，只在**换皮肤或改尺寸**时重算（不是每帧的事）。
+
+于是透明处是**浏览器**判定穿透的，一次修好四件事：hover、点击、右键、滚轮；顺带
+`cursor:grab` 也只在她的轮廓上出现了（以前整个盒子都是抓手光标）。
+
+**保住的旧行为**（每条都验过）：点她仍然把键盘焦点给她（点击目标不再是那个
+`tabindex=0` 的元素，所以在 `onDown` 里显式 `focusHer()`，否则"点一下她再按 Enter 开菜单"
+就断了）、在她身上按下能拖动、在她身上右键仍然开她自己的菜单。
+
+#### 验证
+
+- 预检 636 → **642 项**：命中层存在、`body=none` / `hit=auto`、clip 由蒙版生成、
+  **形状精确等于"膨胀后的蒙版按当前盒子缩放"**（`M134.2 0.0h291.7v840.0h-291.7z`，
+  即蒙版第 23…72 列 × 5.833px）、改尺寸后重算、改回来还原。
+- 真引擎探针 21 → **30 项**（这一台机器上跑得动的那个）：透明处 `elementFromPoint`
+  返回的是**下面的应用**、真 CDP 点击**送达**、她身上返回的是 `wisp-hit`、点她**不**穿透、
+  点完焦点仍在她身上。冒烟第 10 节镜像了同一批。
+- 边界如实说：蒙版是 96×144 再各膨胀一格，所以在默认尺寸下命中轮廓比精灵图**粗约 6px**
+  —— 这是**故意**的：看起来落在她边缘上的一下，应该算她的。
+
+### 1.39.0
+
+**她会看你的余额了。** 菜单「行为 → 看看余额」，点一下她说出来：
+
+```
+账上是 ¥110.00。其中赠送 ¥10.00。
+```
+
+**按需查，不轮询** —— 每 30 秒问一次平台，既有被限流的风险，也违反"稳态开销接近零"这条
+一直守着的承诺。查不到的四种情况分成四句不同的话，因为把它们都说成"查不到"就是在骗人：
+
+| 情况 | 她说 |
+|---|---|
+| 未登录 | 没登录，看不到余额。 |
+| 登录着、但这一下没读到（授权在查询途中换了） | 这一下没读到，稍后再试。 |
+| 平台答了 `failed` | 余额没查成。 |
+| 这个壳里没有那个服务（没有 host 座位） | 这个壳里我查不了余额。 |
+
+#### 为什么不是"拿 API key 打平台接口"
+
+这是这一版最值得记下来的结论，两条都实测过：
+
+1. **`ctx.web.fetch` 设不了请求头。** 它的请求类型只有 `{ url: string }`（服务契约原文），
+   provider 只读 `url`，方法硬编码为 GET —— 而余额接口要 `Authorization: Bearer …`。
+   所以**平台给的网络通道在物理上就打不通那个接口**，跟有没有 key 无关。
+2. **根本不该由插件拿 key。** DSH 自己读余额走的是 `deepseekAccount` 服务，描述里写着
+   "only Host consumers can obtain a request credential" —— 凭据由平台持有，插件拿到的是
+   一个已经归一化的结果。于是：`lib/index.js` 只是把宿主半包 inject 上这个服务，
+   `harness.handle('checkBalance', …)`，浏览器半包用 `host.call` 问它。
+   **key 不会出现在插件里，更不会出现在页面上** —— `doctor().balance` 只报结果。
+
+服务契约（从运行时的 Host Service 目录读出来的，不是猜的）：
+
+```
+getBalance({ version, locale, timezoneOffsetSeconds })
+  -> { status: 'ready', value: [{ currency, balance }], bonusWallets: [...] }
+   | { status: 'failed' }
+   | null            // 未登录 **或** 授权在查询途中换了
+```
+
+`null` 故意同时意味着两件事，所以真遇到时**再问一次 `getState()`** 分清是哪一种：
+`'signed-out'` 说"没登录"，`'credential-stored'` 说"刚才没读到"。
+这个服务也不接受 `AbortSignal`，所以用一个竞速做 8 秒超时 —— 没有它，一个挂住的调用
+就是"气泡永远停在'看一下……'"。
+
+#### 顺带修掉一条我自己上一版引入的回归
+
+1.38.0 为了让"连戳两下第二下也要弹"，把 `accent('pop')` 放在了 `setMood` 的**去重之前**。
+而 `attn` 也在会弹的那一组里，`poll` 只要看到待处理面板就每一轮重算 `setMood('attn')` ——
+结果是你盯着审批卡片等的时候，她**每 1.2 秒抽一下**（真机实测：6 秒 5 次 `animationstart`）。
+
+现在弹一下回到去重之后（只有**真的换了表情**才弹），"连戳两下"由 `flashHappy`/`flashPoked`
+自己补 —— 那两条路只由手势触发，永远不会被轮询重算。两条检查分别钉住这两半。
+
+#### 验证
+
+- 预检 588 → **636 项**，全过。宿主半包当纯函数测（ready / failed / null 分两种 / 抛错 /
+  超时 / 服务缺失 / 脏数据 / 列表上限 / 两个 handler 一起摘掉），客户端用 `hostCall`
+  假座位走完整链路（含菜单那一行真的点一下、四种"没读到"各自的台词、英文覆盖层八条齐全
+  且无汉字）。
+- **没验到的部分，如实说**：这条路的**真实端到端**还没跑过 —— 跑着的应用装的是旧宿主半包，
+  要重启后新的 `checkBalance` handler 才会在。重启后菜单里点一下，或者 Console 里
+  `__wisp.checkBalance()`；`__wisp.doctor().balance` 会直接告诉你卡在哪一步
+  （`hostSeat` 有没有、`state` 是什么、`reason` 是哪一个）。
+
+#### 顺带：把"配置键的三个端"钉住（并修掉一个休眠 bug）
+
+配置键在三个地方各出现一次：`CONFIG_SPEC`（声明有哪些、怎么夹紧）、`DEFAULTS`（默认值）、
+README 的配置表（用户看到的那份）。这次核对发现**已经漂了**：
+
+- `CONFIG_SPEC` 有 **31** 个键，README 表只写了 **18** 个，`cordis.patch.yml` 的注释只列了 **15** 个
+  —— `motion` 正是上一版加进 README、却忘了同步别处的那个键；
+- `sound` / `soundVolume` / `lang` **只在 `CONFIG_SPEC` 里声明、`DEFAULTS` 里没有** →
+  默认值是 `undefined`。其中 `soundVolume` 是**真 bug**：`Number(undefined)` = `NaN` →
+  `clip.volume = NaN` 在浏览器里会抛，被 `playSound` 的 try/catch 吞掉 →
+  **"打开音效"整条路静默失效**（等 `assets/audio/` 有素材那天才会显形）。
+
+修法不是"把三份抄齐"，而是**删掉一份**：`cordis.patch.yml` 里那份清单改成指向 README 表
+（重复清单本身就是漂移源），代码这边补齐默认值、音量显式兜底。预检加了四条不变式：
+声明过的键必须有默认值、README 表必须齐全、README 表不许凭空发明键、
+以及 **README 里那个项数必须等于真实项数**（这一条终于让"544/546/588/631…"那种
+没人核对过的数字变成会红的检查）。
+
+### 1.38.0
+
+**她有身体了：这一版重做的是「交互动画」。**
+
+在这之前，"她的动作"其实只有两件事：**换一张精灵图**，以及一条常驻的呼吸循环。
+按下、拖动、松手这些**手势**在画面上没有任何回应 —— 她像一张贴在屏幕上的图，
+而不是一个被碰到会有反应的东西。
+
+#### 三个层，各管一件事
+
+CSS 的 `transform` 在同一个元素上是**覆盖**而不是叠加，所以"分层"不是设计洁癖，
+是唯一做法：
+
+| 层 | 管什么 | 由谁驱动 |
+|---|---|---|
+| `.wisp-body` | 情绪动画（呼吸 / 跳 / 推 / 担心）—— 既有，一行没动 | `data-mood` |
+| `.wisp-motion` | **一次性动作**：按下 / 落地 / 换表情弹一下 | `data-accent` + `--wisp-amp` |
+| `.wisp-lean` | **持续姿势**：被拖动时的侧倾、朝指针侧身、溜达前倾 | `--wisp-tilt` |
+
+`motion` 在外、`lean` 在内是刻意的：落地那一下该是**屏幕坐标**里的竖直压扁
+（重力方向），不该跟着侧倾一起歪。旋转原点放在**脚底**，所以侧倾像钟摆而不是转盘。
+
+#### 具体做了什么
+
+- **按下就压一下** —— 反馈发生在按下那一刻，不是等松手。
+- **拖着有重量** —— 拖动中朝运动的反方向倾（最多 8°，跟速度走、无过渡跟手）；
+  松手时顿一下再站稳。跨过屏幕中线时她整个是镜像的（`scaleX(-1)`，镜像会连旋转
+  一起翻），所以写进样式前**先乘一次 facing** —— 少了这一步，她会只在半张屏幕上
+  朝反方向歪。
+- **她会注意你的指针** —— 170px 内朝指针侧身（最多 3.5°，越近越多），出圈回正，
+  睡着时不跟。这是全插件唯一一处持续读指针的逻辑：纯算术、不查 DOM、不读布局，
+  出圈即归零，变化不到 **0.05°** 不写样式。
+- **换表情会弹** —— 交叉淡入淡出只是两张图叠了一下，没有"她动了"的感觉。
+  弹一下挂在 `POPPY_MOODS` 的八个表情上，`idle`/`alert`/`sleep` 不给（稳态弹一下就成抖）。
+- **溜达朝行进方向前倾** —— 1.6 秒的滑行里，这一点倾斜就是"往那边去"与"被平移过去"的区别。
+- **气泡的淡出跟着它的寿命走** —— 样式表里写死 `4.2s`、代码里活 `4.4s`，气泡会提前
+  200ms 淡完再干等。现在时长由 `SAY_MS` 写进行内样式，两边共用一个数（和 `ACCENT_MS`
+  同一条规矩：CSS 管怎么动，代码管多久）。
+
+#### 两个只有跑起来才知道的坑
+
+1. **同一个 `data-accent` 值再写一次，浏览器不会重播动画。** 连戳两下必须看到两次弹，
+   所以 `pop-a` / `pop-b` 是同一件事的**两个名字**，交替使用（靠读一次 `offsetWidth`
+   强制重排也行，但那要在测试替身里也装一个布局引擎，而替身没有布局）。
+2. **动作通道只留最后发生的那件事。** 最初给"松手没拖动"配了独立的 `release` 关键帧，
+   测试立刻证明它**永远不会被看到**：松手紧接着就是点击反应（换表情 → 弹），后到的
+   覆盖了它。于是删掉那个关键帧，而不是留一个演不到的动画。同理，`setMood` 的弹一下
+   放在"重复状态就返回"**之前** —— 真实引擎探针抓到"连戳两下，第二下完全没反应"，
+   而那正是最容易被读成"卡住了"的反馈缺失。
+
+#### 动作幅度可调（菜单里第三行三选一）
+
+`灵动 / 克制（半幅）/ 静止`。**给这一档的理由**：`prefers-reduced-motion` 是系统级的
+"所有动画都别放"，而"我不想让这只桌宠动来动去"是另一件事，不该逼人去改系统设置。
+`静止` 连呼吸和 `z` 一起停，她真的就是一张静态贴图。一个 `--wisp-amp` 变量管住全部幅度
+（关键帧里用 `calc` 乘它），CSS 和 JS 读同一张表，不会各调各的。
+
+#### reduced motion 有两道闸
+
+CSS 的媒体查询关掉动画，但**姿势是 JS 写进去的样式变量**，媒体查询够不着它 ——
+所以 `accent()` 与 `setTilt()` 里必须各问一次系统。真引擎实测（`Emulation.setEmulatedMedia`）：
+
+```
+reduced: true   --wisp-tilt=0deg   accent=null   body/motion animationName=none / none
+```
+
+#### 零动画帧这条承诺没变
+
+所有动作都是"事件写一次属性，浏览器自己算"，**一条 rAF 循环都没有加**。
+预检里那条 `the whole motion layer runs without arming a single animation frame`
+（`0 frame(s)`）就是盯着这件事的。
+
+#### 验证
+
+- 预检 546 → **588 项**，全过（新增 42 项：结构、CSS 契约、按下/落地/侧倾/指针/镜像/
+  幅度档/静止档/非法档位回退/reduced motion/监听器回收/气泡时长自洽）。
+- **真实引擎**：本机没装 Playwright，`node tools/smoke.mjs` 走的是跳过分支（这不是失败），
+  所以顺手补了一个**零依赖的真引擎探针** `tools/engine-probe.mjs`（Node 自带的
+  fetch + WebSocket 走 CDP，驱动本机 Edge/Chrome）。它跑出来的数：
+  `rotate(var(--wisp-tilt))` 真的转了（2.3° → `matrix(0.999194, 0.0401318, …)`）；
+  `wisp-press` 的**解析后关键帧**是 `scale(1) | scale(1.045, 0.94) | scale(1)` ——
+  也就是 `calc()`/`var()` 真的算出了数，不是"动画在跑但什么都没动"；
+  `wisp-land` / `wisp-pop-a` / `wisp-pop-b` 在引擎里确实在跑（`getAnimations()`）；
+  `静止` 档下 `.wisp-body` 的计算后 `animationName` 真的是 `none`；
+  `prefers-reduced-motion`（`Emulation.setEmulatedMedia`）下姿势与动作都不写；
+  插进两层空盒子之后**精灵图仍然精确铺满她的盒子**（偏移 `0.00,0.00`、尺寸差 `0.00×0.00`）
+  —— 少写一个 `inset:0`，假 DOM 那边照样全过，只有真页面会让她缩成半张图。
+  装了 Playwright 的机器上，同一批断言会由 `tools/smoke.mjs` 第 10 节自动跑。
+- 顺手修掉 README 顶部那个过期的"当前版本 `0.6.0`"（0.6.0 谱系合并时留下的）。
 
 ### 1.37.0
 

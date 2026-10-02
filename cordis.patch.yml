@@ -18,25 +18,20 @@
 # `exports["./client"]` (dsh-client-modules reads that, it does not import it)
 # and delivered to the page by the /plugins bundle route.
 #
-# Config keys the client half accepts — every one optional, every one clamped to
-# a sane range, so a typo degrades to the default instead of leaving an
-# unusable companion on screen:
-#   right             distance from the right edge in px     (default 26)
-#   bottom            distance from the bottom edge in px    (default 46)
-#   size              render scale, 0.4–8                    (default 4)
-#                     -> drawn 560x840 CSS px from the 2048x3072 sprite tier
-#   sleepAfterMs      idle time before dozing off in ms      (default 90000)
-#   reactions         react to agent-busy / composer text    (default true)
-#   persist           remember where she was dragged to      (default true)
-#   celebrate         cheer when a run finishes              (default true)
-#   celebrateAfterMs  only celebrate runs at least this long  (default 2500)
-#   happyMs           how long the happy state lasts          (default 1100)
-#   chatterMs         idle line interval; 0 = stay quiet      (default 0)
-#   wander            stroll around on her own while idle     (default true)
-#   wanderMs          how often she considers a stroll        (default 45000)
-#   wanderRange       how far one stroll may travel, in px    (default 260)
-#   skin              name a skin from assets/<skin>/        (default '' = last used)
-#   hidden            start hidden behind a mini tab         (default false)
+# Config keys the client half accepts: the FULL list (with types, defaults and
+# clamps) lives in README.md's 「配置」 table — it is the single documented source,
+# and the preflight fails if a key in CONFIG_SPEC is missing from it. Keeping a
+# second copy here is how this file drifted before (a key was added to the README
+# table and not to this comment).
+#
+# The four you are most likely to want:
+#   right             distance from the right edge in px     (默认 26)
+#   bottom            distance from the bottom edge in px    (默认 46)
+#   size              render scale, 0.4–8                    (默认 4 → 560x840 CSS px)
+#   motion            'full' | 'subtle' | 'off'              (默认 'full')
+#
+# 菜单里的「看看余额」**不需要任何配置或 API key**：余额由平台自己的账户服务
+# 提供（宿主半包的 optional inject: deepseekAccount），凭据留在平台手里。
 #
 # Example — add a `config:` block to the row below:
 #
