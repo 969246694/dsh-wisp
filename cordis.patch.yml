@@ -30,6 +30,11 @@
 #   size              render scale, 0.4–8                    (默认 4 → 560x840 CSS px)
 #   motion            'full' | 'subtle' | 'off'              (默认 'full')
 #
+# 更新检查的两个源也可以换（宿主半包读 config.urls）—— 国内镜像：
+#   urls:
+#     npm: "https://registry.npmmirror.com/dsh-wisp/latest"
+# 没给的源仍用内置默认值；只给 npm 一个键也是合法的。
+#
 # 菜单里的「看看余额」**不需要任何配置或 API key**：余额由平台自己的账户服务
 # 提供（宿主半包的 optional inject: deepseekAccount），凭据留在平台手里。
 #

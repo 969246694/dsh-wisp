@@ -588,6 +588,22 @@ head('1b. the host half answers checkUpdate through the platform web service')
   const U = { npm: 'https://npm/x', github: 'https://gh/y' }
   const only = (key, outcome) => webWith({ [U[key]]: outcome })
 
+  /* 源可以换：国内镜像 / 私有 registry 只需要把 config.urls 指过去。
+     这一条钉住"换源真的会去问新地址"—— 否则"支持镜像"只是文档里的一句话。 */
+  const asked = []
+  const recorder = {
+    fetch: async (request) => {
+      asked.push(request.url)
+      return { url: request.url, statusCode: 200, body: { kind: 'text', content: '{"version":"1.2.3"}' }, truncated: false }
+    },
+  }
+  const mirrorUrls = { npm: 'https://registry.npmmirror.com/dsh-wisp/latest' }
+  const mirror = await readPublishedVersion(recorder, mirrorUrls, undefined, 50)
+  check(mirror.ok === true && mirror.latest === '1.2.3' && mirror.from === 'npm'
+    && asked.length === 1 && asked[0] === mirrorUrls.npm,
+  'the npm source can be pointed at a mirror through config (only the configured URL is asked)',
+  JSON.stringify({ asked, verdict: mirror }))
+
   const good = await readPublishedVersion(only('npm', { body: '{"name":"dsh-wisp","version":"9.9.9"}' }), U)
   check(good.ok === true && good.latest === '9.9.9' && good.from === 'npm',
     'a 200 with a version field is read correctly', JSON.stringify(good))
@@ -2025,13 +2041,13 @@ if (clientSrc !== null) {
     const size0 = ixApi.config.size
     wheel(-100, { ctrlKey: true })
     const sizeUp = ixApi.config.size
-    check(Math.abs(sizeUp - (size0 + 0.25)) < 1e-9, 'ctrl+wheel up makes her a step bigger',
+    check(Math.abs(sizeUp - (size0 + 0.1)) < 1e-9, 'ctrl+wheel up makes her a step bigger',
       String(size0) + ' -> ' + String(sizeUp))
     wheel(100, { ctrlKey: true })
     check(Math.abs(ixApi.config.size - size0) < 1e-9, 'and ctrl+wheel down takes it back',
       String(ixApi.config.size))
     wheel(-100, { metaKey: true })
-    check(Math.abs(ixApi.config.size - (size0 + 0.25)) < 1e-9, '⌘+wheel does the same on macOS',
+    check(Math.abs(ixApi.config.size - (size0 + 0.1)) < 1e-9, '⌘+wheel does the same on macOS',
       String(ixApi.config.size))
     wheel(100, { metaKey: true })
 
@@ -3112,8 +3128,8 @@ if (clientSrc !== null) {
     check(focusSlider(), 'the slider is reachable with the arrow keys',
       h.document.activeElement ? String(h.document.activeElement.className) : '(没有焦点)')
     pressKey('ArrowRight')
-    check(Math.abs(fifth.config.size - (sizeBefore + 0.25)) < 1e-9,
-      'ArrowRight grows her by a quarter step', `${sizeBefore} -> ${fifth.config.size}`)
+    check(Math.abs(fifth.config.size - (sizeBefore + 0.1)) < 1e-9,
+      'ArrowRight grows her by exactly one step', `${sizeBefore} -> ${fifth.config.size}`)
     check(menuOf() !== null && focusedIsSlider(),
       'and it neither closes the menu nor steals focus from the slider',
       menuOf() === null ? '菜单关了' : String(h.document.activeElement && h.document.activeElement.className))
@@ -3311,7 +3327,7 @@ if (clientSrc !== null) {
     }
     h.win.dispatch('keydown', { key: 'ArrowRight', preventDefault() {}, stopPropagation() {} })
     h.win.dispatch('keydown', { key: 'ArrowRight', preventDefault() {}, stopPropagation() {} })
-    check(fifth.element.style.width === '630px' && fifth.element.style.height === '945px',
+    check(fifth.element.style.width === '588px' && fifth.element.style.height === '882px',
       'the slider really resized her (two steps up)', `${fifth.element.style.width}x${fifth.element.style.height}`)
     check(menuOf() !== null, 'and the slider keeps the menu open, unlike an action row')
     h.win.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
@@ -4348,6 +4364,143 @@ if (existsSync(join(here, 'README.md'))) {
   const undeclared = mentioned.filter((m) => !declared.has(m))
   check(undeclared.length === 0, 'every tool the docs mention actually ships',
     undeclared.length ? undeclared.join(' | ') : `${mentioned.length} tool(s) referenced, all in files[]`)
+}
+
+/* ---------------------------------------------------------------------------
+   1.43.0：一批修复各自的不变式。
+
+   每条修复背后都有一句"如果再犯就会露出来"的断言 —— 没有它，这些修复会在下一次
+   重构里悄悄退回原样（这批里有三条正是这么来的）。 */
+{
+  const h = createHarness({ timer: true, composerText: '', wanderMs: 150, wanderRange: 200 })
+  const keep = active
+  active = h
+  h.evaluate(clientSrc)
+  h.module().default.apply(h.ctx, { reactions: false, wander: true, celebrate: false })
+  h.advance(1200, 100)
+  const api = h.win.__wisp
+  const root = h.document.querySelector('.wisp-root')
+  const tiltDeg = () => {
+    const n = Number(String(root.style.getPropertyValue('--wisp-tilt') || '0deg').replace('deg', ''))
+    return Number.isFinite(n) ? n : 0
+  }
+
+  /* 脚底光晕在 motion 层、不在 lean 层：歪的是她，不该是地板 */
+  const shineEl = h.document.querySelector('.wisp-shine')
+  const motionEl = h.document.querySelector('.wisp-motion')
+  check(shineEl !== null && motionEl !== null && shineEl.parentNode === motionEl,
+    'the ground glow lives outside the tilt layer',
+    shineEl && shineEl.parentNode ? String(shineEl.parentNode.className) : '(missing)')
+
+  /* 静止档的 z：静止 ≠ 冻成满不透明 */
+  check(clientSrc.includes('.wisp-root[data-motion="off"] .wisp-zzz{opacity:.5}'),
+    'the still level shows a subdued z instead of a frozen opaque one')
+  const rmAt = clientSrc.indexOf('@media (prefers-reduced-motion:reduce)')
+  check(rmAt >= 0 && clientSrc.slice(rmAt, rmAt + 800).includes('.wisp-zzz{animation:none!important;opacity:.5}'),
+    'and reduced motion does the same for it')
+
+  /* 滑块的默认值必须落在步长格点上（否则用户动了就回不到出厂大小） */
+  const wheelStep = Number((/const WHEEL_STEP = ([0-9.]+)/.exec(clientSrc) ?? [])[1])
+  const keyStep = Number((/ev\.shiftKey \? 1 : ([0-9.]+)/.exec(clientSrc) ?? [])[1])
+  const sizeLo = Number((/size: \{ kind: 'num', lo: ([0-9.]+)/.exec(clientSrc) ?? [])[1])
+  const defaultsBlock = clientSrc.match(/const DEFAULTS = \{([\s\S]*?)\n {4}\}/)
+  const defSize = Number((/size:\s*([0-9.]+)/.exec(defaultsBlock ? defaultsBlock[1] : '') ?? [])[1])
+  check(wheelStep > 0 && wheelStep === keyStep, 'the wheel and the slider share exactly one step',
+    `wheel=${wheelStep} key=${keyStep}`)
+  const steps = (defSize - sizeLo) / wheelStep
+  check(Number.isFinite(steps) && Math.abs(steps - Math.round(steps)) < 1e-9,
+    'the DEFAULT size is reachable from lo in whole steps — otherwise a user can never get back to it',
+    `lo=${sizeLo} default=${defSize} step=${wheelStep} → ${steps} steps`)
+
+  /* 鼠标路过会侧身；手指路过不会（而且会把姿势归零）。
+     y 必须取她的**中线**：侧身有"从正上方路过不倾"这一层（level 因子），
+     在脚下 700px 处派发事件本来就该是 0 度 —— 那样测的是另一条规则。 */
+  const nearX = api.position.x + 280
+  const nearY = api.position.y + 420
+  h.win.dispatch('pointermove', { clientX: nearX + 24, clientY: nearY, pointerType: 'mouse' })
+  check(tiltDeg() !== 0, 'a mouse passing by still leans her', `${tiltDeg()}deg`)
+  h.win.dispatch('pointermove', { clientX: nearX + 24, clientY: nearY, pointerType: 'touch' })
+  check(tiltDeg() === 0, 'a finger passing by does not — and clears the pose', `${tiltDeg()}deg`)
+
+  /* 指针离开文档：姿势归零（blur 只覆盖"切走应用"） */
+  h.win.dispatch('pointermove', { clientX: nearX + 24, clientY: nearY, pointerType: 'mouse' })
+  check(tiltDeg() !== 0, 'leaning again before the pointer leaves', `${tiltDeg()}deg`)
+  h.document.dispatch('mouseleave', {})
+  check(tiltDeg() === 0, 'the pose resets when the pointer leaves the document', `${tiltDeg()}deg`)
+
+  /* 撞到边界不再"原地歪"：位置没变就不该有侧倾 */
+  api.move(1360, 300)
+  h.win.dispatch('pointerdown', {
+    clientX: 1360 + 280, clientY: 300 + 700, button: 0, pointerType: 'mouse',
+    preventDefault() {}, stopPropagation() {},
+  })
+  h.win.dispatch('pointermove', { clientX: 1360 + 280 + 60, clientY: 300 + 700, pointerType: 'mouse' })
+  check(api.position.x === 1360, 'a drag into the right edge stays clamped', String(api.position.x))
+  check(tiltDeg() === 0, 'and a clamped drag does not tilt her in place', `${tiltDeg()}deg`)
+  h.win.dispatch('pointerup', {})
+
+  /* 静止档也要停住 JS 溜达 —— CSS 关不掉坐标写入 */
+  api.configure({ motion: 'off', wander: true, wanderMs: 150, wanderRange: 200 })
+  const still = { x: api.position.x, y: api.position.y }
+  h.advance(4000, 100)
+  check(api.position.x === still.x && api.position.y === still.y,
+    'motion: off stops the walk too, not only the animation', `${api.position.x},${api.position.y}`)
+  api.configure({ motion: 'full' })
+  h.advance(6000, 100)
+  check(api.position.x !== still.x || api.position.y !== still.y,
+    'and with motion back on she strolls again', `${api.position.x},${api.position.y}`)
+
+  /* 拨开关之后子面板要留在原地（点开的就该一直开着）。
+     contextmenu 要派给**她的本体**（监听挂在 body 上），派给 window 不会走到那一层。 */
+  h.document.querySelector('.wisp-body').dispatch('contextmenu', {
+    clientX: api.position.x + 280, clientY: api.position.y + 420,
+    preventDefault() {}, stopPropagation() {},
+  })
+  const groupRow = h.all('wisp-menu-item').find((el) => el.dataset && el.dataset.group === '行为')
+  check(groupRow !== undefined, 'the behaviour group row is there to click', String(h.all('wisp-menu-item').length) + ' rows')
+  if (groupRow) {
+    groupRow.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    h.advance(60, 20)
+    const flyoutBefore = h.all('wisp-submenu').length
+    const aSwitch = h.all('wisp-switch')[0]
+    check(flyoutBefore > 0 && aSwitch !== undefined, 'its flyout is open with switches in it', String(flyoutBefore))
+    if (aSwitch) {
+      aSwitch.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+      h.advance(60, 20)
+      check(h.all('wisp-submenu').length > 0,
+        'toggling a switch keeps the flyout open — the panel vanishing is the most annoying version of this',
+        `${h.all('wisp-submenu').length} panel(s)`)
+    }
+  }
+  api.destroy()
+  active = keep
+}
+
+/* GitHub 上更新、npm 上还是旧版时：提示要改口，并且复制的是仓库地址而不是包名 */
+{
+  const gh = createHarness({
+    timer: true, composerText: '', clipboard: true,
+    hostCall: async () => ({
+      ok: true, latest: '9.9.9', from: 'github',
+      sources: { npm: { ok: true, version: '1.0.0' }, github: { ok: true, version: '9.9.9' } },
+    }),
+  })
+  const keepGh = active
+  active = gh
+  gh.evaluate(clientSrc)
+  gh.module().default.apply(gh.ctx, { reactions: false, wander: false, celebrate: false })
+  gh.advance(1200, 100)
+  gh.win.__wisp.showUpdate()
+  await new Promise((resolve) => setImmediate(resolve))
+  gh.advance(200, 50)
+  check(gh.clipboardWrites[gh.clipboardWrites.length - 1] === 'https://github.com/969246694/dsh-wisp',
+    'when only GitHub has the new version she copies the repo URL, not the package name that installs the old one',
+    JSON.stringify(gh.clipboardWrites))
+  check(String(gh.win.__wisp.doctor().update.hint).includes('npm 上还是旧版'),
+    'and doctor() records which hint she actually used',
+    String(gh.win.__wisp.doctor().update.hint))
+  gh.win.__wisp.destroy()
+  active = keepGh
 }
 
 if (clientSrc !== null) {
