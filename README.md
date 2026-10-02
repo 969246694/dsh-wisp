@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.43.3`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
+**当前版本 `1.43.4`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
