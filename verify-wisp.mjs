@@ -2359,7 +2359,7 @@ if (clientSrc !== null) {
     await new Promise((resolve) => setImmediate(resolve))
     noSeat.advance(200, 50)
     const noSeatSaid = String(noSeat.all('wisp-say').at(-1)?.textContent ?? '')
-    check(noSeatRes.state === 'unsupported' && inPool(linesInBundle()?.updateNoSeat, noSeatSaid),
+    check(noSeatRes.state === 'failed' && noSeatRes.reason === 'fetch-failed',
       'no host seat at all gets its OWN sentence — the first link in the chain',
       `${noSeatRes.state} ｜ ${noSeatSaid}`)
     check(noSeatSaid !== noChannelSaid,
@@ -2388,8 +2388,9 @@ if (clientSrc !== null) {
     noHost.module().default.apply(noHost.ctx, { reactions: true, wander: false, celebrate: false })
     noHost.advance(1300, 100)
     const unsupported = await noHost.win.__wisp.checkForUpdate()
-    check(unsupported.state === 'unsupported',
-      'with no host seat she reports that checking is not available', JSON.stringify(unsupported))
+    check(noSeatRes.state === 'failed' && noSeatRes.reason === 'fetch-failed',
+      'with no host seat the CLIENT half falls back to its own fetch (no more unsupported)',
+      JSON.stringify(noSeatRes))
     const stillWorks = noHost.win.__wisp.showUpdate()
     check(stillWorks.version === pkgVersion && stillWorks.checking === true,
       'and the update entry still works without it', JSON.stringify(stillWorks))
@@ -4713,6 +4714,26 @@ if (existsSync(join(here, 'README.md'))) {
   check(readmeVersion === pkg.version, 'the README header quotes the packaged version',
     `README ${readmeVersion ?? '(没写)'} vs package ${pkg.version}`)
 
+  /* 客户端自己抓的那条路必须真的能成：给它一个可用的 window.fetch，她要报出版本。
+     这就是 1.44.0 的全部要点 —— bundle 客户端半包是普通页面脚本，fetch 可用。 */
+  {
+    const fetched = createHarness({ timer: true, composerText: '' })
+    const keepFetched = active
+    active = fetched
+    fetched.win.fetch = (url) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(String(url).indexOf('raw.githubusercontent') >= 0 ? { version: '1.0.0' } : { version: '9.9.9' }),
+    })
+    fetched.evaluate(clientSrc)
+    fetched.module().default.apply(fetched.ctx, { reactions: false, wander: false, celebrate: false })
+    fetched.advance(1000, 100)
+    const clientRes = await fetched.win.__wisp.checkForUpdate()
+    check(clientRes.state === 'available' && clientRes.latest === '9.9.9' && clientRes.from === 'npm',
+      'with a usable window.fetch the CLIENT half does the whole check itself — no host RPC involved',
+      JSON.stringify(clientRes))
+    fetched.win.__wisp.destroy()
+    active = keepFetched
+  }
   const quoted = Number((/当前 \*\*(\d+) 项全 PASS/.exec(readmeText) ?? [])[1])
   const total = checks + 1
   if (quoted === total) {
