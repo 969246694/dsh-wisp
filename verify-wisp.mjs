@@ -2346,6 +2346,27 @@ if (clientSrc !== null) {
     check(new Set([noChannelSaid, noHostSaid, networkSaid]).size === 3,
       'the three failure kinds really are three different sentences')
 
+    /* "没接上宿主"和"宿主拿不到服务"是链路上**不同的一环**断了 —— 必须分开说，
+       否则那句话永远说不清断在哪（1.43.3 之前两者共用同一句，真机上就卡在这）。 */
+    const noSeat = createHarness({ timer: true, composerText: '' })   // 默认替身没有 host 座位
+    const keepNoSeat = active
+    active = noSeat
+    noSeat.evaluate(clientSrc)
+    noSeat.module().default.apply(noSeat.ctx, { reactions: false, wander: false, celebrate: false })
+    noSeat.advance(1000, 100)
+    const noSeatRes = await noSeat.win.__wisp.checkForUpdate()
+    noSeat.win.__wisp.showUpdate()
+    await new Promise((resolve) => setImmediate(resolve))
+    noSeat.advance(200, 50)
+    const noSeatSaid = String(noSeat.all('wisp-say').at(-1)?.textContent ?? '')
+    check(noSeatRes.state === 'unsupported' && inPool(linesInBundle()?.updateNoSeat, noSeatSaid),
+      'no host seat at all gets its OWN sentence — the first link in the chain',
+      `${noSeatRes.state} ｜ ${noSeatSaid}`)
+    check(noSeatSaid !== noChannelSaid,
+      'and it is distinguishable from "the host ran but has no web service"', `${noSeatSaid} ≠ ${noChannelSaid}`)
+    noSeat.win.__wisp.destroy()
+    active = keepNoSeat
+
     /* 宿主调用抛错：不能变成未处理的 rejection */
     const thrower = mkChecker('boom')
     const keepThrower = active
