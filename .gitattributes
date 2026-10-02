@@ -15,3 +15,6 @@
 *.jpg binary
 *.jpeg binary
 *.ico binary
+# 帧动画素材（alpha WebM）同理：它是**内联进 lib/client.js 的那份字节**，
+# 换行符或编码被改一个字节，构建产物就对不上了。
+*.webm binary

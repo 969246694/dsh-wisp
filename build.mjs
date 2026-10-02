@@ -1,10 +1,15 @@
 /* ============================================================================
    build.mjs — inline the sprites into lib/client.js.
 
-   lib/client.template.js holds the whole browser half with one placeholder,
-   __SPRITES__. This script replaces it with a small object of data URIs:
+   lib/client.template.js holds the whole browser half with two placeholders.
+   __SPRITES_LITERAL__ is replaced with a small object of data URIs:
 
        { idle: "data:image/webp;base64,…", happy: …, sleepy: …, work: … }
+
+   …and __MOTION_LITERAL__ with the frame-animation clips (currently one alpha
+   WebM — the sleeping loop):
+
+       { sleepy: "data:video/webm;base64,…" }
 
    Embedding rather than shipping asset files is deliberate: the delivered
    plugin is a single self-contained file, so a share carries no path, no
@@ -119,6 +124,27 @@ if (existsSync(audioDir)) {
 }
 if (Object.keys(sounds).length > 0) console.log(`  audio: ${Object.keys(sounds).join(', ')}`)
 
+/* ---- 帧动画（motion）：assets/motion/<名字>.webm -> { <名字>: "data:video/webm;base64,…" }。
+
+   和音效同一档待遇：**可选**。没有文件就是空对象，客户端据此连 <video> 都不建 ——
+   一个"永远不播的空盒子"比没有它更糟（它会占位、会吃内存、还要有人去解释它）。
+
+   MIME 写死 video/webm，别的扩展名一律不认：这一档素材是 VP9 + **alpha 平面**
+   （EBML 里 AlphaMode=1，本脚本不看，但选它就是因为透明处能透出壁纸）。
+   收别的格式进来，透明处会变成一块黑底。 */
+const motionDir = join(assetsDir, 'motion')
+const motion = {}
+let motionRaw = 0
+for (const name of existsSync(motionDir) ? readdirSync(motionDir).sort() : []) {
+  if (!name.toLowerCase().endsWith('.webm')) continue
+  const file = join(motionDir, name)
+  const bytes = readFileSync(file)
+  const key = name.slice(0, -'.webm'.length)
+  motion[key] = `data:video/webm;base64,${bytes.toString('base64')}`
+  motionRaw += bytes.length
+  console.log(`  motion: ${key}  ${(bytes.length / 1024).toFixed(1)} KB raw  /  ${(motion[key].length / 1024).toFixed(1)} KB base64  <- ${file.slice(here.length + 1)}`)
+}
+
 const sprites = {}
 let total = 0
 for (const skin of skins) {
@@ -146,6 +172,7 @@ for (const skin of skins) {
 }
 
 const PLACEHOLDER = '__SPRITES_LITERAL__'
+const MOTION_PLACEHOLDER = '__MOTION_LITERAL__'
 const template = readFileSync(templatePath, 'utf8')
 const placeholderCount = template.split(PLACEHOLDER).length - 1
 if (placeholderCount !== 1) {
@@ -156,20 +183,37 @@ if (placeholderCount !== 1) {
   console.error(`build: template must contain ${PLACEHOLDER} exactly once (found ${placeholderCount})`)
   process.exit(1)
 }
+const motionPlaceholderCount = template.split(MOTION_PLACEHOLDER).length - 1
+if (motionPlaceholderCount !== 1) {
+  console.error(`build: template must contain ${MOTION_PLACEHOLDER} exactly once (found ${motionPlaceholderCount})`)
+  process.exit(1)
+}
 
 const literal = '{\n' + skins.map((skin) => (
   `      ${JSON.stringify(skin)}: {\n`
   + MOODS.map((m) => `        ${m}: '${sprites[skin][m]}',`).join('\n')
   + '\n      },'
 )).join('\n') + '\n    }'
+/* 空表也要是**合法的空对象**：没有 motion 素材的包照样能构建（客户端会连 <video> 都不建）。 */
+const motionLiteral = '{\n' + Object.keys(motion).map((key) => (
+  `      ${JSON.stringify(key)}: '${motion[key]}',`
+)).join('\n') + '\n    }'
 const soundsInlined = template.replace(
   "const SOUNDS = (typeof __WISP_SOUNDS__",
   `const __WISP_SOUNDS__ = ${JSON.stringify(sounds)}\nconst SOUNDS = (typeof __WISP_SOUNDS__`,
 )
-const out = soundsInlined.replace(PLACEHOLDER, literal)
+/* 用函数形式替换：base64 里不会有 `$`，但把替换值当**值**传递是唯一不用去想
+   `$&`/`$1` 转义问题的写法，而这两张表将来都可能换个编码。 */
+const out = soundsInlined
+  .replace(MOTION_PLACEHOLDER, () => motionLiteral)
+  .replace(PLACEHOLDER, () => literal)
 
 if (out.includes(PLACEHOLDER)) {
   console.error('build: placeholder survived the substitution; refusing to write a broken bundle')
+  process.exit(1)
+}
+if (out.includes(MOTION_PLACEHOLDER)) {
+  console.error('build: the motion placeholder survived the substitution; refusing to write a broken bundle')
   process.exit(1)
 }
 
@@ -233,11 +277,41 @@ try {
   process.exit(1)
 }
 
+/* 同一道防线给 MOTION：表必须真的存在、真的能求值，而且每个值都必须是 video/webm 的
+   data URI。写坏一个 key（例如把 .webm 之外的素材塞进 assets/motion/）时，客户端
+   会建一个永远不播的 <video>，而失败是**静默**的 —— 只有这里能拦。 */
+const motionTable = out.match(/const MOTION = \{([\s\S]*?)\n {4}\}/)
+if (!motionTable) {
+  console.error('build: the injected MOTION table is missing; aborting')
+  process.exit(1)
+}
+try {
+  const value = new Function(`${motionTable[0]}\nreturn MOTION`)()
+  const broken = Object.keys(value).filter((key) => typeof value[key] !== 'string' || value[key].indexOf('data:video/webm;base64,') !== 0)
+  if (broken.length > 0) {
+    console.error(`build: MOTION entries are not inlined video/webm data URIs: ${broken.join(', ')}; aborting`)
+    process.exit(1)
+  }
+  if (Object.keys(value).length !== Object.keys(motion).length) {
+    console.error(`build: MOTION holds ${Object.keys(value).length} clips, expected ${Object.keys(motion).length}; aborting`)
+    process.exit(1)
+  }
+} catch (error) {
+  console.error(`build: injected MOTION table does not evaluate (${error.message}); aborting`)
+  process.exit(1)
+}
+
 writeFileSync(outPath, out, 'utf8')
 
 const kb = (n) => (n / 1024).toFixed(1)
 console.log(`\n  sprites total   ${kb(total)} KB`)
 console.log(`  base64 inlined  ${kb(out.length)} KB`)
+if (Object.keys(motion).length > 0) {
+  /* 帧动画的体积账单独打一行：它是**唯一**一个进包的视频，而预算（verify-wisp.mjs）
+     盯的是 base64 之后的长度，不是原始文件大小。 */
+  console.log(`  motion raw      ${kb(motionRaw)} KB  (${Object.keys(motion).join(', ')})`)
+  console.log(`  motion inlined  ${kb(Object.values(motion).reduce((n, uri) => n + uri.length, 0))} KB  base64`)
+}
 console.log(`  wrote           lib/client.js`)
 
 /* 体积与锐度是同一个决定的两面，所以把账算在构建输出里，而不是只写在文档里：
