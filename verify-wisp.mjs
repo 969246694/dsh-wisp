@@ -4337,6 +4337,12 @@ else bad('every path in files[] exists', `missing: ${missingFiles.join(', ')}`)
    注意：它必须放在所有检查之后，且用 ok()/bad() 自己计数，所以比较时 +1。 */
 if (existsSync(join(here, 'README.md'))) {
   const readmeText = readFileSync(join(here, 'README.md'), 'utf8')
+  /* README 顶部那个版本号同样必须等于 package.json。它刚漂过一次：package 已经是
+     1.40.0，README 还写着 1.39.0 —— 而此前没有任何检查盯着它（只有 WHATS_NEW 那条）。 */
+  const readmeVersion = (/当前版本 `([^`]+)`/.exec(readmeText) ?? [])[1]
+  check(readmeVersion === pkg.version, 'the README header quotes the packaged version',
+    `README ${readmeVersion ?? '(没写)'} vs package ${pkg.version}`)
+
   const quoted = Number((/当前 \*\*(\d+) 项全 PASS/.exec(readmeText) ?? [])[1])
   const total = checks + 1
   if (quoted === total) {
