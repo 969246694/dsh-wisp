@@ -66,11 +66,19 @@ jobs:
           }
 
       # prepublishOnly runs build.mjs + verify-wisp.mjs, so a red suite blocks the
-      # upload before anything leaves the machine (653 checks at the time of writing).
+      # upload before anything leaves the machine (654 checks at the time of writing).
       - name: Publish
         if: ${{ !inputs.dry-run }}
         run: npm publish
 
-      - name: Dry run (pack + verify only)
+      # A dry run must NOT touch the registry: `npm publish --dry-run` still asks it,
+      # and answers "You cannot publish over the previously published versions" for a
+      # version that is already out — which looks like a failure while everything is
+      # fine. So the dry run repeats the two things that matter (build + verify) and
+      # then packs, without ever talking to npm.
+      - name: Dry run (build + verify + pack only)
         if: ${{ inputs.dry-run }}
-        run: npm publish --dry-run
+        run: |
+          npm run build
+          npm run verify
+          npm pack --dry-run
