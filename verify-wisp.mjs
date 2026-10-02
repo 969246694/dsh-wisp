@@ -2276,6 +2276,8 @@ if (clientSrc !== null) {
     const diagHarness = mkChecker(async () => ({
       ok: false,
       reason: 'no-web-service',
+      /* 宿主现在会一起带回"它看见了什么" —— 失败台词背后的细节靠这一段。 */
+      diag: { via: 'none', how: 'none', why: 'ctx.get("web")→undefined; ctx.web→undefined', manager: 'no-plugin-manager' },
       sources: {
         npm: { ok: false, reason: 'no-web-service' },
         github: { ok: false, reason: 'fetch-failed', detail: 'getaddrinfo ENOTFOUND' },
@@ -2293,6 +2295,19 @@ if (clientSrc !== null) {
       && diagLast.sources.github.detail === 'getaddrinfo ENOTFOUND',
     'a failed check keeps every source reason, so doctor() can say WHY it failed',
     JSON.stringify(diagLast))
+
+    /* 台词是给人读的一句话，技术细节不进嘴；但细节必须看得见 —— 失败时排进弹窗。
+       （真机上出现过台词后面挂一串 ctx.get(...)→undefined 的英文碎片。） */
+    diagHarness.win.__wisp.showUpdate()
+    await new Promise((resolve) => setImmediate(resolve))
+    diagHarness.advance(200, 50)
+    const failSaid = String(diagHarness.all('wisp-say').at(-1)?.textContent ?? '')
+    check(!/[A-Za-z]{3,}/.test(failSaid),
+      'the failure line stays human — no technical fragments in the spoken sentence', failSaid)
+    const diagDialog = diagHarness.all('wisp-dialog-p').map((el) => el.textContent).join('\n')
+    check(diagDialog.includes('看到的东西') && diagDialog.includes('取服务的方式'),
+      'and the dialog spells out what the host actually saw',
+      diagDialog.replace(/\n/g, ' | ').slice(0, 120))
     diagHarness.win.__wisp.destroy()
     active = keepDiag
 
