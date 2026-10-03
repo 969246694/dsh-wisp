@@ -451,6 +451,10 @@ try {
       w: video.videoWidth, h: video.videoHeight, paused: video.paused,
       display: getComputedStyle(video).display,
       pointerEvents: getComputedStyle(video).pointerEvents,
+      /* 画面归谁（v1.45.2）：这一条是**计算后**的 visibility，只有真引擎算得出来 ——
+         假 DOM 里没有级联，只能读到"属性写了、规则也在"，证明不了它真的生效。 */
+      visibility: getComputedStyle(img).visibility,
+      frame: document.querySelector('.wisp-root').dataset.frame ?? null,
       dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top),
       dw: Math.abs(a.width - b.width), dh: Math.abs(a.height - b.height),
       corners,
@@ -468,6 +472,11 @@ try {
     'and it lands on exactly the sprite box, so the loop does not make her jump',
     `delta ${clip.dx.toFixed(2)},${clip.dy.toFixed(2)} size ${clip.dw.toFixed(2)}x${clip.dh.toFixed(2)}`)
   check(clip.pointerEvents === 'none', 'the layer takes no pointer events', String(clip.pointerEvents))
+  /* 重影修复（v1.45.2）：视频在播时立绘必须**真的**看不见（计算后的 visibility 是
+     hidden，而不是"读源码看到写了 visibility"）。 */
+  check(clip.visibility === 'hidden' && clip.frame === 'on',
+    'while the loop plays the static sprite is hidden in the real engine — the two layers are never visible at once (v1.45.2)',
+    `sprite visibility=${clip.visibility} data-frame=${String(clip.frame)}`)
 
   const clipFrozen = await evaluate(`(() => {
     const video = document.querySelector('.wisp-video')
@@ -478,12 +487,18 @@ try {
       paused: video.paused, t: video.currentTime,
       display: getComputedStyle(video).display,
       sprite: getComputedStyle(img).display !== 'none' && Number(getComputedStyle(img).opacity) > 0.5,
+      spriteVisibility: getComputedStyle(img).visibility,
+      frame: document.querySelector('.wisp-root').dataset.frame ?? null,
     }
   })()`)
   check(clipFrozen.paused === true && clipFrozen.t === 0 && clipFrozen.display === 'none',
     '"still" freezes the loop at the first frame in the real engine too',
     JSON.stringify(clipFrozen))
   check(clipFrozen.sprite === true, 'and the static sprite is still painted underneath', String(clipFrozen.sprite))
+  /* 冻结时立绘必须**回来**：它这时是屏幕上唯一的那个她。 */
+  check(clipFrozen.spriteVisibility === 'visible' && clipFrozen.frame === null,
+    'and it is visible again, not just present — freezing hands the picture back to the sprite (v1.45.2)',
+    `sprite visibility=${clipFrozen.spriteVisibility} data-frame=${String(clipFrozen.frame)}`)
 
   const clipBack = await evaluate(`(async () => {
     window.__wisp.configure({ motion: 'full' })
@@ -511,6 +526,41 @@ try {
   'turning reduced motion on mid-session stops the loop where it stands, with no reload',
   JSON.stringify(clipReduced))
   await send('Emulation.setEmulatedMedia', { features: [] })
+
+  /* 加载/解码失败的兜底：把 error 事件真的派给那个元素。假 DOM 里这条只证明了
+     "调了 hideMotion()"；这里要证明的是**级联之后**立绘回到 visible —— 那正是
+     "视频坏了也还有她"这句话的全部内容。 */
+  const clipFailed = await evaluate(`(async () => {
+    const waitFor = async (ok, ms) => {
+      const until = Date.now() + ms
+      while (Date.now() < until) { if (ok()) return true; await new Promise((r) => setTimeout(r, 50)) }
+      return ok()
+    }
+    const v = document.querySelector('.wisp-video')
+    const root = document.querySelector('.wisp-root')
+    const img = document.querySelector('.wisp-img')
+    await waitFor(() => v !== null && !v.paused, 5000)
+    const before = {
+      visibility: getComputedStyle(img).visibility,
+      frame: root.dataset.frame ?? null,
+      paused: v.paused,
+    }
+    v.dispatchEvent(new Event('error'))
+    return {
+      before,
+      visibility: getComputedStyle(img).visibility,
+      display: getComputedStyle(v).display,
+      frame: root.dataset.frame ?? null,
+      failed: window.__wisp.doctor().motion.frame.failed,
+      spriteHidden: window.__wisp.doctor().motion.frame.spriteHidden,
+    }
+  })()`)
+  check(clipFailed.before.visibility === 'hidden' && clipFailed.before.frame === 'on'
+    && clipFailed.visibility === 'visible' && clipFailed.display === 'none'
+    && clipFailed.frame === null && clipFailed.failed === true,
+  'a clip that errors hands the picture straight back to the static sprite — hidden -> visible in the real engine (v1.45.2)',
+  JSON.stringify(clipFailed))
+
   await evaluate(`window.__wisp.mood('idle')`)
 
   console.log(`\n=== ${failures === 0 ? 'ENGINE PROBE PASSED' : `${failures} PROBE CHECK(S) FAILED`} ===`)
