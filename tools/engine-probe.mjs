@@ -17,6 +17,8 @@
  *      动画照跑但什么都不动。这条只有把 getKeyframes() 读出来才能证明。
  *   4. 动作幅度档：`静止` 下计算后的 animationName 是 none，姿势被钉在 0
  *   5. `prefers-reduced-motion`（CDP Emulation）：姿势与动作都不写
+ *   6. 帧动画（v1.46.1 起是动图 WebP）：`<img>` 真的解得开（naturalWidth 480x854）、
+ *      与立绘同一格、冻结时 display:none 且立绘可见
  *
  * 用法：node tools/engine-probe.mjs      （WISP_CHROME=<可执行文件> 可指定浏览器）
  * 退出码：0 通过或跳过 · 1 有检查没过 · 2 环境起不来（找不到可用的调试端口）
@@ -234,6 +236,47 @@ try {
   check(String(focusedAfterClick).includes('wisp-body'),
     'clicking her still hands her the keyboard focus (so Enter still opens the menu)',
     String(focusedAfterClick))
+  /* 焦点环：只能是**贴着剪影的辉光**，不能是画在盒子上的矩形。用户报的"有时会出现
+     素材的矩形边界线"就是后者 —— 默认焦点环画在 .wisp-body 那个 560×840 的盒子上，
+     而盒子里大部分是透明的，于是一次点击之后屏幕上凭空多出一个方框。
+     这里量的是引擎**真的算出来**的样式：outline-style 必须是 none，而不是 auto
+     （修之前这里就是 auto —— 假 DOM 验不出来，它是浏览器的默认行为）。 */
+  const ringState = () => evaluate(`(() => {
+    const body = document.querySelector('.wisp-body')
+    const root = document.querySelector('.wisp-root')
+    const img = document.querySelector('.wisp-img')
+    const filter = getComputedStyle(img).filter
+    return {
+      outline: getComputedStyle(body).outlineStyle,
+      focusAttr: root.dataset.focus === undefined ? null : root.dataset.focus,
+      shadows: (filter.match(/drop-shadow\\(/g) || []).length,
+    }
+  })()`)
+  const ringAfterClick = await ringState()
+  check(ringAfterClick.outline === 'none' && ringAfterClick.focusAttr === null,
+    'a click gives her focus but paints no box outline (the default focus ring is off)',
+    JSON.stringify(ringAfterClick))
+
+  /* 键盘路径：Enter 开菜单、Esc 关掉并把焦点交还给她 —— 关掉默认环之后，键盘用户
+     必须仍然看得见焦点，而且那圈光必须跟着她的剪影走（多一层 drop-shadow）。 */
+  const pressKey = async (k, code, keyCode) => {
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode })
+    await sleep(350)
+  }
+  await pressKey('Enter', 'Enter', 13)
+  await pressKey('Escape', 'Escape', 27)
+  const ringByKeyboard = await ringState()
+  check(ringByKeyboard.outline === 'none' && ringByKeyboard.focusAttr === 'key'
+    && ringByKeyboard.shadows === ringAfterClick.shadows + 1,
+  'keyboard focus is shown by a silhouette halo (one more drop-shadow), never by a box outline',
+  JSON.stringify(ringByKeyboard))
+  await evaluate(`document.querySelector('.wisp-body').blur()`)
+  /* 滤镜有 .5s 过渡 —— 等它走完再量，否则量到的是「正在淡出」的那一帧。 */
+  await sleep(700)
+  const ringCleared = await ringState()
+  check(ringCleared.focusAttr === null && ringCleared.shadows === ringAfterClick.shadows,
+    'and the halo is gone the moment focus leaves her', JSON.stringify(ringCleared))
   await evaluate(`window.__wisp.move(${wasAt.x}, ${wasAt.y})`)
 
   await sleep(1200)
@@ -413,11 +456,14 @@ try {
     'and the media query stops every animation', `${rm.bodyAnim} / ${rm.motionAnim}`)
 
   /* ---------------------- 帧动画：这一段只有真引擎能回答 ----------------------
-     假 DOM 能证明"调了 pause()、把 currentTime 写回了 0"，证明不了**这段视频真的
-     解得开**：VP9 + alpha 平面在浏览器里出不出画、`videoWidth` 是不是 480、叠在
-     立绘上有没有对齐、角落里是不是真的透明 —— 全是解码与合成的事，而它的失败
-     在页面上表现为"她还是不动"，和"没有素材"长得一模一样。 */
-  head('the first frame animation (a real alpha WebM loop)')
+     假 DOM 能证明"把动图藏起来了、画面交回立绘"，证明不了**这张动图真的解得开**：
+     动图 WebP 在浏览器里出不出画、`naturalWidth` 是不是 480、叠在立绘上有没有
+     对齐 —— 全是解码与合成的事，而它的失败在页面上表现为"她还是不动"，和"没有
+     素材"长得一模一样。
+     这里**不读像素**：alpha 是 WebP 格式自己保证的（角落就是透的），把一张 480x854
+     的动图缩进 8x8 画布只能测出 canvas 的重采样，测不出格式；而"她是不是真的透"
+     已经由 `<img>` + WebP 这条路径决定了，不需要探针再证一遍。 */
+  head('the first frame animation (a real animated WebP)')
   /* 上一节把 Emulation 设成了 reduce 而且没恢复 —— 先清掉，
      否则下面看到的"冻结"其实是上一节那个设置还在（那不是这条要测的东西）。 */
   await send('Emulation.setEmulatedMedia', { features: [] })
@@ -430,106 +476,99 @@ try {
     window.__wisp.configure({ motion: 'full' })
     window.__wisp.mood('sleep')
     await waitFor(() => document.querySelector('.wisp-video') !== null, 5000)
-    const video = document.querySelector('.wisp-video')
-    if (!video) return { built: false }
-    await waitFor(() => video.readyState >= 2 && video.videoWidth > 0, 8000)
+    const motion = document.querySelector('.wisp-video')
+    if (!motion) return { built: false }
+    await waitFor(() => motion.complete && motion.naturalWidth > 0, 8000)
     const img = document.querySelector('.wisp-img')
-    const a = video.getBoundingClientRect()
+    const a = motion.getBoundingClientRect()
     const b = img.getBoundingClientRect()
-    /* 角落的 alpha：把她画进一张 8x8 的画布，读四个角的 alpha 通道。
-       不透明的话这里会是 255 —— 那说明 alpha 平面根本没解码出来（黑底）。 */
-    let corners = null
-    try {
-      const c = document.createElement('canvas'); c.width = 8; c.height = 8
-      const ctx = c.getContext('2d')
-      ctx.drawImage(video, 0, 0, 8, 8)
-      const d = ctx.getImageData(0, 0, 8, 8).data
-      corners = [0, 7, 56, 63].map((i) => d[i * 4 + 3])
-    } catch (e) { corners = String(e.name || e.message || e) }
     return {
-      built: true, src: String(video.src).slice(0, 5), readyState: video.readyState,
-      w: video.videoWidth, h: video.videoHeight, paused: video.paused,
-      display: getComputedStyle(video).display,
-      pointerEvents: getComputedStyle(video).pointerEvents,
+      built: true, tag: String(motion.tagName), isImg: motion instanceof HTMLImageElement,
+      src: String(motion.src).slice(0, 5),
+      complete: motion.complete, w: motion.naturalWidth, h: motion.naturalHeight,
+      display: getComputedStyle(motion).display,
+      pointerEvents: getComputedStyle(motion).pointerEvents,
       /* 画面归谁（v1.45.2）：这一条是**计算后**的 visibility，只有真引擎算得出来 ——
          假 DOM 里没有级联，只能读到"属性写了、规则也在"，证明不了它真的生效。 */
       visibility: getComputedStyle(img).visibility,
       frame: document.querySelector('.wisp-root').dataset.frame ?? null,
       dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top),
       dw: Math.abs(a.width - b.width), dh: Math.abs(a.height - b.height),
-      corners,
+      videos: document.querySelector('.wisp-root').querySelectorAll('video').length,
     }
   })()`)
-  check(clip.built === true && clip.w > 0 && clip.h > 0,
-    'the alpha WebM really decodes in the engine — the clip is not just a data URI sitting in the bundle',
-    clip.built ? `${clip.src}… ${clip.w}x${clip.h} readyState=${clip.readyState}` : 'no <video> was built')
-  check(clip.paused === false && clip.display !== 'none',
-    'and it is playing on its own (muted autoplay is allowed)', `paused=${clip.paused} display=${clip.display}`)
-  check(Array.isArray(clip.corners) && Math.min(...clip.corners) < 32,
-    'a corner of the frame is TRANSPARENT — that is the alpha plane, and the reason this asset had to be a WebM',
-    Array.isArray(clip.corners) ? `corner alpha ${clip.corners.join('/')}` : `canvas readback: ${clip.corners}`)
+  check(clip.built === true && clip.tag === 'IMG' && clip.isImg === true && clip.videos === 0,
+    'the motion layer really is an <img> in the engine — and not a single <video> exists under her root',
+    clip.built ? `${clip.tag} isImg=${clip.isImg} videos=${clip.videos}` : 'no motion layer was built')
+  check(clip.complete === true && clip.w === 480 && clip.h === 854,
+    'the animated WebP really decodes in the engine — 480x854 natural size, not just a data URI in the bundle',
+    clip.built ? `${clip.src}… ${clip.w}x${clip.h} complete=${clip.complete}` : 'no <img> was built')
+  check(clip.display !== 'none',
+    'and it is on screen by default — the browser runs the animation itself', `display=${clip.display}`)
   check(clip.dx < 1 && clip.dy < 1 && clip.dw < 1 && clip.dh < 1,
-    'and it lands on exactly the sprite box, so the loop does not make her jump',
+    'and it lands on exactly the sprite box, so the animation does not make her jump',
     `delta ${clip.dx.toFixed(2)},${clip.dy.toFixed(2)} size ${clip.dw.toFixed(2)}x${clip.dh.toFixed(2)}`)
   check(clip.pointerEvents === 'none', 'the layer takes no pointer events', String(clip.pointerEvents))
-  /* 重影修复（v1.45.2）：视频在播时立绘必须**真的**看不见（计算后的 visibility 是
+  /* 重影修复（v1.45.2）：动图在画面上时立绘必须**真的**看不见（计算后的 visibility 是
      hidden，而不是"读源码看到写了 visibility"）。 */
   check(clip.visibility === 'hidden' && clip.frame === 'on',
-    'while the loop plays the static sprite is hidden in the real engine — the two layers are never visible at once (v1.45.2)',
+    'while the animation is on screen the static sprite is hidden in the real engine — the two layers are never visible at once (v1.45.2)',
     `sprite visibility=${clip.visibility} data-frame=${String(clip.frame)}`)
 
   const clipFrozen = await evaluate(`(() => {
-    const video = document.querySelector('.wisp-video')
-    video.currentTime = 2.4                    // 已经循环到一半
     window.__wisp.configure({ motion: 'off' })
+    const motion = document.querySelector('.wisp-video')
     const img = document.querySelector('.wisp-img')
     return {
-      paused: video.paused, t: video.currentTime,
-      display: getComputedStyle(video).display,
+      display: getComputedStyle(motion).display,
       sprite: getComputedStyle(img).display !== 'none' && Number(getComputedStyle(img).opacity) > 0.5,
       spriteVisibility: getComputedStyle(img).visibility,
       frame: document.querySelector('.wisp-root').dataset.frame ?? null,
+      doctor: window.__wisp.doctor().motion.frame,
     }
   })()`)
-  check(clipFrozen.paused === true && clipFrozen.t === 0 && clipFrozen.display === 'none',
-    '"still" freezes the loop at the first frame in the real engine too',
+  check(clipFrozen.display === 'none',
+    '"still" takes the animation off screen in the real engine too — an <img> has no pause(), so hiding it IS the freeze',
     JSON.stringify(clipFrozen))
   check(clipFrozen.sprite === true, 'and the static sprite is still painted underneath', String(clipFrozen.sprite))
   /* 冻结时立绘必须**回来**：它这时是屏幕上唯一的那个她。 */
-  check(clipFrozen.spriteVisibility === 'visible' && clipFrozen.frame === null,
-    'and it is visible again, not just present — freezing hands the picture back to the sprite (v1.45.2)',
-    `sprite visibility=${clipFrozen.spriteVisibility} data-frame=${String(clipFrozen.frame)}`)
+  check(clipFrozen.spriteVisibility === 'visible' && clipFrozen.frame === null
+    && clipFrozen.doctor.showing === false,
+  'and it is visible again, not just present — freezing hands the picture back to the sprite (v1.45.2)',
+  `sprite visibility=${clipFrozen.spriteVisibility} data-frame=${String(clipFrozen.frame)} doctor.showing=${clipFrozen.doctor.showing}`)
 
   const clipBack = await evaluate(`(async () => {
     window.__wisp.configure({ motion: 'full' })
     await new Promise((r) => setTimeout(r, 400))
     const v = document.querySelector('.wisp-video')
-    return { paused: v.paused, display: getComputedStyle(v).display }
+    return { display: getComputedStyle(v).display, tag: String(v.tagName) }
   })()`)
-  check(clipBack.paused === false && clipBack.display !== 'none',
-    'and putting the level back resumes it', JSON.stringify(clipBack))
+  check(clipBack.display !== 'none' && clipBack.tag === 'IMG',
+    'and putting the level back shows that same <img> again', JSON.stringify(clipBack))
 
-  /* 会话中途把系统设置改成"减少动态效果"：CSS 的媒体查询是实时的，而播放状态是 JS 的。
-     插件订阅了 matchMedia 的 change，所以这一下必须**当场**生效 —— 不订阅的话，
-     她会在你刚关掉动画之后继续动到下一次换表情。 */
+  /* 会话中途把系统设置改成"减少动态效果"：CSS 的媒体查询是实时的，而这层显不显示是
+     JS 写的。插件订阅了 matchMedia 的 change，所以这一下必须**当场**生效 —— 不订阅
+     的话，她会在你刚关掉动画之后继续动到下一次换表情。 */
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
   await sleep(600)
   const clipReduced = await evaluate(`(() => {
     const v = document.querySelector('.wisp-video')
+    const img = document.querySelector('.wisp-img')
     return {
       reduced: window.__wisp.doctor().motion.reduced,
-      paused: v.paused, t: v.currentTime, display: getComputedStyle(v).display,
+      display: getComputedStyle(v).display,
+      spriteVisibility: getComputedStyle(img).visibility,
     }
   })()`)
-  check(clipReduced.reduced === true && clipReduced.paused === true && clipReduced.t === 0
-    && clipReduced.display === 'none',
-  'turning reduced motion on mid-session stops the loop where it stands, with no reload',
+  check(clipReduced.reduced === true && clipReduced.display === 'none'
+    && clipReduced.spriteVisibility === 'visible',
+  'turning reduced motion on mid-session takes the animation off screen at once, with no reload',
   JSON.stringify(clipReduced))
   await send('Emulation.setEmulatedMedia', { features: [] })
 
-  /* 加载/解码失败的兜底：把 error 事件真的派给那个元素。假 DOM 里这条只证明了
+  /* 加载/解码失败的兜底：把 error 事件真的派给那张动图。假 DOM 里这条只证明了
      "调了 hideMotion()"；这里要证明的是**级联之后**立绘回到 visible —— 那正是
-     "视频坏了也还有她"这句话的全部内容。 */
+     "动图坏了也还有她"这句话的全部内容。 */
   const clipFailed = await evaluate(`(async () => {
     const waitFor = async (ok, ms) => {
       const until = Date.now() + ms
@@ -539,11 +578,16 @@ try {
     const v = document.querySelector('.wisp-video')
     const root = document.querySelector('.wisp-root')
     const img = document.querySelector('.wisp-img')
-    await waitFor(() => v !== null && !v.paused, 5000)
+    /* 先等**这一层真的回到画面上**：上一节把 Emulation 关掉之后，matchMedia 的 change
+       是异步来的，这里不等就会在"她还没回来"的状态下快照 before —— 那样这条断言测的
+       就不是"出错会交回画面"，而是"上一节还没生效"。 */
+    await waitFor(() => v !== null && v.complete
+      && getComputedStyle(v).display !== 'none'
+      && getComputedStyle(img).visibility === 'hidden', 5000)
     const before = {
       visibility: getComputedStyle(img).visibility,
       frame: root.dataset.frame ?? null,
-      paused: v.paused,
+      tag: String(v.tagName),
     }
     v.dispatchEvent(new Event('error'))
     return {
@@ -558,7 +602,7 @@ try {
   check(clipFailed.before.visibility === 'hidden' && clipFailed.before.frame === 'on'
     && clipFailed.visibility === 'visible' && clipFailed.display === 'none'
     && clipFailed.frame === null && clipFailed.failed === true,
-  'a clip that errors hands the picture straight back to the static sprite — hidden -> visible in the real engine (v1.45.2)',
+  'an animation that errors hands the picture straight back to the static sprite — hidden -> visible in the real engine (v1.45.2)',
   JSON.stringify(clipFailed))
 
   await evaluate(`window.__wisp.mood('idle')`)

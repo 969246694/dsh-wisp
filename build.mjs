@@ -6,10 +6,10 @@
 
        { idle: "data:image/webp;base64,…", happy: …, sleepy: …, work: … }
 
-   …and __MOTION_LITERAL__ with the frame-animation clips (currently one alpha
-   WebM — the sleeping loop):
+   …and __MOTION_LITERAL__ with the frame-animation clips (currently one animated
+   WebP — the sleeping loop):
 
-       { sleepy: "data:video/webm;base64,…" }
+       { sleepy: "data:image/webp;base64,…" }
 
    Embedding rather than shipping asset files is deliberate: the delivered
    plugin is a single self-contained file, so a share carries no path, no
@@ -98,9 +98,16 @@ const pickFile = (dir, mood) => {
 }
 const hasSprite = (dir) => MOODS.some((mood) => pickFile(dir, mood) !== null)
 
+/* assets/ 下的两个保留目录不是皮肤：audio/ 是音效，motion/ 是帧动画素材。
+   v1.46.1 必须显式排除 motion/ —— 动图叫 sleepy.webp，正好和"sleepy 这个心情的
+   精灵图"同名，于是 hasSprite() 会把整个 motion/ 当成一套皮肤，然后在缺 idle 的
+   那一刻把构建打红。名字撞车不是素材的错，是这里的发现规则漏了一条。 */
+const RESERVED_DIRS = ['audio', 'motion']
+
 const skinIds = readdirSync(assetsDir, { withFileTypes: true })
   .filter((e) => e.isDirectory())
   .map((e) => e.name)
+  .filter((name) => !RESERVED_DIRS.includes(name))
   .filter((name) => hasSprite(join(assetsDir, name)))
   .sort((a, b) => skinRank(a) - skinRank(b) || a.localeCompare(b))
 const legacySingleSkin = skinIds.length === 0 && hasSprite(assetsDir)
@@ -124,23 +131,26 @@ if (existsSync(audioDir)) {
 }
 if (Object.keys(sounds).length > 0) console.log(`  audio: ${Object.keys(sounds).join(', ')}`)
 
-/* ---- 帧动画（motion）：assets/motion/<名字>.webm -> { <名字>: "data:video/webm;base64,…" }。
+/* ---- 帧动画（motion）：assets/motion/<名字>.webp -> { <名字>: "data:image/webp;base64,…" }。
 
-   和音效同一档待遇：**可选**。没有文件就是空对象，客户端据此连 <video> 都不建 ——
+   和音效同一档待遇：**可选**。没有文件就是空对象，客户端据此连 <img> 都不建 ——
    一个"永远不播的空盒子"比没有它更糟（它会占位、会吃内存、还要有人去解释它）。
 
-   MIME 写死 video/webm，别的扩展名一律不认：这一档素材是 VP9 + **alpha 平面**
-   （EBML 里 AlphaMode=1，本脚本不看，但选它就是因为透明处能透出壁纸）。
-   收别的格式进来，透明处会变成一块黑底。 */
+   MIME 写死 image/webp，别的扩展名一律不认：这一档素材是**动图 WebP**（VP8X +
+   一串 ANMF，alpha 写在格式里）。v1.46.1 之前这里是 alpha 视频（.webm / VP9 +
+   alpha 平面），换掉的原因是**这个壳不还原 VP9 的 alpha** —— 同一段素材她在暗色
+   主题下渲染成黑色剪影、亮色主题下白色剪影（用户确认过）。图片路径的 alpha 是
+   硬的：<img> 播动图时浏览器直接按 alpha 合成。收别的格式进来，透明处会变成一块
+   黑底。 */
 const motionDir = join(assetsDir, 'motion')
 const motion = {}
 let motionRaw = 0
 for (const name of existsSync(motionDir) ? readdirSync(motionDir).sort() : []) {
-  if (!name.toLowerCase().endsWith('.webm')) continue
+  if (!name.toLowerCase().endsWith('.webp')) continue
   const file = join(motionDir, name)
   const bytes = readFileSync(file)
-  const key = name.slice(0, -'.webm'.length)
-  motion[key] = `data:video/webm;base64,${bytes.toString('base64')}`
+  const key = name.slice(0, -'.webp'.length)
+  motion[key] = `data:image/webp;base64,${bytes.toString('base64')}`
   motionRaw += bytes.length
   console.log(`  motion: ${key}  ${(bytes.length / 1024).toFixed(1)} KB raw  /  ${(motion[key].length / 1024).toFixed(1)} KB base64  <- ${file.slice(here.length + 1)}`)
 }
@@ -194,7 +204,7 @@ const literal = '{\n' + skins.map((skin) => (
   + MOODS.map((m) => `        ${m}: '${sprites[skin][m]}',`).join('\n')
   + '\n      },'
 )).join('\n') + '\n    }'
-/* 空表也要是**合法的空对象**：没有 motion 素材的包照样能构建（客户端会连 <video> 都不建）。 */
+/* 空表也要是**合法的空对象**：没有 motion 素材的包照样能构建（客户端会连 <img> 都不建）。 */
 const motionLiteral = '{\n' + Object.keys(motion).map((key) => (
   `      ${JSON.stringify(key)}: '${motion[key]}',`
 )).join('\n') + '\n    }'
@@ -277,9 +287,9 @@ try {
   process.exit(1)
 }
 
-/* 同一道防线给 MOTION：表必须真的存在、真的能求值，而且每个值都必须是 video/webm 的
-   data URI。写坏一个 key（例如把 .webm 之外的素材塞进 assets/motion/）时，客户端
-   会建一个永远不播的 <video>，而失败是**静默**的 —— 只有这里能拦。 */
+/* 同一道防线给 MOTION：表必须真的存在、真的能求值，而且每个值都必须是 image/webp 的
+   data URI。写坏一个 key（例如把 .webp 之外的素材塞进 assets/motion/）时，客户端
+   会建一个永远不动/一加载就报错的 <img>，而失败是**静默**的 —— 只有这里能拦。 */
 const motionTable = out.match(/const MOTION = \{([\s\S]*?)\n {4}\}/)
 if (!motionTable) {
   console.error('build: the injected MOTION table is missing; aborting')
@@ -287,9 +297,9 @@ if (!motionTable) {
 }
 try {
   const value = new Function(`${motionTable[0]}\nreturn MOTION`)()
-  const broken = Object.keys(value).filter((key) => typeof value[key] !== 'string' || value[key].indexOf('data:video/webm;base64,') !== 0)
+  const broken = Object.keys(value).filter((key) => typeof value[key] !== 'string' || value[key].indexOf('data:image/webp;base64,') !== 0)
   if (broken.length > 0) {
-    console.error(`build: MOTION entries are not inlined video/webm data URIs: ${broken.join(', ')}; aborting`)
+    console.error(`build: MOTION entries are not inlined image/webp data URIs: ${broken.join(', ')}; aborting`)
     process.exit(1)
   }
   if (Object.keys(value).length !== Object.keys(motion).length) {
@@ -307,7 +317,7 @@ const kb = (n) => (n / 1024).toFixed(1)
 console.log(`\n  sprites total   ${kb(total)} KB`)
 console.log(`  base64 inlined  ${kb(out.length)} KB`)
 if (Object.keys(motion).length > 0) {
-  /* 帧动画的体积账单独打一行：它是**唯一**一个进包的视频，而预算（verify-wisp.mjs）
+  /* 帧动画的体积账单独打一行：它是**唯一**一个进包的动图，而预算（verify-wisp.mjs）
      盯的是 base64 之后的长度，不是原始文件大小。 */
   console.log(`  motion raw      ${kb(motionRaw)} KB  (${Object.keys(motion).join(', ')})`)
   console.log(`  motion inlined  ${kb(Object.values(motion).reduce((n, uri) => n + uri.length, 0))} KB  base64`)

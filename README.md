@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.45.3`** · 零依赖 · 单文件客户端半包（精灵图与帧动画都内嵌为 data URI）
+**当前版本 `1.46.1`** · 零依赖 · 单文件客户端半包（精灵图与帧动画都内嵌为 data URI）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -31,14 +31,14 @@ DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 | 拖动 | 按住本体拖动，带边界约束；**松手即记住位置**，下次刷新回到原处 |
 | 说话 | 挂载问候、点击、睡着、醒来、跑完各有一组台词 |
 | 按轮廓命中 | 只有**她自己的像素**可点：命中层带一层由 alpha 蒙版生成的 `clip-path`，透明处整层穿透到下面的应用（hover / 点击 / 右键 / 滚轮全都不受影响）。抓着光标也只在她的轮廓上出现 |
-| 看余额 | 菜单「行为 → **看看余额**」（或 `__wisp.checkBalance()`）。**按需查，不轮询** —— 稳态开销那条承诺不破。数字来自平台自己的账户服务，**插件从头到尾不碰 API key**；未登录 / 刚没读到 / 这个壳里没有该服务，是三句不同的话 |
+| 看余额 | 菜单「行为 → **看看余额**」（或 `__wisp.checkBalance()`）。**按需查，不轮询** —— 稳态开销那条承诺不破。数字来自平台自己的账户服务（客户端走 `remote.account` Remote，动态插件形态走 host 座位），**插件从头到尾不碰凭据**；未登录 / 刚没读到 / 这个壳里没有该服务，是三句不同的话 |
 | 按下有反馈 | 按住她 → 身体压一下再弹回来（**按下那一刻**就有反应，不用等松手） |
 | 拖着有重量 | 拖动中她朝**运动的反方向**侧倾（最多 8°），松手时顿一下再站稳。无过渡跟手，松手才走弹簧 |
 | 她会注意你的指针 | 指针进到 **170px** 以内，她朝指针方向侧身（最多 3.5°，越近越多），出圈回正。睡着时不跟 |
 | 换表情会动 | `happy` / `poked` / `attn` 等有表情的状态切换时弹一下；**同一个表情再来一次也弹**（第二下不出声会被读成卡住） |
 | 溜达有方向 | 自己踱步时朝行进方向微微前倾（最多 2.5°），像"往那边去"而不是"被平移过去" |
 | 动作幅度可调 | 菜单「行为 → 动作幅度」三选一：**灵动 / 克制（半幅）/ 静止**。`静止` 连呼吸、`z` 与帧动画一起停 |
-| 睡着时会动 | `sleep` 状态上叠一段 **alpha 视频循环**（她睡着时被子那点极小的起伏）—— 这是第一条真正的帧动画。**「静止」档与系统的「减少动态效果」会把它暂停并回到首帧**（只留静态立绘），躲起来时也停 |
+| 睡着时会动 | `sleep` 状态上叠一层 **动图 WebP**（`<img>`，她睡着时被子那点极小的起伏）—— 这是第一条真正的帧动画。**「静止」档与系统的「减少动态效果」会把它藏起来、把画面交回静态立绘**，躲起来时也一样（动图没有 `pause()` 可喊） |
 
 外层 `pointer-events:none`，只有**她自己的轮廓**可点：命中层带一层由 alpha 蒙版生成的
 `clip-path`，所以透明处是真的穿透 —— 她站在哪个按钮上都不影响你点它（1.40.0 之前
@@ -57,7 +57,7 @@ dsh-wisp-plugin/
 │   ├── client.template.js  浏览器半包源码（唯一需要编辑的文件）
 │   └── client.js         由 build.mjs 生成，勿手改
 ├── assets/               五套皮肤 × 8 张 1024x1536 透明 WebP
-│   ├── motion/           帧动画素材（alpha WebM，内联成 data URI）
+│   ├── motion/           帧动画素材（动图 WebP，内联成 data URI）
 │   └── audio/            音效（可选，内联）
 ├── build.mjs             注入精灵图 + 帧动画 + 建造防线
 ├── verify-wisp.mjs       预检：两套契约 + 真实执行
@@ -68,7 +68,7 @@ dsh-wisp-plugin/
 ## 构建与预检
 
 ```bash
-node build.mjs        # 把 assets/**/*.webp（+ assets/motion/*.webm）注入 lib/client.template.js → lib/client.js
+node build.mjs        # 把 assets/**/*.webp（+ assets/motion/*.webp）注入 lib/client.template.js → lib/client.js
 node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 ```
 
@@ -78,12 +78,12 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 
 1. 占位符 `__SPRITES_LITERAL__` / `__MOTION_LITERAL__` 必须各出现一次，且替换后都不得残留；
 2. 注入后的 `SPRITES` 表要**真的被求值**，每个 key 都必须是 `data:image/` 开头；
-3. 注入后的 `MOTION` 表同样要**真的被求值**，每个值都必须是 `data:video/webm;base64,` 开头
-   （写错一个 key，客户端就会建一个永远不播的 `<video>`，而那是**静默**失败）；
+3. 注入后的 `MOTION` 表同样要**真的被求值**，每个值都必须是 `data:image/webp;base64,` 开头
+   （写错一个 key，客户端就会建一个永远不动、一加载就报错的 `<img>`，而那是**静默**失败）；
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **724 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **745 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -149,20 +149,20 @@ node tools/pack-check.mjs
 **为什么不能靠"我看过 files[] 了"**：包里的文档指向包外、`tools/` 少声明一个、素材没打进去 ——
 这些都要真的解出副本才暴露。这个检查第一次跑就抓到了 README 里指向开发机绝对路径的死引用。
 
-当前包：**64 个文件 / 11.7 MB**（tarball 9.4 MB），其中 `assets/` 占 41 个文件、4.5 MB —— 但**运行时只会读全部 41 个**：
+当前包：**62 个文件 / 15.3 MB**（tarball 12.4 MB），其中 `assets/` 占 41 个文件、4.5 MB —— 但**运行时只会读全部 41 个**：
 
 | 素材 | 数量 | 体积 | 运行时 |
 |---|---|---|---|
-| 默认档 1024×1536 | 40 | 4.2 MB | ✅ 就这一档被 base64 进 JS（精灵图 5.96 MB + 帧动画 0.42 MB） |
-| `motion/sleepy.webm` | 1 | 0.3 MB | ✅ 同样是内联（+0.42 MB base64），`sleep` 时才解码 |
+| 默认档 1024×1536 | 40 | 4.2 MB | ✅ 就这一档被 base64 进 JS（精灵图 5.64 MB + 帧动画 2.41 MB） |
+| `motion/sleepy.webp` | 1 | 1.8 MB | ✅ 同样是内联（+2.4 MB base64），`sleep` 时才解码 |
 | `_hi` 2048×3072 | 35 | 8.1 MB | ❌ 已从仓库删除（2026-09-30），要重新生成 |
 | `_md` 512×768 | 35 | 1.5 MB | ❌ 从不读取 |
 | `_sm` 256×384 | 35 | 0.6 MB | ❌ 从不读取 |
 
 后三档加起来 **105 个文件 / 9.9 MB**，唯一用途是「哪天想用 `node build.mjs --tier=hi   # 需要先 --all-tiers 生成 _hi；缺档会自动回退到默认档` 换个档重新打包」。
 而且 `_hi` 连**画质收益都测不出来**（见下面性能小节：DPR 2 下高频能量差 0.3%，DPR 1/3 下 1024 档反而高 4~5%）。
-**这 9.9 MB 已经省掉了**（2026-09-30）：`assets/` 现在只有默认档 40 个文件 / 4.2 MB（外加一段 0.3 MB 的帧动画），
-包从 19 MB 降到 **11.7 MB**（tarball 9.4 MB）。
+**这 9.9 MB 已经省掉了**（2026-09-30）：`assets/` 现在只有默认档 40 个文件 / 4.2 MB（外加一份 1.8 MB 的动图帧动画），
+包从 19 MB 降到 **15.3 MB**（tarball 12.4 MB，数字随帧动画那一份走）。
 
 要生成别的档位（例如想用 `--tier=hi` 重打包）先跑：
 
@@ -176,13 +176,26 @@ node tools/assets.mjs --from <绿幕母版目录> --skin <皮肤> --all-tiers   
 classic 皮肤的绿幕原图已经不在了，那些分档是**唯一**的重建来源，所以 `build.mjs --tier=…` 在
 别人的机器上仍然可用。
 
-**帧动画素材（1.45.0 起）**：`assets/motion/sleepy.webm` 一个文件 —— **315.8 KB**，
-VP9 + alpha 平面（EBML `AlphaMode=1`）、480×854、24 fps、4.04 秒无缝循环，
-内容是"她睡着时被子那点极小的起伏"（画风与立绘同源）。内联成 data URI 后 **421.1 KB**，
-预检里有一条 **800 KB 的预算**盯着它：素材哪天涨了会红，不会悄悄进包。
+**帧动画素材（1.45.0 起；1.46.1 换成动图 WebP）**：`assets/motion/sleepy.webp` 一个文件 ——
+**1853.6 KB**，**动图 WebP**（RIFF/WEBP + 97 个 ANMF 帧块，alpha 写在格式里）、480×854、
+24 fps、97 帧、4.04 秒无缝循环（`-loop 0`），内容是"她睡着时被子那点极小的起伏"
+（画风与立绘同源）。内联成 data URI 后 **2471.5 KB**，预检里有一条 **2472 KB 的预算**
+盯着它：素材哪天涨了会红，不会悄悄进包。
 
-它和精灵图一样**只在真进入那个状态时解码**：挂载时连 `<video>` 都不建，`sleep` 时才建一个；
-`prefers-reduced-motion` / 静止档 / 躲起来时会被 `pause()` 并把 `currentTime` 写回 0（见变更日志）。
+编码命令（原素材 480×854 / 24fps / 绿幕 `#A2E87C`，`-q:v 60`，一帧不抽）：
+
+```
+ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#A2E87C:0.10:0.10,format=rgba" \
+       -c:v libwebp_anim -loop 0 -an -q:v 60 assets/motion/sleepy.webp
+```
+
+`colorkey` 的 similarity 是 **0.10**（不是 1.45.x 那个 0.26）：0.26 会把她的皮肤和浅色
+衣服一起抠掉（她自己变成"空心的"——暗色主题下看起来就是一块黑色剪影），实测只有 5.5%
+的像素还是全不透明的；0.10 时是 18.1%，也就是整个她。
+
+它和精灵图一样**只在真进入那个状态时解码**：挂载时连 `<img>` 都不建，`sleep` 时才建一个；
+`prefers-reduced-motion` / 静止档 / 躲起来时会**把它藏起来、把画面交回静态立绘**
+（见变更日志：动图没有 `pause()` 可喊）。
 
 ## 自检：`__wisp.doctor()`
 
@@ -242,7 +255,7 @@ node verify-wisp.mjs
 | 指标 | 数值 |
 |---|---|
 | 动画帧使用量 | **0**（走 `timer` 服务，根本不挂帧循环） |
-| 帧动画（v1.45.0 新增） | **0 帧**：`sleep` 时才建一个 `<video>`（muted / loop / playsinline），解码在浏览器的媒体通道上，JS 这边一次回调都不挂。静止档 / `prefers-reduced-motion` / 躲起来时 `pause()` + `currentTime = 0`，**不播也不解码** |
+| 帧动画（v1.45.0 新增；v1.46.1 换成动图 `<img>`） | **0 帧**：`sleep` 时才建一个 `<img>`（动图 WebP），解码与循环都在浏览器的图片通道上，JS 这边一次回调都不挂。静止档 / `prefers-reduced-motion` / 躲起来时把它 `display:none`（动图没有 `pause()` 可喊），**不显示也就不解码** |
 | 动作层（v1.38 新增） | **0 帧**：姿势与一次性动作都是"事件写一次属性，浏览器自己算"。指针靠近只做算术，出圈即归零，变化不到 0.05° 不写样式 |
 | 定时器 | 1 个 `interval`（反应轮询）+ 3 个 `timeout` |
 | 反应轮询成本 | 每轮 3 次 `querySelector`，10 s 内共 **7.2–8.3 ms**（≈ **0.86 ms/轮**） |
@@ -286,7 +299,7 @@ node verify-wisp.mjs
 | — | — | — | 菜单里调过的 `size` 会**记在本地**并活过刷新；但配置里显式写了 `size` 时以配置为准 |
 | `sleepAfterMs` | number | `90000` | 静置多久打盹，限制 `5000–3600000` |
 | `reactions` | boolean | `true` | 是否跟随 Agent 忙碌 / 输入框内容变情绪 |
-| `motion` | string | `'full'` | 动作幅度：`full` 灵动 / `subtle` 克制（半幅）/ `off` 静止（连呼吸、`z` 与帧动画一起停，视频 `pause()` 并回到首帧）。认不出的值退回 `full` |
+| `motion` | string | `'full'` | 动作幅度：`full` 灵动 / `subtle` 克制（半幅）/ `off` 静止（连呼吸、`z` 与帧动画一起停 —— 动图被藏起来、画面交回静态立绘）。认不出的值退回 `full` |
 | `persist` | boolean | `true` | 是否跨刷新记住位置 |
 | `celebrate` | boolean | `true` | 一轮跑完是否庆祝一下 |
 | `celebrateAfterMs` | number | `2500` | 只庆祝跑够这么久的轮次（避免每次小工具调用都跳） |
@@ -337,7 +350,7 @@ window.__wisp.position                     // { x, y }
 window.__wisp.resetPosition()              // 清掉记忆位置，回到右下角
 window.__wisp.clock                        // 'timer-service' | 'animation-frame'
 window.__wisp.checkBalance()               // 查一次余额并说出来；返回 { state: 'ready' | 'signed-out' | 'unavailable' | 'failed' | 'unsupported', wallets, … }
-window.__wisp.doctor().balance             // 上一次余额查询的结果 + 有没有 host 座位（**从不含凭据**）
+window.__wisp.doctor().balance             // 上一次余额查询的结果 + 两条通道在不在 + 这次走了哪条（**从不含凭据**）
 window.__wisp.doctor().motion              // { level, amp, reduced, tilt, tiltLocal, accent, pressed }
 window.__wisp.destroy()
 ```
@@ -557,6 +570,50 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 
 ## 变更
 
+### 1.46.1
+
+**帧动画从 alpha 视频换成动图 WebP（`<video>` → `<img>`，480 宽 / 24fps / 97 帧一帧不抽），
+理由是这个壳不还原 VP9 的 alpha 平面** —— 同一段素材她在暗色主题下渲染成黑色剪影、亮色主题
+下白色剪影（用户确认过），而图片路径的 alpha 是硬的。
+
+「冻结」跟着改语义：动图没有 `pause()` 可喊，所以静止档 / `prefers-reduced-motion` /
+躲起来时不再"暂停并回到首帧"，而是**把动图藏起来、把画面交回静态立绘**（v1.45.2 那条
+"画面同时只归一个人"照旧）。动作层**不许有 CSS filter** 这条规矩保留。
+
+同时修掉一个更早的错：`colorkey` 的 similarity 从 **0.26 收紧到 0.10**。0.26 会把她的皮肤与
+浅色衣服一起抠掉 —— 实测只有 **5.5%** 的像素还是全不透明的（她自己变成空心的，暗色主题下
+看起来就是"一块黑色剪影"），0.10 时是 **18.1%**，也就是整个她。
+
+### 1.46.0
+
+**查余额终于真的能用了 —— 根因和 1.44.0 那次一模一样：座位不对。**
+
+旧实现是「客户端 `host.call('checkBalance')` → 宿主半包 inject `deepseekAccount`」。
+宿主半包那份代码写得没错，服务也真的存在（`@deepseek-ai/dsh-deepseek-account`，
+由 `dsh-base` 注册），但**bundle 形态的客户端半包根本没有 host RPC 座位** ——
+那个座位只发给动态插件。于是真机上它永远走"这个壳里查不了余额"那一句，
+而预检里那条路是拿假座位测的，全绿。
+
+现在客户端直接调平台自己的账户 Remote（平台自己的「账户」设置页用的就是它）：
+
+```js
+ctx.remote.account.getBalance({ version, locale, timezoneOffsetSeconds })
+  -> { ok: true, value } | { ok: false, reason }
+     value = { status:'ready', value:[wallets], bonusWallets:[…] } | { status:'failed' } | null
+```
+
+`value` 与宿主半包那条路的载荷**完全同形**，所以只在取数那一层分叉，归一化与台词完全共用。
+`null` 依然是"没登录"与"刚才没读到"共用的一个值，照旧**再问一次 `getState()`** 才敢说话。
+
+| | 什么时候用 | 凭据在哪 |
+|---|---|---|
+| `remote.account` Remote | **默认**（bundle 安装） | 宿主，插件只能拿到归一化结果 |
+| host 座位（`host.call`） | 动态插件形态（那里才有座位） | 同上 |
+| 两条都没有 | 如实说"这个壳里我查不了余额" | —— |
+
+`doctor().balance` 现在报 `hostSeat` / `remoteSeat` / `via`（这次真的走了哪条），
+所以"为什么查不到"在 Console 里一眼能定位。
+
 ### 1.45.3
 
 **删掉两条身体层的程序动画：`attn` 的左右轻推（`wisp-nudge`）与 `happy` 的上下跳（`wisp-hop`）。**
@@ -625,6 +682,11 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 ### 1.45.0
 
 **她动起来了：第一条真正的帧动画 —— 睡着时那段 alpha 视频循环。**
+
+> **这一段已被 1.46.1 取代**（下面保留为当时的记录）：素材从 VP9 alpha 视频换成**动图 WebP**，
+> 元素从 `<video>` 换成 `<img>`，"冻结"从 `pause() + currentTime = 0` 改成**藏起动图、把画面
+> 交回立绘**，`colorkey` 的 similarity 从 0.26 收紧到 0.10。数字（315.8 KB / 421.1 KB / 800 KB
+> 预算 / `playing` 字段）也都是那一版的。
 
 到这一版之前，她的"动作"全是**位移/缩放/旋转**：立绘本身一动不动。这一版给 `sleep`
 状态叠了一段 `<video>`：她睡着时被子那点极小的起伏，4.04 秒无缝循环。
