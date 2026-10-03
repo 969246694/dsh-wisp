@@ -244,7 +244,7 @@ try {
     amp: getComputedStyle(document.querySelector('.wisp-root')).getPropertyValue('--wisp-amp').trim(),
     tilt: document.querySelector('.wisp-root').style.getPropertyValue('--wisp-tilt'),
   }))()`)
-  check(base.bodyAnim === 'wisp-bob', 'she is breathing (wisp-bob really applies)', base.bodyAnim)
+  check(base.bodyAnim === 'none', 'the standing bob is gone - nothing animates the body layer any more', base.bodyAnim)
   check(base.amp === '1' && base.tilt === '0deg',
     'the amplitude variable and the initial posture resolve', `--wisp-amp=${base.amp} --wisp-tilt=${base.tilt}`)
 
