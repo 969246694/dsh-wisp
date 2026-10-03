@@ -29,7 +29,7 @@
    EXIT CODE 0 = both halves match their contract.
    ========================================================================== */
 
-import { readFileSync, statSync, existsSync } from 'node:fs'
+import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { verifyAudit } from './tools/audit-log.mjs'
@@ -37,6 +37,16 @@ import { verifyAudit } from './tools/audit-log.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const pkgPath = join(here, 'package.json')
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+
+/* 泳装那八条帧动画素材（v1.47.0）。判据是**磁盘上实际有什么**，不是"应该有什么"：
+   一条都没有（还没生成）与八条都在（生成完了）都是合法状态，**只到一半**不是 ——
+   半套素材在页面上表现为"她有些状态不动"，而那和"没有素材"长得一模一样。
+   投递机制（motion 清单 + 宿主路由 + 客户端 URL 解析）在没有素材时照样成立：
+   它是一条"有文件就发、没有就静默降级"的路。 */
+const MOTION_DIR = join(here, 'assets', 'motion')
+const SHIPPED_SWIM = existsSync(MOTION_DIR)
+  ? readdirSync(MOTION_DIR).filter((f) => /^swim_[a-z]+\.webp$/.test(f)).sort()
+  : []
 
 const hostPath = resolve(here, pkg.main ?? 'lib/index.js')
 const clientRel = pkg.exports?.['./client']?.default
@@ -109,9 +119,12 @@ class FakeBlob {
     if (active) active.blobs.push(this)
   }
 }
-const FakeURL = {
-  createObjectURL() { const url = `blob:dsh-app/verify-${++urlSeq}`; if (active) active.urLs.push(url); return url },
-  revokeObjectURL(url) { if (active) active.revoked.push(url) },
+/* 替身 URL 必须**同时**是那个构造函数：v1.47.0 起客户端的动图源是
+   `new URL('wisp-motion/<文件>', document.baseURI)` —— 只给 createObjectURL 的
+   假 URL 会让这一行当场抛错，而那是"替身不像真页面"，不是插件的问题。 */
+class FakeURL extends URL {
+  static createObjectURL() { const url = `blob:dsh-app/verify-${++urlSeq}`; if (active) active.urLs.push(url); return url }
+  static revokeObjectURL(url) { if (active) active.revoked.push(url) }
 }
 /* The constructor writes the backing field directly: routing its own
    initialisation through the instrumented setter would record a phantom empty
@@ -348,6 +361,10 @@ function createHarness(options = {}) {
   const documentShim = {
     body: bodyEl,
     head: headEl,
+    /* 动图源的基准（v1.47.0）：客户端只写 `wisp-motion/<文件>`，其它一律由页面
+       自己的 base 带出来。替身给一个真实的 Web 载体地址，而不是
+       `dsh-app://app/` —— 后者没有 HTTP 服务器，正是"路由不在"的那一档。 */
+    baseURI: options.baseURI ?? 'http://127.0.0.1:19387/',
     get activeElement() { return activeEl },
     /* 真 document 有事件接口，替身也得有 —— 否则"插件是否正确处理文档级 Esc"根本测不到，
        而且少一个方法会让插件在替身里整个起不来（这坑踩过一次）。 */
@@ -584,6 +601,52 @@ if (!existsSync(hostPath)) {
   } catch (error) {
     bad('host module imports cleanly', `${error.constructor.name}: ${error.message}`)
   }
+}
+
+/* ================================ 1c. the host half serves the frame clips == */
+
+head('1c. the host half claims /wisp-motion/ on the platform HTTP carrier (v1.47.0)')
+
+/* 这一节查的是**接线**，不是 handler 本身（handler 在 4b 里被真字节驱动过一遍）。
+   为什么单独查：`ctx.inject(['webServer'], cb)` 是唯一一处"把插件的路由挂到平台载体上"
+   的调用 —— 名字、kind、path 写错了都不会有任何报错，页面上只表现为"她怎么不动了"
+   （静默降级）。用假 ctx 把这条链走一遍，就不必等到重启应用才发现。 */
+{
+  const mod = await import(pathToFileURL(hostPath).href + '?probe=motion-wiring')
+  const registered = []
+  const effects = []
+  let injected = null
+  const webCtx = {
+    webServer: { register: (route) => { registered.push(route); return () => {} } },
+    effect: (fn, label) => { effects.push({ label, dispose: fn() }) },
+  }
+  const ctx = {
+    inject: (deps, cb) => { injected = deps; cb(webCtx) },
+    effect: () => () => {},
+  }
+  let threw = null
+  try { mod.apply(ctx, {}) } catch (error) { threw = error }
+  check(threw === null && Array.isArray(injected) && injected.includes('webServer') && registered.length === 1,
+    'apply() claims its route through ctx.inject([\'webServer\']) — exactly one registration',
+    `inject=${JSON.stringify(injected)} routes=${registered.length}${threw ? ` threw=${threw.message}` : ''}`)
+  check(registered[0]?.kind === 'prefix' && registered[0]?.path === mod.MOTION_PATH
+    && typeof registered[0]?.handler === 'function',
+    'and it is a prefix route at the path the client half asks for, with a real handler',
+    `${String(registered[0]?.kind)} ${String(registered[0]?.path)} handler=${typeof registered[0]?.handler}`)
+  check(effects.length === 1 && /wisp/i.test(String(effects[0]?.label ?? '')),
+    'registered as an OWNED effect, so disabling the package takes the route down with it',
+    String(effects[0]?.label ?? '(no effect)'))
+  /* 载体没有 webServer（Electron 没有 HTTP 服务器）不是加载失败 —— 这条路是**可选**的，
+     少一条路由的画面就是静态立绘。两条都要真的试：一个空的 inject 回调、一个连
+     ctx.inject 都没有的 ctx（更老的宿主）。 */
+  let silent = null
+  let noInject = null
+  try { silent = mod.registerMotionRoute({ inject: (deps, cb) => cb({}) }) } catch (error) { silent = { threw: String(error.message) } }
+  try { noInject = mod.registerMotionRoute({}) } catch (error) { noInject = { threw: String(error.message) } }
+  check(silent?.registered === true && !('threw' in (silent ?? {}))
+    && noInject?.registered === false && typeof noInject?.why === 'string',
+    'and a carrier with no webServer (or no ctx.inject at all) degrades to "no route", never to a load failure',
+    `empty-carrier=${JSON.stringify(silent)} no-inject=${JSON.stringify(noInject)}`)
 }
 
 /* ================================================= 1b. the update handler == */
@@ -1024,15 +1087,28 @@ if (clientSrc !== null) {
     /* ------------------------------------------------- 3b. sprite pipeline -- */
     head('3b. sprite pipeline (the broken-image regression)')
 
+    /* v1.47.0：`h.srcs` 里现在**混着两种源** —— 立绘是 `blob:`（data URI 解码出来的
+       object URL），帧动画是宿主路由下的文件 URL。混在一起数，两件事就都说不清了，
+       所以先按来源分开，再各查各的。 */
+    const spriteSrcs = () => h.srcs.filter((s) => typeof s === 'string' && s.startsWith('blob:'))
+    const motionSrcs = () => h.srcs.filter((s) => typeof s === 'string' && s.indexOf('/wisp-motion/') >= 0)
+
     if (h.srcs.length === 0) {
       bad('sprite assigned to an <img>', 'no src was ever set')
-    } else if (h.srcs.every((s) => typeof s === 'string' && s.startsWith('blob:'))) {
-      ok('sprites use blob: object URLs', h.srcs[0])
+    } else if (spriteSrcs().length > 0 && spriteSrcs().every((s) => s.startsWith('blob:'))) {
+      ok('sprites use blob: object URLs', spriteSrcs()[0])
     } else if (h.srcs.some((s) => typeof s === 'string' && s.startsWith('data:'))) {
       bad('sprites must not use data: URIs', 'this shell renders them as a broken image')
     } else {
       bad('sprite URL scheme', JSON.stringify(h.srcs).slice(0, 200))
     }
+    /* 帧动画走的是**另一条**路（v1.47.0）：宿主半包注册的 `/wisp-motion/` 路由，
+       以页面自己的 base 解析。它必须既不是 blob:（那意味着素材又被内联回来了），
+       也不是 data:（这个壳画不出来）。 */
+    check(motionSrcs().length > 0
+      && motionSrcs().every((s) => /^http:\/\/127\.0\.0\.1:19387\/wisp-motion\/[A-Za-z0-9._-]+\.webp$/.test(s)),
+      'the frame-animation source is the host route resolved against the page base — never an inlined blob or data URI (v1.47.0)',
+      `${motionSrcs().length} motion src(s): ${motionSrcs()[0] ?? '(none)'}`)
     check(h.blobs.length > 0, 'base64 decoded into Blob objects', `${h.blobs.length} blob(s)`)
     check(h.blobs.every((b) => b.type.startsWith('image/')), 'blob MIME types are images', h.blobs[0]?.type)
 
@@ -1088,7 +1164,7 @@ if (clientSrc !== null) {
     active = keepBt
     api.mood('happy')
     check(root.dataset.mood === 'happy', 'mood() control works')
-    check(h.srcs[h.srcs.length - 1] !== h.srcs[0], 'sprite switches with mood', String(h.srcs[h.srcs.length - 1]))
+    check(spriteSrcs().at(-1) !== spriteSrcs()[0], 'sprite switches with mood', String(spriteSrcs().at(-1)))
 
     // The swap must be a cross-fade: two layers for the length of the fade,
     // then the outgoing one is dropped. A hard `src` swap reads as a glitch.
@@ -1175,9 +1251,9 @@ if (clientSrc !== null) {
     h.state.pending = 'q-1'
     h.advance(1300, 100)
     check(root.dataset.mood === 'attn', 'a pending question switches her to attention', String(root.dataset.mood))
-    check(h.srcs[h.srcs.length - 1] !== h.srcs[0],
+    check(spriteSrcs().at(-1) !== spriteSrcs()[0],
       'the attention state has its own sprite rather than borrowing idle',
-      String(h.srcs[h.srcs.length - 1]).slice(0, 22))
+      String(spriteSrcs().at(-1)).slice(0, 22))
     check(bubbles() > beforeAttn, 'she says something about it',
       layerEl.querySelector('.wisp-say')?.textContent)
 
@@ -3154,11 +3230,13 @@ if (clientSrc !== null) {
       'the idle clip carries NO size correction — she fills 97.2% of that frame vs 98.2% of the sprite, under the 2% line (v1.46.5)',
       `inline transform=${JSON.stringify(mvIdle?.style.transform)}`)
 
-    /* 没有动作素材的状态**连元素都不建**：摆一个永远不动、还要白解 2.7 MB 的空盒子，
+    /* 没有动作素材的状态**连元素都不建**：摆一个永远不动、还要白解 3 MB 的空盒子，
        代价是真的，收益是零。idle 接上之后，"默认那一档没有素材"在这个包里再也造不出来
        —— 所以把 MOTION 表里 idle 那一条**删掉**再挂一次：那才是真的"这个状态没有素材"。
-       判据在 syncMotion() 里（查不到 key 就不建元素），不是"素材恰好缺失"。 */
-    const noIdleSrc = String(clientSrc).replace(/^\s*"idle": 'data:image\/webp;base64,[^']*',$/m, '')
+       判据在 syncMotion() 里（查不到 key 就不建元素），不是"素材恰好缺失"。
+       v1.47.0 起表里那条长这样：`"idle": 'idle.webp',` —— 删的是**清单里的一行**，
+       不是一段 base64（投递改了，这一段测试的意图没变）。 */
+    const noIdleSrc = String(clientSrc).replace(/^\s*"idle": '[^']*',$/m, '')
     const mvNone = createHarness({ timer: true, composerText: '' })
     active = mvNone
     mvNone.evaluate(noIdleSrc)
@@ -3191,9 +3269,9 @@ if (clientSrc !== null) {
     mvApi.mood('sleep')
     mv.advance(400, 100)
     check(mvLive() === mvIdle && mvIdle.dataset.clip === 'sleepy'
-      && String(mvIdle.src) !== mvIdleSrc && String(mvIdle.src).indexOf('blob:') === 0,
+      && String(mvIdle.src) !== mvIdleSrc && String(mvIdle.src) === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp',
       'switching state re-points the SAME element at the other clip — the layer is not a one-shot build (v1.46.5)',
-      `reused=${mvLive() === mvIdle} clip=${String(mvIdle.dataset.clip)} srcChanged=${String(mvIdle.src) !== mvIdleSrc}`)
+      `reused=${mvLive() === mvIdle} clip=${String(mvIdle.dataset.clip)} srcChanged=${String(mvIdle.src) !== mvIdleSrc} src=${String(mvIdle.src)}`)
     mvApi.mood('idle')
     mv.advance(400, 100)
     check(mvLive() === mvIdle && mvIdle.dataset.clip === 'idle' && String(mvIdle.src) === mvIdleSrc,
@@ -3292,14 +3370,19 @@ if (clientSrc !== null) {
       'the stylesheet takes the sprite out through visibility, never display — the box stays, so handing the picture over does not make her jump (v1.45.2)',
       mvFrameRule || 'no .wisp-root[data-frame="on"] .wisp-img rule in the stylesheet')
 
-    /* 素材字节走**和立绘同一条路**：data URI -> Blob -> object URL（这个壳把 data: 源当坏图）。
-       动图那两份是**唯二**的 MB 级 image/webp blob（精灵图都是百 KB 级）：两段素材各解一次
-       —— 一次不能少（少了就是某一段没走 Blob 通道），也不能多（多了就是每换一次状态重解一次）。 */
-    const mvBlobs = mv.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
-    check(mvMotion !== null && String(mvMotion.src).indexOf('blob:') === 0
-      && mvBlobs.length === 2 && mvBlobs.every((b) => b.type === 'image/webp'),
-    'both animated WebPs reach the <img> through the same Blob pipeline as the sprites, typed image/webp, one blob per clip',
-    `${String(mvMotion?.src).slice(0, 28)} / ${mvBlobs.length} clip blob(s): ${mvBlobs.map((b) => `${b.type} ${b.size} B`).join(', ')}`)
+    /* 素材字节走哪条路（v1.47.0 换了）：**不再经过 Blob**。动图是宿主半包用
+       `/wisp-motion/` 发出来的文件，客户端只把 URL 指给 <img>；base 取页面自己的
+       （替身给的是真实的 Web 载体地址，见 documentShim.baseURI）。
+       两个方向都要点名：
+         ① 这一层的 src 必须是那条路由下的，**不是** data: URI（这个壳把 data: 当坏图，
+            1.44 那次碎图就是这么来的）；
+         ② 包里**一个** MB 级 clip blob 都不该有 —— 有就说明构建又把素材内联回来了，
+            而那正是这一版要修的那件事（八条泳装 +30 MB ⇒ 单文件 ~45 MB）。 */
+    const mvClipBlobs = mv.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
+    check(mvMotion !== null && String(mvMotion.src) === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp'
+      && mvClipBlobs.length === 0,
+      'the clip is fetched from the host route the page can resolve — and NOTHING multi-megabyte is inlined or blob-decoded any more (v1.47.0)',
+      `src=${String(mvMotion?.src)} · ${mvClipBlobs.length} MB-scale clip blob(s)`)
     check(mvMotion !== null && mvMotion.style.display !== 'none',
       'the animation is on screen at the default level', `display=${mvMotion?.style.display || '(default)'}`)
     /* 需求的那一格：**动图在画面上的时候立绘必须不在场**（动图那一列由上面那条钉住）。
@@ -3425,6 +3508,182 @@ if (clientSrc !== null) {
     active = keepMv
 
     /* ------------------------------------------------------ 3g. teardown --- */
+    /* ---- 冻结规则之三（v1.47.0）：独立的「帧动画」开关 ----------------------
+       动图是画面里唯一会自己动的东西，所以它有一个**只管画面**的开关。关掉之后
+       画面交给静态立绘，而呼吸 / 一次性动作照旧（幅度档一个字没动）—— 这正是它
+       和「动作幅度 → 静止」的分工。四个冻结来源共用 motionFrozen() 那一处判断。 */
+    {
+      const fv = createHarness({ timer: true, composerText: '' })
+      const keepFv = active
+      active = fv
+      fv.evaluate(clientSrc)
+      fv.module().default.apply(fv.ctx, { reactions: false, wander: false, celebrate: false })
+      fv.advance(1200, 100)
+      const fvApi = fv.win.__wisp
+      const fvRoot = fv.find('wisp-root')
+      const fvMotion = () => fv.all('wisp-video').find((el) => el.removed !== true) ?? null
+      const fvImg = () => fv.all('wisp-img').find((el) => el.removed !== true) ?? null
+
+      check(fvApi.doctor().motion.frame.enabled === true && fvApi.doctor().motion.frame.showing === true,
+        'the frame animation is on by default', JSON.stringify(fvApi.doctor().motion.frame))
+
+      fvApi.configure({ frame: false })
+      const fvOff = fvApi.doctor().motion
+      check(fvOff.frame.enabled === false && fvOff.frame.showing === false
+        && fvOff.frame.frozen === true
+        && fvMotion() !== null && fvMotion().style.display === 'none',
+      'switching the frame animation off takes it off screen at once — no reload needed',
+      'enabled=' + fvOff.frame.enabled + ' showing=' + fvOff.frame.showing + ' display=' + (fvMotion() && fvMotion().style.display))
+      check(mvVis(fvImg()) === 'visible' && fvRoot.dataset.frame === undefined,
+        'and the static sprite is what is left on screen — the same hand-over as any other freeze',
+        'sprite=' + mvVis(fvImg()) + ' data-frame=' + String(fvRoot.dataset.frame))
+      check(fvOff.level === 'full' && fvOff.amp === 1,
+        'while the amplitude level is untouched: this switch only takes the animated frames away',
+        'level=' + fvOff.level + ' amp=' + fvOff.amp)
+
+      fvApi.configure({ frame: true })
+      check(fvApi.doctor().motion.frame.enabled === true && fvApi.doctor().motion.frame.showing === true
+        && mvVis(fvImg()) === 'hidden' && fvRoot.dataset.frame === 'on',
+      'switching it back on resumes the same element and hands it the picture again',
+      'showing=' + fvApi.doctor().motion.frame.showing + ' sprite=' + mvVis(fvImg()) + ' data-frame=' + String(fvRoot.dataset.frame))
+
+      fv.win.__wisp.destroy()
+      active = keepFv
+    }
+
+    /* ---- 3f-quater. 泳装：素材按**皮肤+状态**点（v1.47.0）------------------------
+       这一版最容易错的不是"素材没生成"，而是**接错了**：泳装立绘配通用那段循环
+       （穿着泳装播别的皮肤的动作），或者换了皮肤只换了图、没换动图那一层。
+       两条都在画面上不报错，所以这里逐个状态点一遍，而且查的是"图 + 几何"两样。 */
+    {
+      const sw = createHarness({ timer: true, composerText: '' })
+      const keepSw = active
+      active = sw
+      sw.evaluate(clientSrc)
+      sw.module().default.apply(sw.ctx, { skin: 'swim', reactions: false, wander: false, celebrate: false })
+      sw.advance(1200, 100)
+      const swApi = sw.win.__wisp
+      const swRoot = sw.find('wisp-root')
+      const swMotion = () => sw.all('wisp-video').find((el) => el.removed !== true) ?? null
+      const swSprite = () => sw.all('wisp-img').find((el) => el.removed !== true) ?? null
+      const fitMap = (() => {
+        const src = (/const MOTION_FIT = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
+        try { return src ? new Function(`return ${src}`)() : {} } catch (error) { return {} }
+      })()
+      check(swApi.skin === 'swim' && swRoot.dataset.mood === 'idle',
+        'a companion can start on the swimsuit skin and land in the idle state',
+        `skin=${String(swApi.skin)} mood=${String(swRoot.dataset.mood)}`)
+
+      /* 素材在不在，决定这一段**查什么**（见文件上方 SHIPPED_SWIM）：
+         八条都在 -> 逐条查"图 + 几何"；
+         一条都没有 -> 查她**静默降级**，而且**不许**退回通用那段循环（穿着泳装播别的
+                       皮肤的动作，比不动更糟）。两条路都是真的断言，没有空过的一档。 */
+      const SWIM = [
+        ['idle', 'swim_idle'], ['attn', 'swim_attn'], ['happy', 'swim_happy'],
+        ['sleep', 'swim_sleepy'], ['alert', 'swim_work'], ['proud', 'swim_proud'],
+        ['eat', 'swim_eat'], ['poked', 'swim_poked'],
+      ]
+      if (SHIPPED_SWIM.length === 8) {
+      const wrongClip = []
+      const wrongSrc = []
+      const wrongFit = []
+      const wrongOwner = []
+      for (const [state, clip] of SWIM) {
+        swApi.mood(state)
+        sw.advance(300, 100)
+        const m = swMotion()
+        if (String(m?.dataset?.clip ?? '') !== clip) wrongClip.push(`${state}→${String(m?.dataset?.clip)}`)
+        const wantSrc = `http://127.0.0.1:19387/wisp-motion/${clip}.webp`
+        if (String(m?.src ?? '') !== wantSrc) wrongSrc.push(`${state}→${String(m?.src)}`)
+        /* 几何跟着**素材**走：MOTION_FIT 里有就用它，没有就是 none（"不校正"是
+           显式规则，不是"忘了写"）—— 换源不换几何就是 v1.46.5 抓到过的那条。 */
+        if (String(m?.style?.transform ?? '') !== (fitMap[clip] ?? 'none')) {
+          wrongFit.push(`${state}: ${String(m?.style?.transform)} vs ${fitMap[clip] ?? 'none'}`)
+        }
+        if (m === null || m.style.display === 'none' || mvVis(swSprite()) !== 'hidden') {
+          wrongOwner.push(`${state}: display=${String(m?.style?.display)} sprite=${mvVis(swSprite())}`)
+        }
+      }
+      check(wrongClip.length === 0,
+        'all eight swimsuit states build THEIR OWN clip — the layer names the clip the skin+state maps to',
+        wrongClip.length ? wrongClip.join(' | ') : SWIM.map(([s, c]) => `${s}=${c}`).join(', '))
+      check(wrongSrc.length === 0,
+        'and each one loads it from the host route, resolved from the page base — no inlined bytes, no stale source',
+        wrongSrc.length ? wrongSrc.join(' | ') : `e.g. ${String(swMotion()?.src)}`)
+      check(wrongFit.length === 0,
+        'and the geometry is chosen PER CLIP — switching the source rewrites the transform with it (v1.46.5 rule, swimsuit edition)',
+        wrongFit.length ? wrongFit.join(' | ') : `fit=${JSON.stringify(fitMap)}`)
+      check(wrongOwner.length === 0,
+        'and while a swimsuit clip plays, the static swimsuit sprite is out of the picture — one of her, never two',
+        wrongOwner.length ? wrongOwner.join(' | ') : `sprite=hidden · data-frame=${String(swRoot.dataset.frame)}`)
+      check(swApi.doctor().motion.frame.asset === 'swim_poked'
+        && String(swApi.doctor().motion.frame.src).endsWith('/wisp-motion/swim_poked.webp'),
+        'and doctor() reports both the clip name and where it came from, so "why is she still" is answerable',
+        JSON.stringify(swApi.doctor().motion.frame))
+
+      /* 没有素材的状态：worried 在这个皮肤上也没有动作段（它有自己的抖动）——
+         这一层必须**藏起来**、立绘回到画面，而不是留一个空盒子。 */
+      swApi.mood('worried')
+      sw.advance(300, 100)
+      check(swMotion() === null || swMotion().style.display === 'none',
+        'a swimsuit state with no clip takes the frame layer off screen and hands the picture back',
+        `display=${String(swMotion()?.style?.display)} sprite=${mvVis(swSprite())}`)
+
+      /* 换皮肤 = 换一整套**动图**（v1.47.0）：只换图不换动图层，是这一版最容易漏的一处。
+         两个方向一起点：泳装 → 通用（回到 idle/sleepy），这也是"图与几何一起换"的证据。 */
+      swApi.mood('sleep')
+      sw.advance(300, 100)
+      const swimSleepTransform = String(swMotion()?.style?.transform ?? '')
+      const beforeSkinClip = String(swMotion()?.dataset?.clip ?? '')
+      swApi.setSkin('deepsea')
+      sw.advance(300, 100)
+      check(String(swMotion()?.dataset?.clip ?? '') === 'sleepy'
+        && String(swMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp'
+        && String(swMotion()?.style?.transform ?? '') === 'scale(1.186) translateY(7.84%)'
+        && swimSleepTransform !== String(swMotion()?.style?.transform ?? ''),
+        'switching the skin re-points the SAME frame layer at that skin’s clip — picture AND geometry change together (v1.47.0)',
+        `${beforeSkinClip} ${swimSleepTransform} → ${String(swMotion()?.dataset?.clip)} ${String(swMotion()?.style?.transform)}`)
+      check(swApi.setSkin('swim') === true && String(swMotion()?.dataset?.clip ?? '') === 'swim_sleepy',
+        'and switching back returns the swimsuit loop, not the shared one',
+        String(swMotion()?.dataset?.clip))
+      } else {
+        /* 素材还没生成（0/8）：泳装那一档**一条动图都不该建**，而且**不许**退回通用
+           那段循环 —— 她是穿着泳装的人，播别的皮肤的动作比不动更糟。这一条查的就是
+           "按皮肤点素材"这件事本身：换一套皮肤，同一个元素该出现/消失。 */
+        const leaked = []
+        const silent = []
+        for (const [state] of SWIM) {
+          swApi.mood(state)
+          sw.advance(300, 100)
+          const m = swMotion()
+          if (m !== null && m.style.display !== 'none') leaked.push(`${state}:${String(m.dataset.clip)}`)
+          if (mvVis(swSprite()) !== 'visible' || swRoot.dataset.frame === 'on') {
+            silent.push(`${state}: sprite=${mvVis(swSprite())} frame=${String(swRoot.dataset.frame)}`)
+          }
+        }
+        check(leaked.length === 0,
+          'with no swimsuit clips shipped, NONE of the eight states plays a clip — the shared loop never leaks onto the swimsuit skin (v1.47.0)',
+          leaked.length ? leaked.join(' | ') : `0/8 clips built across ${SWIM.length} states`)
+        check(silent.length === 0 && swApi.doctor().motion.frame.asset === null,
+          'and the static swimsuit sprite keeps the picture the whole time — the documented silent degradation, not an empty box',
+          silent.length ? silent.join(' | ') : `sprite visible, data-frame=${String(swRoot.dataset.frame)}, doctor.asset=null`)
+        /* 反面：同一套素材在**别的皮肤**上照旧播 —— 上一条若是"动图整个坏了"，
+           这里会红。两件事必须分得开："这个皮肤没有素材"和"帧动画坏了"。 */
+        swApi.mood('sleep')
+        sw.advance(300, 100)
+        const swimSleepQuiet = swMotion() === null || swMotion().style.display === 'none'
+        swApi.setSkin('deepsea')
+        sw.advance(300, 100)
+        check(swimSleepQuiet && String(swMotion()?.dataset?.clip ?? '') === 'sleepy'
+          && String(swMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp',
+          'and switching to a skin WITH clips brings the frame animation straight back — missing swimsuit art is not a broken frame layer',
+          `swim/sleep -> ${swimSleepQuiet ? 'no clip' : String(swMotion()?.dataset?.clip)}; deepsea/sleep -> clip=${String(swMotion()?.dataset?.clip)}`)
+      }
+
+      sw.win.__wisp.destroy()
+      active = keepSw
+    }
+
     head('3g. teardown')
 
     const liveBefore = h.pendingTimers().length
@@ -3462,7 +3721,9 @@ if (clientSrc !== null) {
       'exactly one companion is mounted', `${layers.filter((l) => l.parentNode === h.bodyEl).length} attached`)
     const second = h.win.__wisp
     check(second !== api && typeof second?.destroy === 'function', 'the handle points at the new instance')
-    const freshSrcs = h.srcs.slice(-1)
+    /* v1.47.0：挂载时最后写的一次 src 是**动图**那条路由（idle 有素材），所以这里
+       要看的是立绘那一串 —— 这条断言问的是"新实例有没有拿到被吊销的 blob"。 */
+    const freshSrcs = spriteSrcs().slice(-1)
     check(freshSrcs[0]?.startsWith('blob:') && !h.revoked.includes(freshSrcs[0]),
       'the re-mount is not handed a revoked blob URL', String(freshSrcs[0]))
     const restored = second.position
@@ -3640,7 +3901,7 @@ if (clientSrc !== null) {
     check(collapse('外观'), 'close the skin group again')
     check(expand('行为'), 'the behaviour group opens')   /* 开关都在这一组里 */
     const switchOf = (key) => itemsOf().find((i) => i.dataset && i.dataset.switchKey === key)
-    const switchKeys = ['wander', 'reactions', 'celebrate', 'hungry', 'night']
+    const switchKeys = ['frame', 'wander', 'reactions', 'celebrate', 'hungry', 'night']
     check(switchKeys.every((k) => switchOf(k) !== undefined), 'every behaviour has a switch row',
       switchKeys.map((k) => k + '=' + (switchOf(k) ? '有' : '无')).join(' '))
     const wanderSwitch = switchOf('wander')
@@ -3665,6 +3926,20 @@ if (clientSrc !== null) {
       flipped ? flipped.getAttribute('aria-checked') : '(没了)')
     flipped.dispatch('click', itemEvent())
     check(fifth.config.wander === wanderBefore, 'toggling back restores it', String(fifth.config.wander))
+
+    /* 帧动画那一格（v1.47.0）：点一下 config 翻面，画面**当场**跟着走（不用刷新）。 */
+    const frameSwitch = switchOf('frame')
+    const frameBefore = fifth.config.frame
+    frameSwitch.dispatch('click', itemEvent())
+    check(fifth.config.frame === !frameBefore
+      && fifth.doctor().motion.frame.enabled === (fifth.config.frame !== false)
+      && fifth.doctor().motion.frame.showing === (fifth.config.frame !== false),
+    'the frame-animation switch flips its own config, and the picture follows immediately',
+    frameBefore + ' -> ' + fifth.config.frame + ' / enabled=' + fifth.doctor().motion.frame.enabled)
+    switchOf('frame').dispatch('click', itemEvent())
+    check(fifth.config.frame === frameBefore
+      && fifth.doctor().motion.frame.showing === true,
+    'and toggling it back hands the picture back to the animation', String(fifth.config.frame))
 
     /* ---- 滑块：连续量直接调，键盘也能调，而且不关菜单 ---- */
     const sliderEl = menuOf().querySelector ? menuOf().querySelector('.wisp-slider') : null
@@ -3874,7 +4149,7 @@ if (clientSrc !== null) {
     check(expand('外观'), 'and the skins group can be opened')
     const skinBefore = fifth.skin
     const posBefore = fifth.position
-    const srcBeforeSkin = h.srcs[h.srcs.length - 1]
+    const srcBeforeSkin = spriteSrcs().at(-1)
     /* 同样不写死名字：挑一套「和当前不同」的皮肤，用它的显示名去点菜单 */
     const targetSkin = fifth.skins.find((id) => id !== skinBefore)
     const targetLabel = fifth.skinLabels.find((s) => s.id === targetSkin).label
@@ -3883,8 +4158,8 @@ if (clientSrc !== null) {
     targetEl.dispatch('click', itemEvent())
     check(fifth.skin === targetSkin, 'choosing a skin switches to it', String(fifth.skin))
     check(fifth.skin !== skinBefore, 'and it is a different skin than before', `${skinBefore} -> ${fifth.skin}`)
-    check(h.srcs[h.srcs.length - 1] !== srcBeforeSkin, 'the sprite is swapped for the new skin',
-      `${String(srcBeforeSkin).slice(0, 22)} -> ${String(h.srcs[h.srcs.length - 1]).slice(0, 22)}`)
+    check(spriteSrcs().at(-1) !== srcBeforeSkin, 'the sprite is swapped for the new skin',
+      `${String(srcBeforeSkin).slice(0, 22)} -> ${String(spriteSrcs().at(-1)).slice(0, 22)}`)
     check(fifth.position.x === posBefore.x && fifth.position.y === posBefore.y,
       'switching skins leaves her where she was', `${fifth.position.x},${fifth.position.y}`)
     check(JSON.parse(h.win.localStorage.getItem('dsh-wisp:skin:v1') || 'null')?.id === targetSkin,
@@ -4348,15 +4623,21 @@ if (clientSrc !== null) {
     /* 皮肤来回换 120 次，如果 blob URL 每轮都新建，这里会是 120+ —— 缓存命中应该是常数。
        上限 12 -> 13：v1.45.0 起那段帧动画素材也走同一条 Blob 通道，它**只该解一次**
        （这一轮里她睡着了 60 次）。v1.46.5 再 +1 = 14：idle 也接上了素材（挂载时解一次，
-       120 轮里她醒着 60 次，一次都不该重解）。下面那条断言把"两段各解一次"单独钉住 ——
-       只把常数抬上去，等于允许"每次换状态都新建一个"，而那种退化在 60 次里会变成 60 个。 */
+       120 轮里她醒着 60 次，一次都不该重解）。
+       **v1.47.0 起动图不再走 Blob**（它是宿主路由下的文件 URL），所以这个数只数立绘
+       —— 14 这个上界照旧成立，只是现在有了富余。 */
     check(soak.urLs.length <= 14,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
-    const clipBlobs = soak.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
-    check(clipBlobs.length === 2,
-      'each frame-animation clip is decoded once, not once per mood swing (two clips in the bundle)',
-      `${clipBlobs.length} motion blob(s): ${clipBlobs.map((b) => b.size).join(', ')} bytes`)
+    /* 反过来钉"没有被内联回来"：只要有一份 MB 级的 image/webp blob，就说明构建又把
+       素材塞进单文件了 —— 那正是 1.47.0 要修的那件事（八条泳装 +30 MB ⇒ ~45 MB）。
+       同时要求这一轮里动图的 src **一直是那条路由**：换皮肤、换状态都不许退回 data:。 */
+    const soakClipBlobs = soak.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
+    const soakMotion = soak.srcs.filter((s) => typeof s === 'string' && s.indexOf('/wisp-motion/') >= 0)
+    check(soakClipBlobs.length === 0 && soakMotion.length > 0
+      && soakMotion.every((s) => /^http:\/\/127\.0\.0\.1:19387\/wisp-motion\/[A-Za-z0-9._-]+\.webp$/.test(s)),
+      'every frame-animation source stays on the host route across the whole soak - nothing multi-megabyte is decoded or inlined (v1.47.0)',
+      `${soakClipBlobs.length} MB-scale clip blob(s); ${soakMotion.length} route src(s)`)
 
     soakApi.destroy()
     check(soak.pendingTimers().length === 0 && soak.revoked.length === soak.urLs.length,
@@ -4968,27 +5249,28 @@ else bad('inject/shared declared', 'a local-path install cannot satisfy them')
 
 /* ============================ 4b. 帧动画素材进包了吗 ====================== */
 
-head('4b. the frame-animation clip is inlined in the bundle (and inside its budget)')
+head('4b. the clips ship as FILES — the bundle carries only their names (v1.47.0)')
 
-/* 素材是**内联**的（单文件交付，见 build.mjs 的头注释），所以它的体积是包的一部分，
-   而"涨了多少"从来不会自己冒出来 —— 只有这一条盯着它。
-   预算按**实测值**设上限。v1.46.5：包里从一段素材变成**两段**（idle + sleepy），
-   两段都是 720x1280 / 24fps / 97 帧（一帧不抽、一帧不短），实测内联：
-     idle   2757928 B -> 3677240 B base64（2693.3 KB 原始）
-     sleepy 3398206 B -> 4530944 B base64（3318.6 KB 原始）
-     合计   **8015.8 KB**（7.83 MB，目标 ≤ 8 MB）
-   上界取 8820 KB = 实测 8015.8 + 约 10% 余量。
-   **v1.46.5 为什么动这个数**：5540 是"只有 sleepy 一段、q:v 60 / blend 0.06"那一版的
-   实测值（5031.3 KB）加 10%。两段素材同时进包时 5540 已经装不下 —— 这一版把两条的
-   colorkey 过渡都收到 **0.05**（预检钉住的下限），WebP 质量退到 **40**，并给 idle 补了
-   品红去边（残余 1.09% -> 0.006%），才把两段一起压进 8 MB。比它再大就说明素材被换过、
-   参数被动过、或者又加了一段 —— 必须有人重新量一次再改这个数。它记在这里而不是
-   build.mjs 里：构建负责**报**体积，预检负责**判**体积，一个数写两遍就是下一次漂移的起点。 */
-const MOTION_BUDGET_KB = 8820
+/* v1.47.0 换了**投递方式**：表里不再有 base64，只有文件名；字节留在
+   assets/motion/ 里，由宿主半包注册的 `/wisp-motion/` 路由发给页面。
+   两个数因此分开盯，各有各的预算：
+
+     ① **内联**：那张清单必须小到可以忽略（几条素材名，几十字节）。它曾经是
+        8015.8 KB（两段 base64，v1.46.5 实测）；八条泳装再内联会到 ~45 MB ——
+        所以这一条的上界是"几百字节"，不是"几 MB"。
+     ② **磁盘**：素材还是跟着包走的，涨了仍然要有人重新量一次。上界按**十条**估
+        （通用 2 + 泳装 8，实测每条 2.6~3.3 MB）：27 MB 上下 + 余量 ⇒ **39000 KB**。
+        泳装那八条一旦落盘，这个数会跟着涨一次 —— 那时要有人重新量一遍再改它，
+        而不是让它自己漂。
+
+   上界写在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
+   一个数写两遍就是下一次漂移的起点。 */
+const MOTION_MANIFEST_BUDGET_BYTES = 2048
+const MOTION_DISK_BUDGET_KB = 39000
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
-    bad('the motion clip ships inside the bundle', 'lib/client.js is missing')
+    bad('the motion clips ship with the package', 'lib/client.js is missing')
   } else {
     /* 表必须真的能求值：正则匹配到一段文本、而文本是注释里的，是踩过的坑
        （SPRITES 那次的注释占位符事故）。 */
@@ -4996,21 +5278,39 @@ const MOTION_BUDGET_KB = 8820
     let motionValue = null
     try { motionValue = motionTable ? new Function(`return ${motionTable[1]}`)() : null } catch (error) { motionValue = null }
     const keys = motionValue && typeof motionValue === 'object' ? Object.keys(motionValue) : []
-    const inlined = keys.filter((k) => typeof motionValue[k] === 'string' && motionValue[k].startsWith('data:image/webp;base64,'))
-    check(keys.length > 0 && inlined.length === keys.length,
-      'the clip is embedded as a data:image/webp URI — a share carries no .webp path to resolve',
-      keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]]).slice(0, 26)}…` : 'no MOTION table in the bundle')
-    /* **两段都要在**（v1.46.5）：站着那一段和睡着那一段是两条独立的素材，只进一条
-       （或者 build 的发现规则又把 motion/ 当成皮肤跳过了）在页面上表现为"她某个状态不动"，
-       而那和"没有素材"长得一模一样。 */
+    /** 清单里那一条指向的文件名（不是 data URI —— 那是 1.46.5 的老形状）。 */
+    const clipFile = (k) => (typeof motionValue?.[k] === 'string' ? motionValue[k] : null)
+    const clipPath = (k) => (clipFile(k) === null ? null : join(here, 'assets', 'motion', clipFile(k)))
+    /* ① 表里只能是**文件名**：既有形状的检查，也是"没有被内联回来"的第一道。
+       值以 data: 开头 = 构建退回内联了（八条泳装那 ~30 MB 会重新进单文件）。 */
+    const named = keys.filter((k) => clipFile(k) !== null && /^[A-Za-z0-9][A-Za-z0-9._-]*\.webp$/.test(clipFile(k)))
+    const stillInlined = keys.filter((k) => typeof motionValue[k] === 'string' && motionValue[k].startsWith('data:'))
+    check(keys.length > 0 && named.length === keys.length && stillInlined.length === 0,
+      'every MOTION entry is a clip FILE NAME — the bytes are not in the bundle any more (v1.47.0)',
+      keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]])}` : 'no MOTION table in the bundle')
+    /* **通用那两段都要在**（v1.46.5）：站着那一段和睡着那一段是两条独立的素材，
+       只进一条（或者 build 的发现规则又把 motion/ 当成皮肤跳过了）在页面上表现为
+       "她某个状态不动"，而那和"没有素材"长得一模一样。
+       v1.47.0 又多了泳装那八条 —— 它们由下面那条"谁在播"的反向检查兜住。 */
     check(keys.includes('idle') && keys.includes('sleepy'),
-      'BOTH loops are in the bundle — the standing one and the sleeping one (v1.46.5)',
-      keys.length ? keys.map((k) => `${k} ${kb(String(motionValue[k]).length)} KB`).join(', ') : 'no clips at all')
+      'BOTH shared loops are still there — the standing one and the sleeping one',
+      keys.length ? keys.join(', ') : 'no clips at all')
 
-    const bytes = keys.reduce((n, k) => n + String(motionValue[k]).length, 0)
-    check(bytes > 0 && bytes <= MOTION_BUDGET_KB * 1024,
-      `the inlined clips stay inside their ${MOTION_BUDGET_KB} KB budget`,
-      `${kb(bytes)} KB of ${MOTION_BUDGET_KB} KB (${keys.length} clips)`)
+    /* ① 内联的那一份必须**小**。这是这一版存在的理由：清单 = 素材名，
+       八条泳装加进来也只多几十字节；换成字节就是 ~30 MB。 */
+    const inlineBytes = Object.entries(motionValue ?? {}).reduce((n, [k, v]) => n + String(k).length + String(v).length + 8, 0)
+    check(inlineBytes > 0 && inlineBytes <= MOTION_MANIFEST_BUDGET_BYTES,
+      `the inlined part is only a NAME LIST — ${MOTION_MANIFEST_BUDGET_BYTES} B budget (a 8015.8 KB base64 table is what it replaced)`,
+      `${inlineBytes} B for ${keys.length} clips`)
+
+    /* ② 磁盘上那八条 + 两条：素材仍然跟着包走，涨了要有第二个人重新量一次。 */
+    const onDiskBytes = keys.reduce((n, k) => {
+      const p = clipPath(k)
+      return n + (p !== null && existsSync(p) ? readFileSync(p).length : 0)
+    }, 0)
+    check(onDiskBytes > 0 && onDiskBytes <= MOTION_DISK_BUDGET_KB * 1024,
+      `and every clip it names really exists under assets/motion/, inside the ${MOTION_DISK_BUDGET_KB} KB disk budget`,
+      `${kb(onDiskBytes)} KB on disk for ${keys.length} clips`)
 
     /* ---- 边缘平滑度不是"看起来"的事，是**编码参数**的事（v1.46.4）----
        colorkey 的 blend 是边缘过渡带的半宽：0.02 那条带只有 0.04 的色距宽度，
@@ -5024,36 +5324,83 @@ const MOTION_BUDGET_KB = 8820
        全不透明的阈值 sim+blend 保持原样（sleepy 0.24 / idle 0.38）—— 所以"她自己"
        一个像素都没少（实测不透明占比 17.379% / 27.016%，和上一版逐位相同）。
        只认那个写着 libwebp_anim 的代码块，免得命中变更日志里的历史参数。 */
+    /* 1.47.0：文档里有**两块**写着 libwebp_anim 的命令（泳装那八条一条配方 + 通用两条
+       的历史命令），所以这里查**每一块**：任何一条 posted 出去的编码命令都不许把 blend
+       压到 0.05 以下。泳装那条的幕布色是**采样**来的（`#<采样色>`），所以匹配要接受占位
+       形式的色值 —— 断言的是数字（similarity / blend），不是那个十六进制。 */
     const pipelineDoc = existsSync(join(here, 'README.md')) ? readFileSync(join(here, 'README.md'), 'utf8') : ''
-    let pipeline = ''
+    const pipelines = []
     for (const m of pipelineDoc.matchAll(/```[a-z]*\n([\s\S]*?)```/g)) {
-      if (m[1].includes('libwebp_anim')) { pipeline = m[1]; break }
+      if (m[1].includes('libwebp_anim')) pipelines.push(m[1])
     }
-    const keyed = /colorkey=#([0-9A-Fa-f]{6}):([\d.]+):([\d.]+)/.exec(pipeline)
-    check(keyed !== null && Number(keyed[3]) >= 0.05,
-      'the documented keying keeps a SOFT edge — blend >= 0.05, because a hard alpha cut IS the jagged edge (v1.46.4)',
-      keyed ? `colorkey #${keyed[1]} similarity ${keyed[2]} blend ${keyed[3]}` : 'no colorkey line in the documented motion pipeline')
+    const colorkeys = pipelines
+      .flatMap((p) => [...p.matchAll(/colorkey=#(?:[0-9A-Fa-f]{6}|<[^>\n]+>):([\d.]+):([\d.]+)/g)])
+      .map((m) => ({ sim: m[1], blend: Number(m[2]) }))
+    check(colorkeys.length > 0 && colorkeys.every((k) => k.blend >= 0.05),
+      'every documented keying keeps a SOFT edge — blend >= 0.05, because a hard alpha cut IS the jagged edge (v1.46.4)',
+      colorkeys.length ? colorkeys.map((k) => `sim ${k.sim} blend ${k.blend}`).join(' · ') : 'no colorkey line in the documented motion pipeline')
     /* 放宽过渡会把幕布的边一起放出来（绿幕：0.078% → 0.119%；品红幕：idle 那 1.09% 的
        紫边就是这么来的）—— 所以那一步 RGB 去边是**配套的**，不是可选项。绿幕那条是
        min(G, max(R,B))（和 tools/keyout.mjs 给立绘用的是同一条规则），品红幕那条把
        "R、B 都比 G 高"的那一份减掉。两条都在文档里。 */
-    check(/geq=|despill/.test(pipeline),
+    check(pipelines.some((p) => /geq=|despill/.test(p)),
       'and the documented pipeline de-fringes the screen colour in RGB — a soft transition lets the curtain edge back in',
-      pipeline ? (pipeline.split('\n').find((l) => /geq=|despill/.test(l)) ?? '').trim().slice(0, 140) : 'no motion pipeline block in README.md')
+      pipelines.length
+        ? (pipelines.map((p) => (p.split('\n').find((l) => /geq=|despill/.test(l)) ?? '').trim()).find((l) => l !== '') ?? '(no de-fringe line)').slice(0, 140)
+        : 'no motion pipeline block in README.md')
 
-    /* 字节是不是**那份素材**：base64 解出来必须和磁盘上的文件一样长。
-       只数长度不比内容，但"内联了另一份/半份素材"这件事一定会在这里露出来。 */
-    const mismatch = []
+    /* 投递的另一半：**宿主真的在发**（v1.47.0）。这条路由不在时她只会静默不动，
+       所以"注册了没有"不能靠读源码回答 —— 这里把 handler 拿出来、用真请求打一遍。 */
+    /* 两个半包对**同一条路由**必须说同一个名字：客户端解析 `wisp-motion/<文件>`，
+       宿主在 `/wisp-motion/` 上注册。这两个字符串写在不同文件里、构建也不查它们，
+       于是"改了一处忘了另一处"在页面上只会表现为她不动（静默降级），没有任何报错。
+       顺手把宿主那一半**真的跑一遍**：拿真字节过一遍 handler，状态码 / 内容类型 /
+       内容都必须对 —— 这是这条投递链上唯一会出错的地方。 */
+    const hostMod = await import(pathToFileURL(hostPath).href + '?probe=motion')
+    const clientRoute = (/const MOTION_ROUTE = '([^']+)'/.exec(clientSrc) ?? [])[1] ?? null
+    check(typeof hostMod.MOTION_PATH === 'string' && clientRoute !== null
+      && '/' + clientRoute === hostMod.MOTION_PATH,
+      'the client half and the host half name the SAME route — one string, two files',
+      `client "${String(clientRoute)}" vs host "${String(hostMod.MOTION_PATH)}"`)
+
+    const served = []
     for (const key of keys) {
-      const file = join(here, 'assets', 'motion', `${key}.webp`)
-      if (!existsSync(file)) { mismatch.push(`${key}: assets/motion/${key}.webp 不在`); continue }
-      const decoded = Buffer.from(String(motionValue[key]).slice(String(motionValue[key]).indexOf(',') + 1), 'base64')
-      const onDisk = readFileSync(file)
-      if (decoded.length !== onDisk.length) mismatch.push(`${key}: ${decoded.length} vs ${onDisk.length} bytes`)
+      const file = clipFile(key)
+      const diskPath = clipPath(key)
+      const onDisk = diskPath !== null && existsSync(diskPath) ? readFileSync(diskPath) : null
+      const response = { status: 0, headers: null, body: null }
+      await hostMod.motionHandler(hostMod.defaultReadBytes)({ method: 'GET', url: `${hostMod.MOTION_PATH}${file}` }, {
+        writeHead(status, headers) { response.status = status; response.headers = headers },
+        end(chunk) { response.body = chunk ?? null },
+        destroy() {},
+      })
+      const body = response.body === null || response.body === undefined ? null : Buffer.from(response.body)
+      const identical = onDisk !== null && body !== null && body.length === onDisk.length && body.equals(onDisk)
+      if (response.status !== 200 || String(response.headers?.['content-type']) !== 'image/webp' || !identical) {
+        served.push(`${key}: ${response.status} ${String(response.headers?.['content-type'])} identical=${identical}`)
+      }
     }
-    check(mismatch.length === 0,
-      'and those bytes are exactly the asset on disk (same length, decoded out of the bundle)',
-      mismatch.length ? mismatch.join(' | ') : keys.map((k) => `${k} ${kb(String(motionValue[k]).length)} KB inline`).join(', '))
+    check(keys.length > 0 && served.length === 0,
+      'and the host route really serves each clip: 200, image/webp, bytes identical to the file on disk',
+      served.length ? served.join(' | ') : keys.map((k) => `${k} → ${hostMod.MOTION_PATH}${clipFile(k)}`).join(', '))
+    /* 它不是一个文件服务器：只有 assets/motion/ 下那一个名字、只有 GET/HEAD。 */
+    const refused = []
+    for (const [label, url, method, want] of [
+      ['traversal', `${hostMod.MOTION_PATH}../../package.json`, 'GET', 404],
+      ['nested', `${hostMod.MOTION_PATH}a/b.webp`, 'GET', 404],
+      ['non-webp', `${hostMod.MOTION_PATH}idle.png`, 'GET', 404],
+      ['bare prefix', hostMod.MOTION_PATH, 'GET', 404],
+      ['write', `${hostMod.MOTION_PATH}${clipFile(keys[0])}`, 'POST', 405],
+    ]) {
+      const response = { status: 0 }
+      await hostMod.motionHandler(hostMod.defaultReadBytes)({ method, url }, {
+        writeHead(status) { response.status = status }, end() {}, destroy() {},
+      })
+      if (response.status !== want) refused.push(`${label}: ${response.status} (want ${want})`)
+    }
+    check(refused.length === 0,
+      'and it stays a closed list — traversal, nested paths, other extensions and writes are all refused',
+      refused.length ? refused.join(' | ') : 'traversal/nested/non-webp/prefix → 404, POST → 405')
 
     /* 磁盘上那份文件**真的是动图**（RIFF/WEBP + ANMF 帧块）：MIME 是写死的，
        素材被换成一张静图时，"她不动了"会和"没有素材"长得一模一样。
@@ -5065,8 +5412,8 @@ const MOTION_BUDGET_KB = 8820
     const animated = []
     const geometry = []
     for (const key of keys) {
-      const file = join(here, 'assets', 'motion', `${key}.webp`)
-      if (!existsSync(file)) continue
+      const file = clipPath(key)
+      if (file === null || !existsSync(file)) continue
       const onDisk = readFileSync(file)
       const riff = onDisk.subarray(0, 4).toString('latin1') === 'RIFF' && onDisk.subarray(8, 12).toString('latin1') === 'WEBP'
       let canvasW = 0
@@ -5092,22 +5439,56 @@ const MOTION_BUDGET_KB = 8820
     }
     check(animated.length === 0,
       'and it is an ANIMATED WebP (RIFF/WEBP with a chain of ANMF frames), not a still',
-      animated.length ? animated.join(' | ') : keys.map((k) => `${k}: ${readFileSync(join(here, 'assets', 'motion', `${k}.webp`)).toString('latin1').split('ANMF').length - 1} frames`).join(', '))
+      animated.length ? animated.join(' | ') : keys.map((k) => `${k}: ${readFileSync(clipPath(k)).toString('latin1').split('ANMF').length - 1} frames`).join(', '))
     check(geometry.length === 0,
       'and its geometry did not drift — 720x1280, 97 frames, 41ms each (24 fps): quality and keying may change, the frame budget may not (v1.46.4)',
       geometry.length ? geometry.join(' | ') : keys.map((k) => `${k}: 720x1280 / 97 frames / 41 ms = 24 fps`).join(', '))
 
+    /* 谁在播哪一段（v1.47.0 起是**按皮肤**点的）。
+       正向：每个 `<皮肤>:<状态>` 指向的素材必须真的在清单里（打错一个字 = 那个状态
+       永远不动，而画面看不出错）。
+       反向：清单里**没有状态会播**的素材是白带的体积（磁盘预算里最贵的就是它）。 */
     const moodMap = (/const MOTION_OF = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
     let wired = null
     try { wired = moodMap ? new Function(`return ${moodMap}`)() : null } catch (error) { wired = null }
-    const orphans = Object.keys(wired ?? {}).filter((m) => typeof motionValue?.[wired[m]] !== 'string')
-    /* 反方向也要查：**没有状态会播的素材**是白带的体积（两段素材合计 7.83 MB 内联，
-       一段没人播就是 3 MB 的死重）。 */
-    const unwired = keys.filter((k) => !Object.values(wired ?? {}).includes(k))
-    check(wired !== null && wired.idle === 'idle' && wired.sleep === 'sleepy'
-      && orphans.length === 0 && unwired.length === 0,
-      'and both states are wired to clips that are really in the bundle — with no clip shipped that no state can play',
-      wired ? `${JSON.stringify(wired)}${unwired.length ? ` · 没人播：${unwired.join(', ')}` : ''}` : 'no MOTION_OF map found')
+    const baseMap = (/const MOTION_BASE = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
+    let base = null
+    try { base = baseMap ? new Function(`return ${baseMap}`)() : null } catch (error) { base = null }
+    const wiredClips = [...Object.values(wired ?? {}), ...Object.values(base ?? {})]
+    /* 孤儿只算**这个包真的带了的**通用素材：没生成的泳装素材在表里写着是**对的**
+       （那正是接线），它在页面上走静默降级，不是坏行为。素材有没有是上面那条的事。 */
+    const orphans = Object.keys(wired ?? {}).filter((m) => !String(wired[m]).startsWith('swim_')
+      && typeof motionValue?.[wired[m]] !== 'string')
+    const badKeys = Object.keys(wired ?? {}).filter((m) => !/^[a-z]+:.+$/.test(m))
+    const unwired = keys.filter((k) => !wiredClips.includes(k))
+    check(wired !== null && base !== null && base.idle === 'idle' && base.sleep === 'sleepy'
+      && orphans.length === 0 && unwired.length === 0 && badKeys.length === 0,
+      'every <skin>:<state> is wired to a clip that is really shipped — and no clip ships that no state can play',
+      wired ? `${JSON.stringify(wired)} · base=${JSON.stringify(base)}${unwired.length ? ` · 没人播：${unwired.join(', ')}` : ''}${orphans.length ? ` · 查不到：${orphans.join(', ')}` : ''}` : 'no MOTION_OF map found')
+    /* 泳装那八条（v1.47.0）。判据是**磁盘上实际带着什么**（见文件上方 SHIPPED_SWIM）：
+       "一条都没生成"与"八条都在"都是合法状态 —— 前者走既有的静默降级（画面回到立绘），
+       半套才是坏的。所以这里查的是**接线与素材一一对上**，两个方向都查：
+         ① 每个泳装状态指向的素材，只要它在包里就必须真的能查到（名字打错一条 = 那个
+            状态永远不动，而画面不会报错）；
+         ② 包里每一条泳装素材都必须有状态会播（没人播 = 白带的体积）。 */
+    const swimKeys = Object.keys(wired ?? {}).filter((k) => k.startsWith('swim:'))
+    const swimClips = swimKeys.map((k) => wired[k])
+    const swimMissing = swimKeys.filter((k) => SHIPPED_SWIM.includes(`${wired[k]}.webp`)
+      && typeof motionValue?.[wired[k]] !== 'string')
+    const swimUnwired = SHIPPED_SWIM.map((f) => f.slice(0, -'.webp'.length))
+      .filter((c) => !Object.values(wired ?? {}).includes(c))
+    check(SHIPPED_SWIM.length === 0 || SHIPPED_SWIM.length === 8,
+      'the eight swimsuit clips ship as a SET — never half of them',
+      SHIPPED_SWIM.length
+        ? `${SHIPPED_SWIM.length} clip(s): ${SHIPPED_SWIM.join(', ')}`
+        : '0/8 generated yet — the swimsuit states fall back to the shared loops, silently by design')
+    check(swimKeys.length === 8 && new Set(swimKeys).size === 8
+      && (SHIPPED_SWIM.length === 0 || new Set(swimClips).size === 8)
+      && swimMissing.length === 0 && swimUnwired.length === 0,
+      'all eight swimsuit states are wired, each to its OWN clip — and every clip that ships has a state to play it (v1.47.0)',
+      `wired ${swimKeys.length}/8 · shipped ${SHIPPED_SWIM.length}/8`
+        + (swimUnwired.length ? ` · 没人播：${swimUnwired.join(', ')}` : '')
+        + (swimMissing.length ? ` · 查不到：${swimMissing.join(', ')}` : ''))
 
     check(!/['"][^'"]*\.(webm|mp4|mov)['"]/.test(clientSrc),
       'the bundle references no external video file', 'no .webm/.mp4/.mov string in the bundle')
@@ -5348,10 +5729,25 @@ if (clientSrc !== null) {
   if (clientSrc.includes('__SPRITES__')) bad('no leftover build placeholder', 'run `node build.mjs`')
   else ok('no leftover build placeholder')
 
-  // The bundle must be self-contained: a share carries no asset paths.
-  const refsAssetFile = /['"][^'"]*\.(?:webp|png)['"]/.test(clientSrc)
-  if (!refsAssetFile) ok('bundle references no external image files')
-  else bad('bundle references no external image files', 'a share would break on missing assets')
+  /* 自足性（1.43 立的规矩）：立绘是**内联**的 —— 一个包外路径都不能有，别人装走
+     也能直接画出来。
+     v1.47.0 给这条规矩开了一个**明确的例外**：帧动画素材是按 URL 外置加载的
+     （八条泳装 +30 MB，塞不进单文件），它的文件名就是 MOTION 清单里那几条，
+     由宿主路由发出来。所以这里查的是两件事，而不是笼统的"不许出现 .webp"：
+       ① 包体里出现的 .webp 文件名**只能**是 MOTION 清单里那几条 —— 多一条就意味着
+          有人又写死了一个路径，而那条路径在别人机器上不存在；
+       ② 立绘那一份仍然是 data URI（下面上面那条断言已经逐格查过）。
+     文件**不存在**不算失败：那是"这一段没有素材"，客户端有静默降级。 */
+  const motionBlock = (clientSrc.match(/const MOTION = \{[\s\S]*?\n {4}\}/) ?? [''])[0]
+  const manifestFiles = [...motionBlock.matchAll(/'([A-Za-z0-9._-]+\.webp)'/g)].map((m) => m[1])
+  const namedFiles = [...new Set([...clientSrc.matchAll(/['"]([A-Za-z0-9._-]+\.webp)['"]/g)].map((m) => m[1]))]
+  const strayFiles = namedFiles.filter((f) => !manifestFiles.includes(f))
+  if (manifestFiles.length > 0 && strayFiles.length === 0) {
+    ok('the bundle names no image file outside the MOTION manifest', `${manifestFiles.length} clip name(s): ${manifestFiles.join(', ')}`)
+  } else {
+    bad('the bundle names no image file outside the MOTION manifest',
+      strayFiles.length ? `stray: ${strayFiles.join(', ')}` : 'no MOTION manifest found')
+  }
 
   const stamped = clientSrc.match(/const VERSION = '([^']+)'/)
   if (stamped && stamped[1] === pkg.version) ok('the bundle stamps the package version', stamped[1])

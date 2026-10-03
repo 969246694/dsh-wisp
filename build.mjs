@@ -6,14 +6,22 @@
 
        { idle: "data:image/webp;base64,…", happy: …, sleepy: …, work: … }
 
-   …and __MOTION_LITERAL__ with the frame-animation clips (v1.46.5: two animated
-   WebPs — standing and sleeping; the table is whatever assets/motion/ holds):
+   …and __MOTION_LITERAL__ with the frame-animation **manifest** — v1.47.0: a small
+   table of clip file names, NOT the bytes. The bytes stay in assets/motion/
+   and are served to the page by the host half (lib/index.js registers
+   `/wisp-motion/` on the platform's HTTP carrier); the client half resolves
+   `new URL('wisp-motion/<file>', document.baseURI)`. Two 720p clips
+   base64-inlined to 7.83 MB of lib/client.js and the eight swimsuit clips
+   would have added ~30 MB more — multi-megabyte clips belong on disk, not
+   inside a single-file bundle:
 
-       { idle: "data:image/webp;base64,…", sleepy: "data:image/webp;base64,…" }
+       { idle: "idle.webp", sleepy: "sleepy.webp", swim_idle: "swim_idle.webp", ... }
 
-   Embedding rather than shipping asset files is deliberate: the delivered
-   plugin is a single self-contained file, so a share carries no path, no
-   extra route, and no missing-asset failure mode.
+   Embedding the SPRITES stays deliberate: the delivered plugin is a single
+   self-contained client file, so a share carries no path, no extra route, and
+   no missing-asset failure mode — for ~120 KB sprites that trade is a clear
+   win. The clips are the one asset class where it goes the other way, and they
+   degrade silently back to the static sprite when the route is absent.
 
    RUN
      node build.mjs                      # default tier: 1024x1536 —— 这一档进包，也是唯一被显示的
@@ -133,17 +141,26 @@ if (existsSync(audioDir)) {
 }
 if (Object.keys(sounds).length > 0) console.log(`  audio: ${Object.keys(sounds).join(', ')}`)
 
-/* ---- 帧动画（motion）：assets/motion/<名字>.webp -> { <名字>: "data:image/webp;base64,…" }。
+/* ---- 帧动画（motion）：assets/motion/<皮肤>_<状态>.webp -> { <素材名>: "<文件名>.webp" }。
+
+   v1.47.0 起这里是**清单，不是字节**。表里存的是文件名，字节留在
+   assets/motion/ 里，由宿主半包（lib/index.js）注册的 `/wisp-motion/` 路由
+   发到页面上；客户端半包拿到的是 `new URL('wisp-motion/<文件>', baseURI)`。
+   为什么必须这样：720p 的动图是 MB 级素材 —— 通用那两条内联就是 7.83 MB，
+   八条泳装再加约 30 MB，浏览器半包会到 ~45 MB。素材放哪儿是"投递"要回答的
+   问题，不是"再压一压"能解决的；把 ~30 MB 从单文件里挪到十几个静态文件，
+   客户端半包回到 ~7 MB，而她现在还是那一个她。
 
    和音效同一档待遇：**可选**。没有文件就是空对象，客户端据此连 <img> 都不建 ——
    一个"永远不播的空盒子"比没有它更糟（它会占位、会吃内存、还要有人去解释它）。
 
-   MIME 写死 image/webp，别的扩展名一律不认：这一档素材是**动图 WebP**（VP8X +
-   一串 ANMF，alpha 写在格式里）。v1.46.1 之前这里是 alpha 视频（.webm / VP9 +
-   alpha 平面），换掉的原因是**这个壳不还原 VP9 的 alpha** —— 同一段素材她在暗色
-   主题下渲染成黑色剪影、亮色主题下白色剪影（用户确认过）。图片路径的 alpha 是
-   硬的：<img> 播动图时浏览器直接按 alpha 合成。收别的格式进来，透明处会变成一块
-   黑底。 */
+   为什么只认 .webp：这一档素材是**动图 WebP**（VP8X + 一串 ANMF，alpha 写在
+   格式里）。v1.46.1 之前这里是 alpha 视频（.webm / VP9 + alpha 平面），换掉的
+   原因是**这个壳不还原 VP9 的 alpha** —— 同一段素材她在暗色主题下渲染成黑色
+   剪影、亮色主题下白色剪影（用户确认过）。图片路径的 alpha 是硬的：<img> 播
+   动图时浏览器直接按 alpha 合成。收别的格式进来，透明处会变成一块黑底。
+   扩展名之外还要验 RIFF/WEBP 魔数：名字对了、内容不是 WebP 的失败是**静默**的
+   （<img> 加载失败、画面回到立绘），只有构建能拦。 */
 const motionDir = join(assetsDir, 'motion')
 const motion = {}
 let motionRaw = 0
@@ -151,10 +168,15 @@ for (const name of existsSync(motionDir) ? readdirSync(motionDir).sort() : []) {
   if (!name.toLowerCase().endsWith('.webp')) continue
   const file = join(motionDir, name)
   const bytes = readFileSync(file)
+  const riff = bytes.length > 12 && bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP'
+  if (!riff) {
+    console.error(`build: assets/motion/${name} is not a WebP (RIFF….WEBP) — the page would show a broken image and silently fall back`)
+    process.exit(1)
+  }
   const key = name.slice(0, -'.webp'.length)
-  motion[key] = `data:image/webp;base64,${bytes.toString('base64')}`
+  motion[key] = name
   motionRaw += bytes.length
-  console.log(`  motion: ${key}  ${(bytes.length / 1024).toFixed(1)} KB raw  /  ${(motion[key].length / 1024).toFixed(1)} KB base64  <- ${file.slice(here.length + 1)}`)
+  console.log(`  motion: ${key}  ${(bytes.length / 1024).toFixed(1)} KB on disk  ->  /wisp-motion/${name}`)
 }
 
 const sprites = {}
@@ -289,9 +311,11 @@ try {
   process.exit(1)
 }
 
-/* 同一道防线给 MOTION：表必须真的存在、真的能求值，而且每个值都必须是 image/webp 的
-   data URI。写坏一个 key（例如把 .webp 之外的素材塞进 assets/motion/）时，客户端
-   会建一个永远不动/一加载就报错的 <img>，而失败是**静默**的 —— 只有这里能拦。 */
+/* 同一道防线给 MOTION：表必须真的存在、真的能求值，而且每个值都必须是
+   assets/motion/ 下真实存在的 <名字>.webp（v1.47.0：是**文件名**，不是 data URI）。
+   写坏一个 key（例如把 .webp 之外的素材塞进 assets/motion/、或者构建退回内联却
+   只写了一半个表）时，客户端会建一个永远不动/一加载就报错的 <img>，而失败是
+   **静默**的 —— 只有这里能拦。 */
 const motionTable = out.match(/const MOTION = \{([\s\S]*?)\n {4}\}/)
 if (!motionTable) {
   console.error('build: the injected MOTION table is missing; aborting')
@@ -299,13 +323,24 @@ if (!motionTable) {
 }
 try {
   const value = new Function(`${motionTable[0]}\nreturn MOTION`)()
-  const broken = Object.keys(value).filter((key) => typeof value[key] !== 'string' || value[key].indexOf('data:image/webp;base64,') !== 0)
+  const broken = Object.keys(value).filter((key) => {
+    const file = value[key]
+    if (typeof file !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.webp$/.test(file)) return true
+    return !existsSync(join(motionDir, file))
+  })
   if (broken.length > 0) {
-    console.error(`build: MOTION entries are not inlined image/webp data URIs: ${broken.join(', ')}; aborting`)
+    console.error(`build: MOTION entries are not clips that exist under assets/motion/: ${broken.join(', ')}; aborting`)
     process.exit(1)
   }
   if (Object.keys(value).length !== Object.keys(motion).length) {
     console.error(`build: MOTION holds ${Object.keys(value).length} clips, expected ${Object.keys(motion).length}; aborting`)
+    process.exit(1)
+  }
+  /* 内联的那一份必须**小**：它就是一张文件名清单（每条几十字节）。哪天有人
+     把字节塞回表里，这一条会当场红 —— 那正是 1.47.0 要解决的事。 */
+  const inlineBytes = Object.entries(value).reduce((n, [k, v]) => n + String(k).length + String(v).length + 8, 0)
+  if (inlineBytes > 2048) {
+    console.error(`build: the MOTION manifest is ${inlineBytes} bytes — it must stay a name list (${Object.keys(value).length} clips); aborting`)
     process.exit(1)
   }
 } catch (error) {
@@ -319,10 +354,11 @@ const kb = (n) => (n / 1024).toFixed(1)
 console.log(`\n  sprites total   ${kb(total)} KB`)
 console.log(`  base64 inlined  ${kb(out.length)} KB`)
 if (Object.keys(motion).length > 0) {
-  /* 帧动画的体积账单独打一行：它是**唯一**一个进包的动图，而预算（verify-wisp.mjs）
-     盯的是 base64 之后的长度，不是原始文件大小。 */
-  console.log(`  motion raw      ${kb(motionRaw)} KB  (${Object.keys(motion).join(', ')})`)
-  console.log(`  motion inlined  ${kb(Object.values(motion).reduce((n, uri) => n + uri.length, 0))} KB  base64`)
+  /* 帧动画的体积账单独打两行（v1.47.0）：素材字节**不进包**，进包的只有一张
+     文件名清单。预算（verify-wisp.mjs）盯的是这两件事分开的两个数：磁盘上
+     有多少素材、单文件里为它多花了多少字节。 */
+  console.log(`  motion clips    ${kb(motionRaw)} KB on disk  (${Object.keys(motion).join(', ')})`)
+  console.log(`  motion manifest ${Object.values(motion).join('').length + Object.keys(motion).join('').length} B inlined  base64 none — served by the host half at /wisp-motion/`)
 }
 console.log(`  wrote           lib/client.js`)
 

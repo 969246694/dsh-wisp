@@ -28,7 +28,8 @@
  * 退出码：0 通过或跳过 · 1 有检查没过 · 2 环境起不来（找不到可用的调试端口）
  * ------------------------------------------------------------------------- */
 import { spawn } from 'node:child_process'
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { readFileSync, mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,7 +41,11 @@ const bundle = readFileSync(join(here, 'lib', 'client.js'), 'utf8')
    **等于素材实际宽度**，而不是等于一个写死在探针里的 720 —— 素材换了尺寸、探针还
    念着旧数字，正是这种断言最该抓到的漂移。 */
 const motionCanvas = (name) => {
-  const buf = readFileSync(join(here, 'assets', 'motion', name))
+  const file = join(here, 'assets', 'motion', name)
+  /* 缺素材不是崩溃的理由：探针要能**报**"这一条没有/解不开"，而不是在 readFileSync
+     上抛出去 —— 那样整份探针会在第一条缺失的素材上停住，后面的断言一条都跑不到。 */
+  if (!existsSync(file)) return { w: 0, h: 0 }
+  const buf = readFileSync(file)
   for (let off = 12; off + 8 <= buf.length;) {
     const id = buf.subarray(off, off + 4).toString('latin1')
     const size = buf.readUInt32LE(off + 4)
@@ -76,6 +81,46 @@ if (!executablePath) {
 }
 
 const PORT = Number(process.env.WISP_CDP_PORT ?? 9333)
+
+/* ---- 探针自己起一个最小的 HTTP 载体（v1.47.0）--------------------------------
+   动图不再是内联的 data URI，而是**页面自己 origin 下**的文件
+   `new URL('wisp-motion/<文件>', document.baseURI)`。所以"真引擎里它解得开吗"
+   这个问题必须先有一个真的 origin 才能问：about:blank 上 baseURI 不是可解析的
+   基址，那一行会抛，探针就会变成在测"环境不像真页面"。
+
+   这里发的两个东西就是投递链的两端：
+     /probe.html          一个空页面（就是页面的 base）
+     /wisp-motion/<文件>   assets/motion/ 里的真字节，规则与宿主半包那个 handler 一致
+   （宿主那一半在 verify-wisp.mjs 里被直接驱动着查过一遍；这里负责**浏览器**那一半：
+   真 <img>、真解码、真 naturalWidth。） */
+const MOTION_ROUTE = '/wisp-motion/'
+const clipHits = new Map()
+const clipServer = createServer((req, res) => {
+  let pathname = '/'
+  try { pathname = new URL(String(req.url ?? '/'), 'http://127.0.0.1').pathname } catch (e) { /* keep '/' */ }
+  if (pathname === '/' || pathname === '/probe.html') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end('<!doctype html><html><head><meta charset="utf-8"><title>wisp engine probe</title></head><body></body></html>')
+    return
+  }
+  if (pathname.startsWith(MOTION_ROUTE)) {
+    const name = pathname.slice(MOTION_ROUTE.length)
+    const safe = /^[A-Za-z0-9][A-Za-z0-9._-]*\.webp$/.test(name)
+    const file = safe ? join(here, 'assets', 'motion', name) : null
+    if (file === null || !existsSync(file)) { res.writeHead(404); res.end(); return }
+    clipHits.set(name, (clipHits.get(name) ?? 0) + 1)
+    const bytes = readFileSync(file)
+    res.writeHead(200, { 'content-type': 'image/webp', 'content-length': String(bytes.length) })
+    res.end(bytes)
+    return
+  }
+  res.writeHead(404); res.end()
+})
+const ORIGIN = await new Promise((resolve, reject) => {
+  clipServer.once('error', reject)
+  clipServer.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${clipServer.address().port}`))
+})
+
 const profile = mkdtempSync(join(tmpdir(), 'wisp-probe-'))
 const child = spawn(executablePath, [
   '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
@@ -96,6 +141,7 @@ const head = (title) => console.log(`\n=== ${title} ===`)
 
 const cleanup = async () => {
   try { child.kill() } catch (e) { /* ignore */ }
+  try { clipServer.close() } catch (e) { /* ignore */ }
   await sleep(300)
   try { rmSync(profile, { recursive: true, force: true }) } catch (e) { /* ignore */ }
 }
@@ -151,6 +197,22 @@ const evaluate = async (expression) => {
 try {
   await send('Runtime.enable')
   await send('Page.enable')
+
+  /* 页面必须落在一个**真的 origin** 上（见上面 clipServer 那段）：动图是相对
+     `document.baseURI` 解析的，about:blank 上解析不出来 —— 而那是探针环境的问题，
+     不是插件的问题。导航之后等 load 再注入半包。 */
+  const loaded = new Promise((resolve) => {
+    const onMessage = (ev) => {
+      const msg = JSON.parse(ev.data)
+      if (msg.method === 'Page.loadEventFired') { ws.removeEventListener('message', onMessage); resolve(true) }
+    }
+    ws.addEventListener('message', onMessage)
+  })
+  await send('Page.navigate', { url: `${ORIGIN}/probe.html` })
+  await Promise.race([loaded, sleep(5000)])
+  const origin = await evaluate('location.origin')
+  check(origin === ORIGIN, 'the probe page runs on a real origin, so the clip URLs can resolve',
+    `${String(origin)} vs ${ORIGIN}`)
 
   console.log(`engine-probe: ${executablePath}`)
 
@@ -705,6 +767,148 @@ try {
   JSON.stringify(clipFailed))
 
   await evaluate(`window.__wisp.mood('idle')`)
+
+  /* ---- 泳装那八条：在真引擎里逐条解开（v1.47.0）------------------------------
+     "素材落盘了"和"页面上真的画出来了"是两件事。动图这条路（外置 URL -> <img> ->
+     浏览器解码）只有真引擎能回答三个问题：URL 解析得出来吗、720x1280 的动图 WebP
+     解得开吗（naturalWidth 是不是素材自己的宽度）、在**变换之前**是不是正好落在
+     立绘那一格里。八条是八份独立素材，所以逐条查 —— 一条坏了在页面上只会表现为
+     "她这个状态不动"，而那是静默降级，没有任何报错。 */
+  const SWIM_STATES = [
+    ['idle', 'swim_idle'], ['attn', 'swim_attn'], ['happy', 'swim_happy'], ['sleep', 'swim_sleepy'],
+    ['alert', 'swim_work'], ['proud', 'swim_proud'], ['eat', 'swim_eat'], ['poked', 'swim_poked'],
+  ]
+  const SWIM_CANVAS = Object.fromEntries(SWIM_STATES.map(([, clip]) => [clip, motionCanvas(`${clip}.webp`)]))
+  /* 判据是**磁盘上实际带着什么**：八条都在就逐条查，一条都没有就查真引擎里的静默降级。
+     两者都是真的断言 —— 没有空过的一档（同 verify-wisp.mjs 的 SHIPPED_SWIM）。 */
+  const SHIPPED_SWIM = existsSync(join(here, 'assets', 'motion'))
+    ? readdirSync(join(here, 'assets', 'motion')).filter((f) => /^swim_[a-z]+\.webp$/.test(f)).sort()
+    : []
+  if (SHIPPED_SWIM.length === 8) {
+  const swimClips = await evaluate(`(async () => {
+    const waitFor = async (ok, ms) => {
+      const until = Date.now() + ms
+      while (Date.now() < until) { const v = ok(); if (v) return v; await new Promise((r) => setTimeout(r, 50)) }
+      return ok()
+    }
+    window.__wisp.configure({ motion: 'full' })
+    window.__wisp.setSkin('swim')
+    const out = []
+    for (const [state, clip] of ${JSON.stringify(SWIM_STATES)}) {
+      window.__wisp.mood(state)
+      const motion = await waitFor(() => {
+        const el = document.querySelector('.wisp-video')
+        return el && el.dataset.clip === clip && el.complete && el.naturalWidth > 0 ? el : null
+      }, 8000)
+      const img = document.querySelector('.wisp-img')
+      if (!motion) { out.push({ state, clip, built: false }); continue }
+      /* 与立绘同格必须在**变换之前**量（和 idle / sleepy 两段用同一把尺子）。 */
+      const saved = motion.style.transform
+      motion.style.transform = 'none'
+      const a = motion.getBoundingClientRect()
+      motion.style.transform = saved
+      const b = img.getBoundingClientRect()
+      out.push({
+        state, clip, built: true, tag: String(motion.tagName),
+        src: String(motion.getAttribute('src')),
+        w: motion.naturalWidth, h: motion.naturalHeight, complete: motion.complete,
+        display: getComputedStyle(motion).display,
+        visibility: getComputedStyle(img).visibility,
+        frame: document.querySelector('.wisp-root').dataset.frame ?? null,
+        dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top),
+        dw: Math.abs(a.width - b.width), dh: Math.abs(a.height - b.height),
+      })
+    }
+    return out
+  })()`)
+  const swimMissing = swimClips.filter((c) => c.built !== true || c.tag !== 'IMG')
+  check(swimMissing.length === 0,
+    'all eight swimsuit clips really decode in the engine — every state builds its own <img> from the host route (v1.47.0)',
+    swimMissing.length ? swimMissing.map((c) => `${c.state}/${c.clip ?? '?'}`).join(', ') : swimClips.map((c) => c.clip).join(', '))
+  const swimSize = swimClips.filter((c) => c.built === true
+    && (c.w !== SWIM_CANVAS[c.clip]?.w || c.h !== SWIM_CANVAS[c.clip]?.h))
+  check(swimSize.length === 0,
+    "and each one decodes at its asset's own size — naturalWidth comes from assets/motion/<clip>.webp, not from a number written here",
+    swimSize.length
+      ? swimSize.map((c) => `${c.clip}: ${c.w}x${c.h} vs ${SWIM_CANVAS[c.clip]?.w}x${SWIM_CANVAS[c.clip]?.h}`).join(' | ')
+      : swimClips.map((c) => `${c.clip} ${c.w}x${c.h}`).join(', '))
+  const swimBox = swimClips.filter((c) => c.built === true
+    && !(c.dx < 1 && c.dy < 1 && c.dw < 1 && c.dh < 1))
+  check(swimBox.length === 0,
+    'and every one is laid out on exactly the sprite box BEFORE its size correction — the correction is the only thing that moves her, never a second grid',
+    swimBox.length
+      ? swimBox.map((c) => `${c.clip}: d=${Number(c.dx).toFixed(2)},${Number(c.dy).toFixed(2)} s=${Number(c.dw).toFixed(2)}x${Number(c.dh).toFixed(2)}`).join(' | ')
+      : swimClips.map((c) => `${c.clip} d=${Number(c.dx).toFixed(2)},${Number(c.dy).toFixed(2)}`).join(', '))
+  const swimOwner = swimClips.filter((c) => c.built === true
+    && !(c.display !== 'none' && c.visibility === 'hidden' && c.frame === 'on'))
+  check(swimOwner.length === 0,
+    'and while each one plays the swimsuit sprite is out of the picture — one of her, in the real engine (v1.45.2 rule)',
+    swimOwner.length
+      ? swimOwner.map((c) => `${c.clip}: display=${c.display} sprite=${c.visibility} frame=${String(c.frame)}`).join(' | ')
+      : `${swimClips.length} clips: display!=none, sprite hidden, data-frame=on`)
+  const swimUrls = swimClips.filter((c) => c.built === true && !String(c.src).startsWith(`${ORIGIN}/wisp-motion/`))
+  check(swimUrls.length === 0 && [...SWIM_STATES].every(([, clip]) => (clipHits.get(`${clip}.webp`) ?? 0) > 0),
+    'and every clip really came over HTTP from the page’s own origin — the delivery path, not an inlined copy',
+    swimUrls.length
+      ? swimUrls.map((c) => `${c.clip}: ${c.src}`).join(' | ')
+      : `${clipHits.size} clip file(s) served, e.g. ${String(swimClips[0]?.src)}`)
+  } else {
+    /* 素材还没生成（0/8）：真引擎里要看到的是**静默降级** —— 泳装那一档一个动图元素
+       都不建、立绘一直在画面上，而且**不许**退回通用那段循环（穿着泳装播别的皮肤的
+       动作，比不动更糟）。然后换回一套有素材的皮肤，动图必须立刻回来 ——
+       这一条把"这个皮肤没有素材"和"帧动画坏了"分开。 */
+    const swimQuiet = await evaluate(`(async () => {
+      const waitFor = async (ok, ms) => {
+        const until = Date.now() + ms
+        while (Date.now() < until) { const v = ok(); if (v) return v; await new Promise((r) => setTimeout(r, 50)) }
+        return ok()
+      }
+      window.__wisp.configure({ motion: 'full' })
+      window.__wisp.setSkin('swim')
+      const leaks = []
+      for (const [state] of ${JSON.stringify(SWIM_STATES)}) {
+        window.__wisp.mood(state)
+        await waitFor(() => false, 120)
+        const v = document.querySelector('.wisp-video')
+        if (v && getComputedStyle(v).display !== 'none') leaks.push(state + ':' + (v.dataset.clip ?? '?'))
+      }
+      const img = document.querySelector('.wisp-img')
+      const quiet = {
+        leaks,
+        sprite: getComputedStyle(img).visibility,
+        frame: document.querySelector('.wisp-root').dataset.frame ?? null,
+        asset: window.__wisp.doctor().motion.frame.asset,
+      }
+      window.__wisp.mood('idle')
+      await waitFor(() => false, 120)
+      const beforeSwitch = document.querySelector('.wisp-video')
+      const beforeVideos = [...document.querySelectorAll('.wisp-video')]
+        .map((v) => String(v.dataset.clip) + ':' + getComputedStyle(v).display)
+      window.__wisp.setSkin('deepsea')
+      /* 用 idle 而不是 sleep：这一页上半段那条"加载失败静默降级"的检查**故意**把
+         sleepy 这一段标成坏过的（失败按素材记，不再重指源），拿它当"回来了"的判据
+         会测到那条规则头上。 */
+      const back = await waitFor(() => {
+        const v = document.querySelector('.wisp-video')
+        return v && v.dataset.clip === 'idle' && v.complete && v.naturalWidth > 0 ? v : null
+      }, 8000)
+      return {
+        quiet,
+        beforeSwitch: beforeVideos.length === 0 || beforeVideos.every((s) => s.endsWith(':none')),
+        beforeVideos,
+        backClip: back === null ? null : back.dataset.clip,
+        backW: back === null ? 0 : back.naturalWidth,
+      }
+    })()`)
+    check(swimQuiet.quiet.leaks.length === 0 && swimQuiet.quiet.sprite === 'visible'
+      && swimQuiet.quiet.frame === null && swimQuiet.quiet.asset === null,
+      'with no swimsuit clips shipped, the engine builds NO frame layer for any of the eight states — and the sprite keeps the picture (v1.47.0)',
+      `leaks=${swimQuiet.quiet.leaks.join(',') || 'none'} sprite=${swimQuiet.quiet.sprite} data-frame=${String(swimQuiet.quiet.frame)} asset=${String(swimQuiet.quiet.asset)}`)
+    check(swimQuiet.beforeSwitch === true && swimQuiet.backClip === 'idle' && swimQuiet.backW > 0,
+      'and a skin WITH clips brings the animation straight back in the same engine — missing swimsuit art is not a broken frame layer',
+      `swim/idle quiet=${swimQuiet.beforeSwitch} → deepsea/idle clip=${String(swimQuiet.backClip)} ${swimQuiet.backW}px wide`)
+    console.log(`  NOTE  ${SHIPPED_SWIM.length}/8 swimsuit clips generated yet — the eight-clip checks are replaced by the degradation checks above`)
+  }
 
   console.log(`\n=== ${failures === 0 ? 'ENGINE PROBE PASSED' : `${failures} PROBE CHECK(S) FAILED`} ===`)
 } finally {
