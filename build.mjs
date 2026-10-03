@@ -6,10 +6,10 @@
 
        { idle: "data:image/webp;base64,…", happy: …, sleepy: …, work: … }
 
-   …and __MOTION_LITERAL__ with the frame-animation clips (currently one animated
-   WebP — the sleeping loop):
+   …and __MOTION_LITERAL__ with the frame-animation clips (v1.46.5: two animated
+   WebPs — standing and sleeping; the table is whatever assets/motion/ holds):
 
-       { sleepy: "data:image/webp;base64,…" }
+       { idle: "data:image/webp;base64,…", sleepy: "data:image/webp;base64,…" }
 
    Embedding rather than shipping asset files is deliberate: the delivered
    plugin is a single self-contained file, so a share carries no path, no
@@ -58,11 +58,13 @@ const OPTIONAL_MOODS = ['report']
 /* 皮肤 = assets/ 下的一个子目录，里面是这套皮肤的 <mood>[_tier].webp。
    如果没有子目录含精灵图，就把 assets/ 本身当作一个名为 default 的皮肤 ——
    这样 --from <任意目录> 的单套素材用法仍然成立。 */
-const SKIN_LABELS = { deepsea: '深海女仆', canon: '原版女仆', classic: '素绘女仆', default: '默认' }
+/* 这份只用于构建日志（菜单用的是客户端半包里那份）。原来它漏了 night / pajama，
+   构建时显示的是裸 id —— 顺手补齐，免得下一次又以为"名字没生效"。 */
+const SKIN_LABELS = { deepsea: '深海女仆', canon: '原版女仆', classic: '素绘女仆', night: '宵蓝礼服', pajama: '宵眠睡衣', swim: '碧海泳装', default: '默认' }
 const skinLabel = (id) => SKIN_LABELS[id] ?? id
 /* 顺序即优先级：列表里第一个就是默认皮肤。不这么写的话默认值会由目录名的字母序
    决定 —— 那是构建实现的偶然，不该变成产品行为。未列出的排在后面。 */
-const SKIN_PRIORITY = ['deepsea', 'canon', 'classic', 'night', 'pajama']
+const SKIN_PRIORITY = ['deepsea', 'canon', 'classic', 'night', 'pajama', 'swim']
 const skinRank = (id) => {
   const at = SKIN_PRIORITY.indexOf(id)
   return at < 0 ? SKIN_PRIORITY.length : at

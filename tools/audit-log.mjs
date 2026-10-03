@@ -99,7 +99,14 @@ export function verifyAudit(root = here) {
     if (chainHash(e) !== e.hash) problems.push('第 ' + e.index + ' 条内容被改动（hash 不匹配）')
     prev = e.hash
   }
-  const assets = log.filter((e) => e.kind === 'confirm' && e.output && e.output.path)
+  /* 同一个入包文件被**重出**过时，日志里会有多条 confirm —— 历史必须留着（那正是这个日志
+     存在的意义），但要比对的是**最新**那一条：它才代表现在入包的东西。旧条目标为「已被取代」，
+     记录在案、不再参与哈希比对；否则任何一次重出都会让预检永久变红。 */
+  const confirms = log.filter((e) => e.kind === 'confirm' && e.output && e.output.path)
+  const latestOf = new Map()
+  for (const e of confirms) latestOf.set(e.output.path, e)
+  const assets = [...latestOf.values()]
+  const superseded = confirms.filter((e) => latestOf.get(e.output.path) !== e)
   for (const e of assets) {
     const p = resolve(root, e.output.path)
     if (!existsSync(p)) { problems.push(e.output.path + ' 不见了'); continue }
@@ -109,6 +116,7 @@ export function verifyAudit(root = here) {
   const declaredNone = log.filter((e) => e.kind === 'declare' && e.declared
     && Array.isArray(e.declared.reference_images) && e.declared.reference_images.length === 0)
   return { entries: log.length, assets, problems, img2img, declaredNone: declaredNone.length,
+    superseded: superseded.length,
     backfilled: log.filter((e) => e.source === 'registry-backfill').length }
 }
 
@@ -131,8 +139,9 @@ if (flag('--verify')) {
   }
   const img2img = log.filter((e) => e.registry && e.registry.tool === 'edit_image')
   const unknown = log.filter((e) => e.registry && e.registry.tool && !['generate_image', 'batch_generate_images', 'edit_image'].includes(e.registry.tool))
-  console.log(`  记录 ${log.length} 条（declare ${log.filter((e) => e.kind === 'declare').length} / confirm ${assets.length} / backfill ${log.filter((e) => e.source === 'registry-backfill').length}）`)
+  console.log(`  记录 ${log.length} 条（declare ${log.filter((e) => e.kind === 'declare').length} / confirm ${log.filter((e) => e.kind === 'confirm').length} / backfill ${log.filter((e) => e.source === 'registry-backfill').length}）`)
   console.log(`  覆盖入包素材 ${assets.length} 个，全部存在且哈希一致：${missing === 0 && bad === 0 ? '是' : '否'}`)
+  if (res.superseded > 0) console.log(`  另有 ${res.superseded} 条是同一文件的更早版本（重出记录：历史保留、不参与比对）`)
   console.log(`  代理登记表显示使用过 edit_image（图生图）的条目：${img2img.length}`)
   if (img2img.length > 0) for (const e of img2img) console.log(`    ⚠ ${e.name}  ${e.registry.createdAt}`)
   if (unknown.length > 0) console.log(`  ⚠ 未识别的工具名：${unknown.map((e) => e.registry.tool).join(', ')}`)
