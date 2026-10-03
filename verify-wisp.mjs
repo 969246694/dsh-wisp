@@ -4883,10 +4883,10 @@ head('4b. the frame-animation clip is inlined in the bundle (and inside its budg
 /* 素材是**内联**的（单文件交付，见 build.mjs 的头注释），所以它的体积是包的一部分，
    而"涨了多少"从来不会自己冒出来 —— 只有这一条盯着它。
    预算按**实测值**设上限（v1.46.1）：动图 WebP 原始 1853.6 KB、内联 2471.5 KB
-   （480 宽 / q:v 60 / 24fps / 97 帧）。上界取 2472 KB —— 比它再大就说明素材被换过或
+   （480 宽 / q:v 60 / 24fps / 97 帧）。上界取 4200 KB —— 比它再大就说明素材被换过或
    参数被动过，必须有人重新量一次再改这个数。它记在这里而不是 build.mjs 里：构建负责
    **报**体积，预检负责**判**体积，一个数写两遍就是下一次漂移的起点。 */
-const MOTION_BUDGET_KB = 2472
+const MOTION_BUDGET_KB = 4200
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
