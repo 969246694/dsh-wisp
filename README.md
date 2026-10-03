@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.46.5`** · 零依赖 · 单文件客户端半包（精灵图与帧动画都内嵌为 data URI）
+**当前版本 `1.47.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -38,6 +38,7 @@ DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 | 换表情会动 | `happy` / `poked` / `attn` 等有表情的状态切换时弹一下；**同一个表情再来一次也弹**（第二下不出声会被读成卡住） |
 | 溜达有方向 | 自己踱步时朝行进方向微微前倾（最多 2.5°），像"往那边去"而不是"被平移过去" |
 | 动作幅度可调 | 菜单「行为 → 动作幅度」三选一：**灵动 / 克制（半幅）/ 静止**。`静止` 连呼吸、`z` 与帧动画一起停 |
+| 帧动画开关 | 菜单「行为 → **帧动画**」一个开关：关掉后画面永远交给静态立绘，**其余动作照旧**（这是它和 `静止` 档的分工）。默认开；配置键 `frame` |
 | 睡着时会动 | `sleep` 上叠另一段 **动图 WebP**（`<img>`，她睡着时被子那点极小的起伏）。两段素材（`idle` / `sleepy`）都是 720×1280、24fps、4.04 秒、97 帧一帧不抽；**换状态时同一个 `<img>` 换源**，不重建元素。**「静止」档与系统的「减少动态效果」会把动图藏起来、把画面交回静态立绘**，躲起来时也一样（动图没有 `pause()` 可喊） |
 
 外层 `pointer-events:none`，只有**她自己的轮廓**可点：命中层带一层由 alpha 蒙版生成的
@@ -53,13 +54,13 @@ dsh-wisp-plugin/
 ├── package.json          dsh.bundle.patch + dsh.client.platform，零依赖
 ├── cordis.patch.yml      插入一行 host 入口（指向 dsh-wisp，绝不能是 dsh-wisp/client）
 ├── lib/
-│   ├── index.js          host 半包：注册两个 handler（检查更新 / 查余额），不做别的
+│   ├── index.js          host 半包：检查更新 / 查余额两个 handler + 帧动画素材路由 /wisp-motion/
 │   ├── client.template.js  浏览器半包源码（唯一需要编辑的文件）
 │   └── client.js         由 build.mjs 生成，勿手改
 ├── assets/               六套皮肤 × 8 张 1024x1536 透明 WebP
-│   ├── motion/           帧动画素材（动图 WebP，内联成 data URI）
+│   ├── motion/           帧动画素材（动图 WebP；由宿主半包的路由发给页面，不进客户端包体）
 │   └── audio/            音效（可选，内联）
-├── build.mjs             注入精灵图 + 帧动画 + 建造防线
+├── build.mjs             注入精灵图 + 帧动画**清单** + 建造防线
 ├── verify-wisp.mjs       预检：两套契约 + 真实执行
 ├── NOTICE.md             角色来源与许可
 └── README.md             本文件
@@ -83,7 +84,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **760 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **781 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -149,12 +150,12 @@ node tools/pack-check.mjs
 **为什么不能靠"我看过 files[] 了"**：包里的文档指向包外、`tools/` 少声明一个、素材没打进去 ——
 这些都要真的解出副本才暴露。这个检查第一次跑就抓到了 README 里指向开发机绝对路径的死引用。
 
-当前包：**71 个文件 / 27.2 MB**（tarball 22.6 MB），其中 `assets/` 占 50 个文件、11.1 MB —— 但**运行时只会读全部 50 个**：
+当前包：**71 个文件 / 19.7 MB**（tarball 17.4 MB），其中 `assets/` 占 50 个文件、11.3 MB —— 但**运行时只会读全部 50 个**：
 
 | 素材 | 数量 | 体积 | 运行时 |
 |---|---|---|---|
-| 默认档 1024×1536（6 套皮肤 × 8 情绪） | 48 | 5.3 MB | ✅ 全都被 base64 进 JS（精灵图 7.0 MB） |
-| `motion/idle.webp` + `motion/sleepy.webp` | 2 | 5.9 MB | ✅ 同样是内联（**+7.8 MB** base64），进到对应状态时才解码 |
+| 默认档 1024×1536（6 套皮肤 × 8 情绪） | 48 | 5.4 MB | ✅ 全都被 base64 进 JS（精灵图 7.4 MB） |
+| `motion/*.webp`（通用两条，泳装八条待生成） | 10 | 每条 2~3 MB | ✅ **1.47.0 起不再内联**：由宿主半包 `/wisp-motion/` 路由按 URL 发（客户端里只有一张文件名清单，十条合计 30 字节量级） |
 | `_hi` 2048×3072 | 35 | 8.1 MB | ❌ 已从仓库删除（2026-09-30），要重新生成 |
 | `_md` 512×768 | 35 | 1.5 MB | ❌ 从不读取 |
 | `_sm` 256×384 | 35 | 0.6 MB | ❌ 从不读取 |
@@ -176,20 +177,69 @@ node tools/assets.mjs --from <绿幕母版目录> --skin <皮肤> --all-tiers   
 classic 皮肤的绿幕原图已经不在了，那些分档是**唯一**的重建来源，所以 `build.mjs --tier=…` 在
 别人的机器上仍然可用。
 
-**帧动画素材（1.45.0 起；1.46.1 换成动图 WebP；1.46.3 换 720p；1.46.4 修锯齿；1.46.5 增到两段）**：
-`assets/motion/` 下**两个文件**，一段对应一个状态 ——
+**帧动画素材（1.45.0 起；1.46.1 换成动图 WebP；1.46.3 换 720p；1.46.4 修锯齿；1.46.5 增到两段；1.47.0 起改成外置投递、并给泳装接上八个状态）**：
+`assets/motion/` 下每一个动图 WebP 对应**一个「皮肤+状态」** —— 通用两条（所有皮肤共用的
+`idle` / `sleepy`），泳装八条（`swim_<立绘名>`）。
 
-| 素材 | 谁在播 | 原始 | 内联（base64） | 幕布 | 不透明 / 半透明 / 幕布残留 |
-|---|---|---|---|---|---|
-| `idle.webp` | `idle`（默认状态，挂载即播） | 2693.3 KB | 3591.1 KB | 品红 `#FE01FF` | **27.016%** / 0.284% / **0.006%** |
-| `sleepy.webp` | `sleep` | 3318.6 KB | 4424.8 KB | 绿 `#A1E47B` | **17.379%** / 1.310% / **0.0017%** |
-| 合计 | | 6011.8 KB | **8015.8 KB（7.83 MB）** | | |
+| 素材 | 谁在播 | 体积（磁盘） | 幕布 | 不透明 / 半透明 / 幕布残留 |
+|---|---|---|---|---|
+| `idle.webp` | 各皮肤的 `idle` | 2693.3 KB | 品红 `#FE01FF` | **27.016%** / 0.284% / **0.006%** |
+| `sleepy.webp` | 各皮肤的 `sleep` | 3318.6 KB | 绿 `#A1E47B` | **17.379%** / 1.310% / **0.0017%** |
+| `swim_idle` / `swim_attn` / `swim_happy` / `swim_sleepy` / `swim_work` / `swim_proud` / `swim_eat` / `swim_poked` | 泳装的八个状态 | 见 1.47.0 小节 | 品红 | 见 1.47.0 小节 |
 
-两条都是**动图 WebP**（RIFF/WEBP + 97 个 ANMF 帧块，alpha 写在格式里）、**720×1280**、
-24 fps、97 帧、4.04 秒循环（`-loop 0`）。预检里有一条 **8820 KB 的预算**盯着合计内联值
-（= 实测 8015.8 KB + 约 10%）：素材哪天涨了会红，不会悄悄进包。
+十条都是**动图 WebP**（RIFF/WEBP + 一串 ANMF 帧块，alpha 写在格式里）、**720×1280**、
+24 fps、97 帧、4.04 秒循环（`-loop 0`）。
 
-编码命令（原素材 720×1280 / 24fps，一帧不抽；两条各一条命令）：
+**投递方式在 1.47.0 换了，这是这一版的重点**：素材**不再内联**。客户端半包里的 `MOTION`
+表存的是**文件名**（`{ idle: 'idle.webp', swim_idle: 'swim_idle.webp', … }`，十条合计 30 字节
+量级），字节留在 `assets/motion/` 里，由**宿主半包**（`lib/index.js`）注册的
+`/wisp-motion/<文件>` 路由发给页面；客户端只做
+`new URL('wisp-motion/<文件>', document.baseURI)`。
+
+为什么必须这样：720p 的动图是 MB 级素材 —— 通用那两条内联就是 7.83 MB，八条泳装再内联
+会到 ~45 MB。换外置之后 `lib/client.js` 从 **15.3 MB 回到 7.8 MB**。预算因此分成两个数：
+**内联**（清单，≤ 2048 字节）与**磁盘**（素材仍然跟着包走，涨了要有人重新量一次）。
+
+为什么是它、不是什么：`@deepseek-ai/dsh-client-resources` **不是**一条素材路 —— 它是
+`dsh-resource://` 的**取值**模型（要有 provider、挂在 slot 上、给的是值不是图片 URL）。
+可行的是平台自己的 HTTP 载体：`ctx.webServer.register` 是文档明写的插件扩展点
+（"let the feature plugins claim their routes"），`import.meta.url` 给包目录。
+
+**失败是静默的、而且是有意的**：路由不在（Desktop 载体没有 HTTP 服务器）、404、解码失败
+—— `<img>` 的 `error` 一到，动图藏起来、画面交回静态立绘，她还是好好地站在那儿。
+`__wisp.doctor().motion.frame` 会报出 `asset` / `src` / `failed`，一眼看得出是哪一种。
+
+编码命令（原素材 720×1280 / 24fps，一帧不抽；每条素材一条命令）：
+
+**泳装那八条（1.47.0，品红幕，全部按同一条配方）**：
+
+```
+# 0) 首帧 = 尾帧：品红画布 720x1280 + 立绘裁到包围盒(+12px) 后 scale=-1:1266，落底留 14px
+ffmpeg -f lavfi -i "color=c=0xFF00FF:s=720x1280" -i assets/swim/<状态>.webp \
+  -filter_complex "[1:v]crop=W:H:X:Y,scale=-1:1266:flags=lanczos[fg];[0:v][fg]overlay=(W-w)/2:H-h-14,format=rgb24" \
+  -frames:v 1 _first_<状态>.png     # 复制一份作 _last_<状态>.png
+
+# 1) 生成：mode=first_last_frame / model=2.5 / duration=4 / 720p / ratio=adaptive / generate_audio=false
+#    （首尾同一张 ⇒ 身份、画风、起手姿态被钉死，而且天然无缝循环）
+
+# 2) 抠像：幕布色**从生成片里采样**（crop=8:8:10:10 后读那一个像素），不是写死的
+ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#<采样色>:0.33:0.05,format=rgba,\
+       geq=r='r(X,Y)-max(0,min(r(X,Y),b(X,Y))-g(X,Y))':g='g(X,Y)':\
+           b='b(X,Y)-max(0,min(r(X,Y),b(X,Y))-g(X,Y))':a='alpha(X,Y)',\
+       scale=720:-1:flags=lanczos" \
+       -c:v libwebp_anim -loop 0 -an -q:v 40 assets/motion/swim_<立绘名>.webp
+```
+
+采样而不是写死是有理由的：生成片每次的"品红"都稍有不同（实测 `#FE01FF` / `#FF00FF` 都出现过），
+`colorkey` 的距离阈值按采样值算才是"离幕布多远"，按别人那一版的值算就是随缘。
+
+三个指标（每条素材都要量，**不透明 ≥ 15% 是硬门槛** —— 低于它说明她被她自己抠掉了）：
+
+* **不透明%**：`alpha == 255` 的像素占全片比例；
+* **半透明%**：`0 < alpha < 255`（平滑带，越高边缘越柔）；
+* **幕布残留%**：`alpha > 127` 且 RGB 与采样幕布色的三通道 L1 距离 / 765 ≤ 0.05 的像素比例。
+
+**两条通用素材的旧命令**（历史，配方没变）：
 
 ```
 # sleepy：绿幕 #A1E47B + RGB 去绿边 G = min(G, max(R,B))
@@ -234,9 +284,11 @@ ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#FE01FF:0.33:0.05,format=rgba,\
 83.5% 盒高（立绘 98.8%），要 `scale(1.186) translateY(7.84%)`；idle 那段占 97.2%，
 差 1.0~1.6% ⇒ **不补**（见 `lib/client.template.js` 里 `.wisp-video` 上那段推导与 1.46.5 小节）。
 
-它和精灵图一样**按需解码**：挂载时建一个 `<img>` 给 `idle`（默认状态就是它），
-换状态时**同一个元素换源**（不重建），`prefers-reduced-motion` / 静止档 / 躲起来时
-**把它藏起来、把画面交回静态立绘**（见变更日志：动图没有 `pause()` 可喊）。
+它和精灵图一样**按需解码**：挂载时建一个 `<img>` 给当前皮肤当前状态的那一段
+（默认皮肤是 `idle`），换状态**和换皮肤**时**同一个元素换源**（不重建），
+`prefers-reduced-motion` / 静止档 / 「帧动画」开关 / 躲起来时**把它藏起来、把画面交回
+静态立绘**（见变更日志：动图没有 `pause()` 可喊）。1.47.0 起这一段素材是从页面自己
+origin 的 `/wisp-motion/` 路由上取的 —— 路由不在就静默降级，见上文「投递方式」。
 
 ## 自检：`__wisp.doctor()`
 
@@ -341,6 +393,7 @@ node verify-wisp.mjs
 | `sleepAfterMs` | number | `90000` | 静置多久打盹，限制 `5000–3600000` |
 | `reactions` | boolean | `true` | 是否跟随 Agent 忙碌 / 输入框内容变情绪 |
 | `motion` | string | `'full'` | 动作幅度：`full` 灵动 / `subtle` 克制（半幅）/ `off` 静止（连呼吸、`z` 与帧动画一起停 —— 动图被藏起来、画面交回静态立绘）。认不出的值退回 `full` |
+| `frame` | boolean | `true` | **帧动画总开关**（`idle` / `sleep` 那两段动图）。关掉 = 画面永远交给静态立绘；与 `motion: 'off'` 不同，它**只收走动图**，呼吸、气泡、一次性动作照旧 |
 | `persist` | boolean | `true` | 是否跨刷新记住位置 |
 | `celebrate` | boolean | `true` | 一轮跑完是否庆祝一下 |
 | `celebrateAfterMs` | number | `2500` | 只庆祝跑够这么久的轮次（避免每次小工具调用都跳） |
@@ -614,6 +667,46 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 都有断言盯着。
 
 ## 变更
+
+### 1.47.0
+
+**新增「帧动画」独立开关。**
+
+动图化之后（1.46.5 起 `idle` 与 `sleep` 各有一段），"我不想让她一直动"只有一个粗开关：
+把「动作幅度」整个调到 `静止` —— 那是连呼吸、`z`、一次性动作一起停。现在多了一个**只管画面**的开关：
+右键 → 行为 → **帧动画**。关掉之后画面永远交给静态立绘，其余动作照旧。
+
+它走的是和"减少动态效果 / 静止档 / 躲起来"**同一条闸门** `motionFrozen()` ——
+一处判断，`syncMotion()` 用它决定画面归谁，`doctor()` 用它汇报，
+所以不会出现"报告说在动、画面上停着"这种分歧。配置键 `frame`（默认 `true`，也能在 profile 里写死）。
+
+`doctor().motion.frame` 多了一个 `enabled` 字段：一眼分清"她不动"是哪个原因（开关 / 幅度 / 系统设置 / 躲起来）。
+
+**帧动画素材改成外置投递：`lib/client.js` 15.3 MB → 7.8 MB。**
+
+720p 的动图是 MB 级素材：通用那两条内联就是 7.83 MB，八条泳装再内联会到 ~45 MB。
+所以 1.47.0 把**投递**换了一条路 —— 客户端半包里的 `MOTION` 表只留**文件名**，
+字节留在 `assets/motion/` 里，由**宿主半包**注册的 `/wisp-motion/<文件>` 路由发给页面
+（`ctx.webServer.register`），客户端只做 `new URL('wisp-motion/<文件>', document.baseURI)`。
+
+* **为什么是这条路**：`@deepseek-ai/dsh-client-resources` 查过了，**不是**素材路 ——
+  它是 `dsh-resource://<协议>` 的**取值**模型（要有 provider、挂在 slot 上、给的是值）；
+  平台给插件用的 HTTP 载体才是（`dsh-host-webserver` 明写"let the feature plugins claim
+  their routes"），而宿主半包是 Loader 按 ES module 导入的，`import.meta.url` 就是包目录。
+* **失败是静默的、有意的**：路由不在 / 404 / 解码失败 ⇒ `<img>` 的 `error` ⇒ 动图收起来、
+  画面交回静态立绘。`doctor().motion.frame` 报 `asset` / `src` / `failed`。
+* **体积实测**：内联部分 = 一张文件名清单（十条合计 **30 字节**量级，预检上界 2048 B）；
+  磁盘部分是十条素材本身（预检按实测设上限）。
+* **接线**：`MOTION_OF` 从"按状态"改成"按**皮肤+状态**"（`'swim:sleep' → 'swim_sleepy'`），
+  通用那一对（`idle` / `sleepy`）留给其它皮肤。换皮肤与换状态一样会**同时**换图与几何
+  （`applySkin()` 里那一句 `syncMotion()` 就是为它写的）。
+
+**泳装八个状态的素材：本轮没有生成出来。** 生成配方（首帧=尾帧 + 品红幕采样 + 抠像）
+写在上面「帧动画素材」那一节，接线、预检与真引擎探针都已就位：**把
+`assets/motion/swim_<立绘名>.webp` 放进去，再跑一次 `node build.mjs` 就自动生效** ——
+在那之前这八个状态走静默降级（连元素都不建，**不会**退回去播通用那段循环，因为那是
+穿着泳装播别的皮肤的动作）。预检里那条"八条要么都在、要么都不在"盯的就是这个：
+半套素材是坏的，整套和没有都是好的。
 
 ### 1.46.5
 
