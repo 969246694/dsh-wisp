@@ -17,8 +17,12 @@
  *      动画照跑但什么都不动。这条只有把 getKeyframes() 读出来才能证明。
  *   4. 动作幅度档：`静止` 下计算后的 animationName 是 none，姿势被钉在 0
  *   5. `prefers-reduced-motion`（CDP Emulation）：姿势与动作都不写
- *   6. 帧动画（v1.46.1 起是动图 WebP）：`<img>` 真的解得开（naturalWidth 720x1280）、
- *      与立绘同一格、冻结时 display:none 且立绘可见
+ *   6. 帧动画（v1.46.1 起是动图 WebP；v1.46.5 起是两条：idle + sleepy）：
+ *      `<img>` 真的解得开（naturalWidth = **素材自己的**画布宽度）、与立绘同一格、
+ *      冻结时 display:none 且立绘可见
+ *   7. 尺寸校正（v1.46.4）：**计算后**的 transform 真的是 scale(1.186)，底边真的下移
+ *      9.3% 个盒高 —— 她在那张 720p 素材里只占 0.8352 个盒高，立绘占 0.9883。
+ *      v1.46.5：idle 那段**不该**带这条校正（差 1%，小于 2% 那条线），计算后是 none
  *
  * 用法：node tools/engine-probe.mjs      （WISP_CHROME=<可执行文件> 可指定浏览器）
  * 退出码：0 通过或跳过 · 1 有检查没过 · 2 环境起不来（找不到可用的调试端口）
@@ -31,6 +35,21 @@ import { fileURLToPath } from 'node:url'
 
 const here = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const bundle = readFileSync(join(here, 'lib', 'client.js'), 'utf8')
+
+/* 素材自己的画布尺寸（VP8X 里那三字节，存的是值-1）。探针要断言的是 naturalWidth
+   **等于素材实际宽度**，而不是等于一个写死在探针里的 720 —— 素材换了尺寸、探针还
+   念着旧数字，正是这种断言最该抓到的漂移。 */
+const motionCanvas = (name) => {
+  const buf = readFileSync(join(here, 'assets', 'motion', name))
+  for (let off = 12; off + 8 <= buf.length;) {
+    const id = buf.subarray(off, off + 4).toString('latin1')
+    const size = buf.readUInt32LE(off + 4)
+    if (id === 'VP8X') return { w: buf.readUIntLE(off + 12, 3) + 1, h: buf.readUIntLE(off + 15, 3) + 1 }
+    off += 8 + size + (size % 2)
+  }
+  return { w: 0, h: 0 }
+}
+const IDLE_CANVAS = motionCanvas('idle.webp')
 
 /* 浏览器从哪来：环境变量优先，然后按平台猜几个常见位置。
    找不到就跳过 —— 这台机器没浏览器不是这个插件的缺陷。 */
@@ -463,10 +482,67 @@ try {
      这里**不读像素**：alpha 是 WebP 格式自己保证的（角落就是透的），把一张 720x1280
      的动图缩进 8x8 画布只能测出 canvas 的重采样，测不出格式；而"她是不是真的透"
      已经由 `<img>` + WebP 这条路径决定了，不需要探针再证一遍。 */
-  head('the first frame animation (a real animated WebP)')
+  head('the frame animations (real animated WebPs)')
   /* 上一节把 Emulation 设成了 reduce 而且没恢复 —— 先清掉，
      否则下面看到的"冻结"其实是上一节那个设置还在（那不是这条要测的东西）。 */
   await send('Emulation.setEmulatedMedia', { features: [] })
+
+  /* ---- idle：**默认**状态就该有动图（v1.46.5）----
+     假 DOM 能证明"元素建了、映射对、显隐跟着状态走"，证明不了这张 720x1280 的动图
+     在真引擎里**解得开**：naturalWidth 是不是素材自己的宽度、变换**之前**是不是
+     真的落在立绘那个盒子里。idle 不做尺寸校正（差 1.0~1.6%，小于 2% 那条线），
+     所以它的计算后 transform 必须是 none —— 这条同时钉住"base 那条 1.186 没有
+     落到 idle 头上"（落到她头上就是放大 18.6%，而页面上只会看起来"她今天有点大"）。 */
+  const idleClip = await evaluate(`(async () => {
+    const waitFor = async (ok, ms) => {
+      const until = Date.now() + ms
+      while (Date.now() < until) { if (ok()) return true; await new Promise((r) => setTimeout(r, 50)) }
+      return ok()
+    }
+    window.__wisp.configure({ motion: 'full' })
+    window.__wisp.mood('idle')
+    await waitFor(() => document.querySelector('.wisp-video') !== null, 5000)
+    const motion = document.querySelector('.wisp-video')
+    if (!motion) return { built: false }
+    await waitFor(() => motion.complete && motion.naturalWidth > 0, 8000)
+    const img = document.querySelector('.wisp-img')
+    /* 与立绘同格必须在**变换之前**量：idle 没有变换，但这条断言要能和 sleepy 那段
+       用同一把尺子（那边要临时把 transform 摘掉才量得到布局盒）。 */
+    const saved = motion.style.transform
+    motion.style.transform = 'none'
+    const a = motion.getBoundingClientRect()
+    motion.style.transform = saved
+    const b = img.getBoundingClientRect()
+    return {
+      built: true, tag: String(motion.tagName), clip: motion.dataset.clip ?? null,
+      complete: motion.complete, w: motion.naturalWidth, h: motion.naturalHeight,
+      display: getComputedStyle(motion).display,
+      transform: getComputedStyle(motion).transform,
+      inline: motion.style.transform,
+      dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top),
+      dw: Math.abs(a.width - b.width), dh: Math.abs(a.height - b.height),
+      visibility: getComputedStyle(img).visibility,
+      frame: document.querySelector('.wisp-root').dataset.frame ?? null,
+    }
+  })()`)
+  check(idleClip.built === true && idleClip.tag === 'IMG' && idleClip.clip === 'idle',
+    'the idle state really builds the motion layer in the engine — the standing loop is live at mount (v1.46.5)',
+    idleClip.built ? `${idleClip.tag} clip=${String(idleClip.clip)}` : 'no motion layer was built')
+  check(idleClip.built === true && idleClip.complete === true
+    && idleClip.w === IDLE_CANVAS.w && idleClip.h === IDLE_CANVAS.h,
+    "and the idle animated WebP decodes at the asset's own size — naturalWidth is read from assets/motion/idle.webp, not hard-coded here",
+    idleClip.built ? `${idleClip.w}x${idleClip.h} vs asset ${IDLE_CANVAS.w}x${IDLE_CANVAS.h} complete=${idleClip.complete}` : 'no <img> was built')
+  check(idleClip.built === true && idleClip.dx < 1 && idleClip.dy < 1 && idleClip.dw < 1 && idleClip.dh < 1,
+    'and it is laid out on exactly the sprite box, so handing the picture over cannot make her jump',
+    `delta ${Number(idleClip.dx ?? NaN).toFixed(2)},${Number(idleClip.dy ?? NaN).toFixed(2)} size ${Number(idleClip.dw ?? NaN).toFixed(2)}x${Number(idleClip.dh ?? NaN).toFixed(2)}`)
+  check(idleClip.built === true && String(idleClip.transform) === 'none' && idleClip.inline === 'none',
+    "and NO size correction is applied to it — computed transform is none, so the sleeping clip's 1.186 did not leak onto idle (v1.46.5)",
+    `computed ${String(idleClip.transform)} / inline ${JSON.stringify(idleClip.inline)}`)
+  check(idleClip.built === true && idleClip.display !== 'none'
+    && idleClip.visibility === 'hidden' && idleClip.frame === 'on',
+    'and it owns the picture while the sprite is hidden — the two layers are never visible at once (v1.45.2)',
+    `display=${String(idleClip.display)} sprite visibility=${String(idleClip.visibility)} data-frame=${String(idleClip.frame)}`)
+
   const clip = await evaluate(`(async () => {
     const waitFor = async (ok, ms) => {
       const until = Date.now() + ms
@@ -480,8 +556,17 @@ try {
     if (!motion) return { built: false }
     await waitFor(() => motion.complete && motion.naturalWidth > 0, 8000)
     const img = document.querySelector('.wisp-img')
+    /* 尺寸校正（v1.46.4）：动作层**故意**比立绘那一格大 —— 她在 720x1280 的素材里只占
+       0.8352 个盒高，立绘占 0.9883。所以"两层同格"必须量**变换之前**的布局盒：
+       行内 transform 临时置 none 读一次 rect，读完立刻还回去（行内这条盖得住样式表那条，
+       所以快照真的是干净的布局盒）。渲染后的 rect 单独读一次，用来验放大倍率与底边落点。 */
+    const savedZoom = motion.style.transform
+    motion.style.transform = 'none'
     const a = motion.getBoundingClientRect()
+    motion.style.transform = savedZoom
     const b = img.getBoundingClientRect()
+    const cs = getComputedStyle(motion)
+    const shown = motion.getBoundingClientRect()
     return {
       built: true, tag: String(motion.tagName), isImg: motion instanceof HTMLImageElement,
       src: String(motion.src).slice(0, 5),
@@ -494,6 +579,11 @@ try {
       frame: document.querySelector('.wisp-root').dataset.frame ?? null,
       dx: Math.abs(a.left - b.left), dy: Math.abs(a.top - b.top),
       dw: Math.abs(a.width - b.width), dh: Math.abs(a.height - b.height),
+      transform: cs.transform,
+      origin: motion.style.transformOrigin,
+      layoutH: a.height,
+      zoom: shown.height / a.height,
+      drop: (shown.bottom - b.bottom) / a.height,
       videos: document.querySelector('.wisp-root').querySelectorAll('video').length,
     }
   })()`)
@@ -506,8 +596,17 @@ try {
   check(clip.display !== 'none',
     'and it is on screen by default — the browser runs the animation itself', `display=${clip.display}`)
   check(clip.dx < 1 && clip.dy < 1 && clip.dw < 1 && clip.dh < 1,
-    'and it lands on exactly the sprite box, so the animation does not make her jump',
+    'and BEFORE the size correction it is laid out on exactly the sprite box, so handing the picture over cannot make her jump',
     `delta ${clip.dx.toFixed(2)},${clip.dy.toFixed(2)} size ${clip.dw.toFixed(2)}x${clip.dh.toFixed(2)}`)
+  /* 尺寸校正（v1.46.4）：**计算后**的 transform 才是"引擎认不认"的答案 —— 源码里写着
+     scale(1.186) 不算数，它要么生效、要么被别的东西盖掉。两个数一起看：
+     她的显示高度放大了多少倍，底边相对立绘那条落地线下移了多少（都按盒高归一化）。 */
+  check(/^matrix\(1\.186/.test(String(clip.transform)) && Math.abs(clip.zoom - 1.186) < 0.004,
+    'the engine really applies the size correction — the computed transform is scale(1.186), so she is as tall as the static sprite (v1.46.4)',
+    `computed ${clip.transform} → rendered height ${clip.zoom.toFixed(4)}x the box`)
+  check(Math.abs(clip.drop - 0.0930) < 0.004 && clip.origin === '50% 100%',
+    "and it is dropped 9.3% of its own height about a bottom-centre origin, so her feet land where the sprite's do (v1.46.4)",
+    `bottom shift ${(clip.drop * 100).toFixed(2)}% of ${clip.layoutH}px, inline transform-origin ${clip.origin}`)
   check(clip.pointerEvents === 'none', 'the layer takes no pointer events', String(clip.pointerEvents))
   /* 重影修复（v1.45.2）：动图在画面上时立绘必须**真的**看不见（计算后的 visibility 是
      hidden，而不是"读源码看到写了 visibility"）。 */

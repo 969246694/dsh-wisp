@@ -3099,8 +3099,8 @@ if (clientSrc !== null) {
       `pointermove=${mo.win.listenerCount('pointermove')} blur=${mo.win.listenerCount('blur')}`)
     active = keepMo
 
-    /* ---------------- 3f-ter. 第一条帧动画（v1.45.0；v1.46.1 起是动图 <img>）-- */
-    head('3f-ter. the first frame animation: an animated WebP that steps aside to freeze')
+    /* ---------------- 3f-ter. 帧动画（v1.45.0；v1.46.1 起是动图 <img>；v1.46.5 起两条）-- */
+    head('3f-ter. the frame animations: animated WebPs that step aside to freeze')
 
     /* 这一段测的是"叠加在立绘上的那层动图"，而它有四个**只有行为能证明**的点：
        与立绘同一格、不吃指针、显示时立绘退场（v1.45.2）、以及"该冻结时它藏起来、
@@ -3135,20 +3135,76 @@ if (clientSrc !== null) {
         : 'visible'
     )
 
-    /* 没有动作素材的状态**连元素都不建**：摆一个永远不动、还要白解 1.9 MB 的空盒子，
-       代价是真的，收益是零。 */
-    check(mvRoot.querySelectorAll('.wisp-video').length === 0 && mvRoot.querySelectorAll('video').length === 0,
-      'a mood with no clip does not even build the motion layer — no element, no base64 decode',
-      `${mvRoot.querySelectorAll('.wisp-video').length} motion layer(s) while idle`)
-    /* 没有素材的状态：立绘就是画面里的那个人，而且**没有第二个"她"** —— 动图不建、属性不挂。 */
+    /* ---- idle 也接上了（v1.46.5）：它是**默认**状态，所以动作层从挂载那一刻就在 ----
+       这一段同时证明三件事：素材真的在包里、MOTION_OF 里接上了、syncMotion() 在挂载
+       那一刻真的跑过（在那之前这一层只在进入 sleep 时才建元素）。 */
+    const mvIdle = mvLive()
     const mvIdleImgs = mvRoot.querySelectorAll('.wisp-img')
-    check(mvRoot.querySelectorAll('.wisp-video').length === 0 && mvIdleImgs.length === 1
-      && mvVis(mvIdleImgs[0]) === 'visible' && mvRoot.dataset.frame === undefined,
-    'with no clip the frame never takes the picture: one visible sprite, no "frame owns it" attribute (v1.45.2)',
-    `motion=${mvRoot.querySelectorAll('.wisp-video').length} sprites=${mvIdleImgs.length} sprite=${mvVis(mvIdleImgs[0])} data-frame=${String(mvRoot.dataset.frame)}`)
+    check(mvIdle !== null && mvIdle.tagName === 'IMG' && mvIdle.dataset.clip === 'idle',
+      'the idle state builds the motion layer at mount — the standing loop is wired in, not merely shipped (v1.46.5)',
+      mvIdle ? `${mvIdle.tagName} clip=${String(mvIdle.dataset.clip)}` : 'no motion layer built while idle')
+    check(mvIdle !== null && mvIdle.style.display !== 'none' && mvIdleImgs.length === 1
+      && mvVis(mvIdleImgs[0]) === 'hidden' && mvRoot.dataset.frame === 'on',
+      'and it owns the picture from the first frame — the sprite is out of the way, never double-exposed (v1.45.2 rules, idle edition)',
+      `display=${mvIdle?.style.display} sprites=${mvIdleImgs.length} sprite=${mvVis(mvIdleImgs[0])} data-frame=${String(mvRoot.dataset.frame)}`)
+    /* idle **不带**尺寸校正（差 1.0~1.6%，小于 2% 那条线）：行内必须是 none。
+       这一条和下面 sleepy 那条 1.186 是**分开点名**的 —— 只查一条的话，"base 那条
+       1.186 落到 idle 头上"（她会被放大 18.6%）这种错会整段漏过去。 */
+    check(mvIdle !== null && mvIdle.style.transform === 'none',
+      'the idle clip carries NO size correction — she fills 97.2% of that frame vs 98.2% of the sprite, under the 2% line (v1.46.5)',
+      `inline transform=${JSON.stringify(mvIdle?.style.transform)}`)
 
+    /* 没有动作素材的状态**连元素都不建**：摆一个永远不动、还要白解 2.7 MB 的空盒子，
+       代价是真的，收益是零。idle 接上之后，"默认那一档没有素材"在这个包里再也造不出来
+       —— 所以把 MOTION 表里 idle 那一条**删掉**再挂一次：那才是真的"这个状态没有素材"。
+       判据在 syncMotion() 里（查不到 key 就不建元素），不是"素材恰好缺失"。 */
+    const noIdleSrc = String(clientSrc).replace(/^\s*"idle": 'data:image\/webp;base64,[^']*',$/m, '')
+    const mvNone = createHarness({ timer: true, composerText: '' })
+    active = mvNone
+    mvNone.evaluate(noIdleSrc)
+    mvNone.module().default.apply(mvNone.ctx, {
+      reactions: false, wander: false, celebrate: false, sleepAfterMs: 3600000,
+    })
+    mvNone.advance(1200, 100)
+    const mvNoneRoot = mvNone.find('wisp-root')
+    check(noIdleSrc !== clientSrc
+      && mvNoneRoot.querySelectorAll('.wisp-video').length === 0 && mvNoneRoot.querySelectorAll('video').length === 0,
+      'a mood with no clip does not even build the motion layer — no element, no base64 decode',
+      `${mvNoneRoot.querySelectorAll('.wisp-video').length} motion layer(s) with the clip removed from the table`)
+    /* 没有素材的状态：立绘就是画面里的那个人，而且**没有第二个"她"** —— 动图不建、属性不挂。 */
+    const mvNoneImgs = mvNoneRoot.querySelectorAll('.wisp-img')
+    check(mvNoneImgs.length === 1 && String(mvNoneImgs[0]?.style?.visibility ?? '') !== 'hidden'
+      && mvNoneRoot.dataset.frame === undefined,
+    'with no clip the frame never takes the picture: one visible sprite, no "frame owns it" attribute (v1.45.2)',
+    `sprites=${mvNoneImgs.length} inline=${String(mvNoneImgs[0]?.style?.visibility ?? '') || '(unset)'} data-frame=${String(mvNoneRoot.dataset.frame)}`)
+    const mvNoneApi = mvNone.win.__wisp
+    check(mvNoneApi.doctor().motion.frame.built === false && mvNoneApi.doctor().motion.frame.asset === null,
+      'and doctor() says so: nothing built, no clip for this state',
+      JSON.stringify(mvNoneApi.doctor().motion.frame))
+    mvNoneApi.destroy()
+    active = mv
+
+    /* ---- 换状态 = 换素材源，同一个元素（v1.46.5）----
+       两段素材都进包之后，这条才有内容：一次性实现的陷阱是"只在第一次建元素、
+       之后再也不改 src" —— 那样她睡着以后还在放站着的循环，而画面上看不出错。 */
+    const mvIdleSrc = String(mvIdle.src)
     mvApi.mood('sleep')
     mv.advance(400, 100)
+    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'sleepy'
+      && String(mvIdle.src) !== mvIdleSrc && String(mvIdle.src).indexOf('blob:') === 0,
+      'switching state re-points the SAME element at the other clip — the layer is not a one-shot build (v1.46.5)',
+      `reused=${mvLive() === mvIdle} clip=${String(mvIdle.dataset.clip)} srcChanged=${String(mvIdle.src) !== mvIdleSrc}`)
+    mvApi.mood('idle')
+    mv.advance(400, 100)
+    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'idle' && String(mvIdle.src) === mvIdleSrc,
+      'and switching back re-points it at the standing loop again — the source follows every transition, not just the first',
+      `reused=${mvLive() === mvIdle} clip=${String(mvIdle.dataset.clip)} srcBack=${String(mvIdle.src) === mvIdleSrc}`)
+    mvApi.mood('sleep')
+    mv.advance(400, 100)
+    check(mvIdle.style.display !== 'none' && mvIdle.dataset.clip === 'sleepy',
+      'and the sleeping loop is what is on screen after the round trip',
+      `display=${mvIdle.style.display || '(default)'} clip=${String(mvIdle.dataset.clip)}`)
+
     const mvMotion = mvLive()
     const mvImgs = mvLean.querySelectorAll('.wisp-img')
     const mvImg = mvImgs[0] ?? null
@@ -3185,6 +3241,30 @@ if (clientSrc !== null) {
     check(mvMotion !== null && mvMotion.style.pointerEvents === 'none' && mvRule.includes('pointer-events:none'),
       'the motion layer never takes a pointer event — her silhouette hit layer still owns every click',
       `inline=${mvMotion?.style.pointerEvents} rule=${mvRule.slice(0, 60)}…`)
+    /* 尺寸校正（v1.46.4）：动作层必须带那条 transform —— 少了它，"画面交给她"的那一刻
+       她比立绘**小 15.7%**（实测包围盒：动图 0.8352 个盒高 vs 立绘 0.9883）。
+       两条落点都点名：样式表给正常壳，行内给"样式表没插进来"的壳（精灵图 / 两层盒子 /
+       动图各有前例）。transform-origin 必须是**脚底**（50% 100%）：缩放不挪底边，
+       底边距才收得回来，"她落地"这件事才对得上。
+       这几个数是**推导出来的**，不是抄的：放大倍率 = 0.9883/0.8352 = 1.1834（取 1.186，
+       97 帧之间包围盒自己抖 ±0.2%）；下移量 t 由 0.0883*s - s*t = 0.0117 反解 = 7.84%。
+       详见 client.template.js 里 .wisp-video 上那段推导。 */
+    const mvZoomRule = /transform:scale\(1\.186\)\s*translateY\(7\.84%\)/.test(mvRule)
+    const mvZoomOrigin = /transform-origin:50% 100%/.test(mvRule)
+    check(mvZoomRule && mvZoomOrigin,
+      'the stylesheet scales the motion layer by 1.186 about a bottom-centre origin — her height AND her ground contact match the static sprite (v1.46.4)',
+      mvRule ? `.wisp-video{…} zoom=${mvZoomRule} origin=${mvZoomOrigin}` : 'no .wisp-video rule in the stylesheet')
+    check(mvMotion !== null && mvMotion.style.transform === 'scale(1.186) translateY(7.84%)'
+      && mvMotion.style.transformOrigin === '50% 100%',
+      'and the inline mirror carries the same correction, for shells where the stylesheet never arrives',
+      `inline transform=${mvMotion?.style.transform} origin=${mvMotion?.style.transformOrigin}`)
+    /* v1.46.5：**样式表那一份**也要把 idle 显式排除掉 —— base 那条 1.186 是给 sleepy 的，
+       落到 idle 头上就是放大 18.6%（而页面上只会看起来"她今天有点大"）。行内那份上面
+       单独点了名，这里点样式表那份：两个落点各查各的，缺一个就有一个壳是错的。 */
+    const mvIdleRule = (String(clientSrc).match(/\.wisp-video\[data-clip="idle"\]\{[^}]*\}/) ?? [''])[0]
+    check(/transform:none/.test(mvIdleRule) && !/scale\(/.test(mvIdleRule),
+      'the stylesheet names the idle clip too, so the sleeping 1.186 can never land on it (v1.46.5)',
+      mvIdleRule || 'no .wisp-video[data-clip="idle"] rule in the bundle')
     /* reduced-motion 那条兜底：媒体查询够不着 JS 的显隐状态，但它至少能让这层不出现在
        画面上（JS 拿不到 matchMedia 的壳里，冻结就只剩这一道）。 */
     const mvRmAt = mvCss.indexOf('@media (prefers-reduced-motion:reduce)')
@@ -3213,12 +3293,13 @@ if (clientSrc !== null) {
       mvFrameRule || 'no .wisp-root[data-frame="on"] .wisp-img rule in the stylesheet')
 
     /* 素材字节走**和立绘同一条路**：data URI -> Blob -> object URL（这个壳把 data: 源当坏图）。
-       动图那一份是唯一一个 MB 级的 image/webp blob（精灵图都是百 KB 级），按体积点名它。 */
-    const mvBlob = mv.blobs.find((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
+       动图那两份是**唯二**的 MB 级 image/webp blob（精灵图都是百 KB 级）：两段素材各解一次
+       —— 一次不能少（少了就是某一段没走 Blob 通道），也不能多（多了就是每换一次状态重解一次）。 */
+    const mvBlobs = mv.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
     check(mvMotion !== null && String(mvMotion.src).indexOf('blob:') === 0
-      && mvBlob !== undefined && mvBlob.type === 'image/webp' && mvBlob.size > 1024 * 1024,
-    'the animated WebP reaches the <img> through the same Blob pipeline as the sprites, typed image/webp',
-    `${String(mvMotion?.src).slice(0, 28)} / ${mvBlob?.type} / ${mvBlob?.size ?? 0} B`)
+      && mvBlobs.length === 2 && mvBlobs.every((b) => b.type === 'image/webp'),
+    'both animated WebPs reach the <img> through the same Blob pipeline as the sprites, typed image/webp, one blob per clip',
+    `${String(mvMotion?.src).slice(0, 28)} / ${mvBlobs.length} clip blob(s): ${mvBlobs.map((b) => `${b.type} ${b.size} B`).join(', ')}`)
     check(mvMotion !== null && mvMotion.style.display !== 'none',
       'the animation is on screen at the default level', `display=${mvMotion?.style.display || '(default)'}`)
     /* 需求的那一格：**动图在画面上的时候立绘必须不在场**（动图那一列由上面那条钉住）。
@@ -3326,6 +3407,14 @@ if (clientSrc !== null) {
     mv.advance(200, 100)
     check(mvMotion.style.display === 'none' && mvLive() === mvMotion,
       'and it is not re-created or retried on the next nap', `display=${mvMotion.style.display}`)
+    /* 失败是**按素材**记的（v1.46.5）：坏掉的是睡着那一段，站着那段没坏 —— 她醒着的时候
+       照常动。把"失败"做成一个全局开关的实现在这里会露出来（她会从此一辈子不动）。 */
+    mvApi.mood('idle')
+    mv.advance(200, 100)
+    check(mvLive() === mvMotion && mvMotion.dataset.clip === 'idle'
+      && mvMotion.style.display !== 'none' && mvApi.doctor().motion.frame.failed === false,
+      'the failure belongs to the clip, not to the layer: the standing loop still plays after the sleeping one died (v1.46.5)',
+      `clip=${String(mvMotion.dataset.clip)} display=${mvMotion.style.display || '(default)'} doctor.failed=${mvApi.doctor().motion.frame.failed}`)
     /* 动图这一层**一次 play()/pause() 都不该出现**：那是媒体通道的 API，图片路径上没有它，
        也不该有人偷偷搭一条回来。替身把每一次 play/pause 记在 harness 上，所以"一次都没有"
        在这里是能数出来的事实，而不是从源码里读出来的一句话。 */
@@ -4257,16 +4346,17 @@ if (clientSrc !== null) {
     check(counts.img <= 2, 'at most the two cross-fade layers exist', `${counts.img}`)
 
     /* 皮肤来回换 120 次，如果 blob URL 每轮都新建，这里会是 120+ —— 缓存命中应该是常数。
-       上限 12 -> 13：v1.45.0 起那段帧动画素材也走同一条 Blob 通道。它**只该解一次**
-       （这一轮里她睡着了 60 次），下面那条断言把这件事单独钉住 —— 只把常数从 12 抬到 13，
-       等于允许"每次入睡都新建一个"，而那种退化在 60 次里会变成 60 个。 */
-    check(soak.urLs.length <= 13,
+       上限 12 -> 13：v1.45.0 起那段帧动画素材也走同一条 Blob 通道，它**只该解一次**
+       （这一轮里她睡着了 60 次）。v1.46.5 再 +1 = 14：idle 也接上了素材（挂载时解一次，
+       120 轮里她醒着 60 次，一次都不该重解）。下面那条断言把"两段各解一次"单独钉住 ——
+       只把常数抬上去，等于允许"每次换状态都新建一个"，而那种退化在 60 次里会变成 60 个。 */
+    check(soak.urLs.length <= 14,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
     const clipBlobs = soak.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
-    check(clipBlobs.length === 1,
-      'the frame-animation clip is decoded once, not once per nap',
-      `${clipBlobs.length} motion blob(s), ${clipBlobs[0]?.size ?? 0} bytes`)
+    check(clipBlobs.length === 2,
+      'each frame-animation clip is decoded once, not once per mood swing (two clips in the bundle)',
+      `${clipBlobs.length} motion blob(s): ${clipBlobs.map((b) => b.size).join(', ')} bytes`)
 
     soakApi.destroy()
     check(soak.pendingTimers().length === 0 && soak.revoked.length === soak.urLs.length,
@@ -4882,11 +4972,19 @@ head('4b. the frame-animation clip is inlined in the bundle (and inside its budg
 
 /* 素材是**内联**的（单文件交付，见 build.mjs 的头注释），所以它的体积是包的一部分，
    而"涨了多少"从来不会自己冒出来 —— 只有这一条盯着它。
-   预算按**实测值**设上限（v1.46.1）：动图 WebP 原始 1853.6 KB、内联 2471.5 KB
-   （480 宽 / q:v 60 / 24fps / 97 帧）。上界取 4200 KB —— 比它再大就说明素材被换过或
-   参数被动过，必须有人重新量一次再改这个数。它记在这里而不是 build.mjs 里：构建负责
-   **报**体积，预检负责**判**体积，一个数写两遍就是下一次漂移的起点。 */
-const MOTION_BUDGET_KB = 4200
+   预算按**实测值**设上限。v1.46.5：包里从一段素材变成**两段**（idle + sleepy），
+   两段都是 720x1280 / 24fps / 97 帧（一帧不抽、一帧不短），实测内联：
+     idle   2757928 B -> 3677240 B base64（2693.3 KB 原始）
+     sleepy 3398206 B -> 4530944 B base64（3318.6 KB 原始）
+     合计   **8015.8 KB**（7.83 MB，目标 ≤ 8 MB）
+   上界取 8820 KB = 实测 8015.8 + 约 10% 余量。
+   **v1.46.5 为什么动这个数**：5540 是"只有 sleepy 一段、q:v 60 / blend 0.06"那一版的
+   实测值（5031.3 KB）加 10%。两段素材同时进包时 5540 已经装不下 —— 这一版把两条的
+   colorkey 过渡都收到 **0.05**（预检钉住的下限），WebP 质量退到 **40**，并给 idle 补了
+   品红去边（残余 1.09% -> 0.006%），才把两段一起压进 8 MB。比它再大就说明素材被换过、
+   参数被动过、或者又加了一段 —— 必须有人重新量一次再改这个数。它记在这里而不是
+   build.mjs 里：构建负责**报**体积，预检负责**判**体积，一个数写两遍就是下一次漂移的起点。 */
+const MOTION_BUDGET_KB = 8820
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
@@ -4902,11 +5000,46 @@ const MOTION_BUDGET_KB = 4200
     check(keys.length > 0 && inlined.length === keys.length,
       'the clip is embedded as a data:image/webp URI — a share carries no .webp path to resolve',
       keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]]).slice(0, 26)}…` : 'no MOTION table in the bundle')
+    /* **两段都要在**（v1.46.5）：站着那一段和睡着那一段是两条独立的素材，只进一条
+       （或者 build 的发现规则又把 motion/ 当成皮肤跳过了）在页面上表现为"她某个状态不动"，
+       而那和"没有素材"长得一模一样。 */
+    check(keys.includes('idle') && keys.includes('sleepy'),
+      'BOTH loops are in the bundle — the standing one and the sleeping one (v1.46.5)',
+      keys.length ? keys.map((k) => `${k} ${kb(String(motionValue[k]).length)} KB`).join(', ') : 'no clips at all')
 
     const bytes = keys.reduce((n, k) => n + String(motionValue[k]).length, 0)
     check(bytes > 0 && bytes <= MOTION_BUDGET_KB * 1024,
-      `the inlined clip stays inside its ${MOTION_BUDGET_KB} KB budget`,
-      `${kb(bytes)} KB of ${MOTION_BUDGET_KB} KB (${keys.length} clip(s))`)
+      `the inlined clips stay inside their ${MOTION_BUDGET_KB} KB budget`,
+      `${kb(bytes)} KB of ${MOTION_BUDGET_KB} KB (${keys.length} clips)`)
+
+    /* ---- 边缘平滑度不是"看起来"的事，是**编码参数**的事（v1.46.4）----
+       colorkey 的 blend 是边缘过渡带的半宽：0.02 那条带只有 0.04 的色距宽度，
+       边缘几乎是**一刀切** —— 1 bit 的 alpha 在 560px 的显示尺寸上就是一排台阶
+       （"硬边 = 锯齿"这条规矩钉在这里，也钉在 client.template.js 的 .wisp-video 注释里）。
+       查的是**文档里那条编码命令**：素材怎么来的可复现，这两条才有意义。
+       v1.46.5 把两条素材的过渡都收到 **0.05** —— 这是 **≥ 0.05 那条线的下限**，
+       不是"随手调小"：那段 soft band 是动画体积的**大头**（实测：sleepy 在 q:v 40 下
+       把 blend 归零，3405.7 KB → 1867.8 KB，省掉 45%）。收到下限、再把省下来的余量
+       花在**去幕布色**上，是这一版两段素材能同时进包的原因。
+       全不透明的阈值 sim+blend 保持原样（sleepy 0.24 / idle 0.38）—— 所以"她自己"
+       一个像素都没少（实测不透明占比 17.379% / 27.016%，和上一版逐位相同）。
+       只认那个写着 libwebp_anim 的代码块，免得命中变更日志里的历史参数。 */
+    const pipelineDoc = existsSync(join(here, 'README.md')) ? readFileSync(join(here, 'README.md'), 'utf8') : ''
+    let pipeline = ''
+    for (const m of pipelineDoc.matchAll(/```[a-z]*\n([\s\S]*?)```/g)) {
+      if (m[1].includes('libwebp_anim')) { pipeline = m[1]; break }
+    }
+    const keyed = /colorkey=#([0-9A-Fa-f]{6}):([\d.]+):([\d.]+)/.exec(pipeline)
+    check(keyed !== null && Number(keyed[3]) >= 0.05,
+      'the documented keying keeps a SOFT edge — blend >= 0.05, because a hard alpha cut IS the jagged edge (v1.46.4)',
+      keyed ? `colorkey #${keyed[1]} similarity ${keyed[2]} blend ${keyed[3]}` : 'no colorkey line in the documented motion pipeline')
+    /* 放宽过渡会把幕布的边一起放出来（绿幕：0.078% → 0.119%；品红幕：idle 那 1.09% 的
+       紫边就是这么来的）—— 所以那一步 RGB 去边是**配套的**，不是可选项。绿幕那条是
+       min(G, max(R,B))（和 tools/keyout.mjs 给立绘用的是同一条规则），品红幕那条把
+       "R、B 都比 G 高"的那一份减掉。两条都在文档里。 */
+    check(/geq=|despill/.test(pipeline),
+      'and the documented pipeline de-fringes the screen colour in RGB — a soft transition lets the curtain edge back in',
+      pipeline ? (pipeline.split('\n').find((l) => /geq=|despill/.test(l)) ?? '').trim().slice(0, 140) : 'no motion pipeline block in README.md')
 
     /* 字节是不是**那份素材**：base64 解出来必须和磁盘上的文件一样长。
        只数长度不比内容，但"内联了另一份/半份素材"这件事一定会在这里露出来。 */
@@ -4923,27 +5056,58 @@ const MOTION_BUDGET_KB = 4200
       mismatch.length ? mismatch.join(' | ') : keys.map((k) => `${k} ${kb(String(motionValue[k]).length)} KB inline`).join(', '))
 
     /* 磁盘上那份文件**真的是动图**（RIFF/WEBP + ANMF 帧块）：MIME 是写死的，
-       素材被换成一张静图时，"她不动了"会和"没有素材"长得一模一样。 */
+       素材被换成一张静图时，"她不动了"会和"没有素材"长得一模一样。
+       顺手把**几何**也钉住（v1.46.4）：720x1280 / 97 帧 / 41ms 一帧（24fps）这三条是
+       "这份素材是怎么来的"的一部分 —— 换 q:v、换 colorkey 都可以，动这几条就是另一份
+       素材了；而"她变糊了"和"她掉帧了"在页面上都不会报错，只会有人某天觉得"她今天不太对"。
+       容器结构：VP8X 的画布宽高各 3 字节（存的是值-1），ANMF 的帧时长在块内偏移 12 处，
+       同样 3 字节、单位毫秒。 */
     const animated = []
+    const geometry = []
     for (const key of keys) {
       const file = join(here, 'assets', 'motion', `${key}.webp`)
       if (!existsSync(file)) continue
       const onDisk = readFileSync(file)
       const riff = onDisk.subarray(0, 4).toString('latin1') === 'RIFF' && onDisk.subarray(8, 12).toString('latin1') === 'WEBP'
-      const frames = onDisk.toString('latin1').split('ANMF').length - 1
+      let canvasW = 0
+      let canvasH = 0
+      let frames = 0
+      let firstDur = 0
+      for (let off = 12; off + 8 <= onDisk.length;) {
+        const id = onDisk.subarray(off, off + 4).toString('latin1')
+        const size = onDisk.readUInt32LE(off + 4)
+        if (id === 'VP8X') {
+          canvasW = onDisk.readUIntLE(off + 12, 3) + 1
+          canvasH = onDisk.readUIntLE(off + 15, 3) + 1
+        } else if (id === 'ANMF') {
+          frames += 1
+          if (firstDur === 0) firstDur = onDisk.readUIntLE(off + 20, 3)
+        }
+        off += 8 + size + (size % 2)
+      }
       if (!riff || frames < 2) animated.push(`${key}: riff=${riff} frames=${frames}`)
+      if (`${canvasW}x${canvasH}` !== '720x1280' || frames !== 97 || Math.round(1000 / firstDur) !== 24) {
+        geometry.push(`${key}: ${canvasW}x${canvasH} / ${frames} frames / ${firstDur}ms`)
+      }
     }
     check(animated.length === 0,
       'and it is an ANIMATED WebP (RIFF/WEBP with a chain of ANMF frames), not a still',
       animated.length ? animated.join(' | ') : keys.map((k) => `${k}: ${readFileSync(join(here, 'assets', 'motion', `${k}.webp`)).toString('latin1').split('ANMF').length - 1} frames`).join(', '))
+    check(geometry.length === 0,
+      'and its geometry did not drift — 720x1280, 97 frames, 41ms each (24 fps): quality and keying may change, the frame budget may not (v1.46.4)',
+      geometry.length ? geometry.join(' | ') : keys.map((k) => `${k}: 720x1280 / 97 frames / 41 ms = 24 fps`).join(', '))
 
     const moodMap = (/const MOTION_OF = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
     let wired = null
     try { wired = moodMap ? new Function(`return ${moodMap}`)() : null } catch (error) { wired = null }
     const orphans = Object.keys(wired ?? {}).filter((m) => typeof motionValue?.[wired[m]] !== 'string')
-    check(wired !== null && wired.sleep !== undefined && orphans.length === 0,
-      'and the sleeping state is wired to a clip that is really in the bundle',
-      wired ? JSON.stringify(wired) : 'no MOTION_OF map found')
+    /* 反方向也要查：**没有状态会播的素材**是白带的体积（两段素材合计 7.83 MB 内联，
+       一段没人播就是 3 MB 的死重）。 */
+    const unwired = keys.filter((k) => !Object.values(wired ?? {}).includes(k))
+    check(wired !== null && wired.idle === 'idle' && wired.sleep === 'sleepy'
+      && orphans.length === 0 && unwired.length === 0,
+      'and both states are wired to clips that are really in the bundle — with no clip shipped that no state can play',
+      wired ? `${JSON.stringify(wired)}${unwired.length ? ` · 没人播：${unwired.join(', ')}` : ''}` : 'no MOTION_OF map found')
 
     check(!/['"][^'"]*\.(webm|mp4|mov)['"]/.test(clientSrc),
       'the bundle references no external video file', 'no .webm/.mp4/.mov string in the bundle')
