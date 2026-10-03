@@ -170,8 +170,23 @@ function createHarness(options = {}) {
       className: '', textContent: '', id: '', value: '',
       listeners: Object.create(null),
       _src: '',
-      focus() { activeEl = el },
-      blur() { if (activeEl === el) activeEl = null },
+      /* focus() / blur() 必须**真的派发事件**：真实 DOM 里 focus 事件是会响的，
+         而插件正靠它把"这一次焦点是谁给的"翻译成画面（键盘 -> 贴剪影的辉光；
+         鼠标 -> 什么都不画）。替身不发事件时，这条产品行为在预检里永远测不出来 ——
+         而它出错的样子正是用户报的"有时会出现素材的矩形边界线"。
+         顺序照真实语义：activeElement 先更新，所以 focus 事件里读到的已经是新元素。 */
+      focus() {
+        if (activeEl === el) return
+        const previous = activeEl
+        activeEl = el
+        if (previous) previous.dispatch('blur', { type: 'blur', target: previous })
+        el.dispatch('focus', { type: 'focus', target: el })
+      },
+      blur() {
+        if (activeEl !== el) return
+        activeEl = null
+        el.dispatch('blur', { type: 'blur', target: el })
+      },
       get firstChild() { return this.children[0] ?? null },
       get src() { return this._src },
       set src(v) { this._src = v; if (this.tagName === 'IMG') harness.srcs.push(v) },
@@ -248,10 +263,11 @@ function createHarness(options = {}) {
       })
     }
     if (String(tag).toLowerCase() === 'video') {
-      /* <video> 的替身（v1.45.0）。真实浏览器里 play()/pause() 是**方法**、
-         currentTime 是**可写属性**，而"冻结规则"（暂停 + 回到首帧）恰恰只由这三个
-         东西体现 —— 替身缺了它们，那条规则就只能靠读源码文本来断言，而读文本
-         证明不了行为。每一次 play/pause 都记在 harness 上，断言才看得见。 */
+      /* <video> 的替身（v1.45.0）。v1.46.1 起产品里**一个 <video> 都不该建**
+         （帧动画换成了动图 <img>），所以这个替身现在是个哨兵：谁把媒体通道加回来，
+         它就会开始记录 play()/pause()，而 3f-ter 里那条"一次都没有"立刻会红。
+         真实浏览器里 play()/pause() 是**方法**、currentTime 是**可写属性**，
+         替身缺了它们，那条断言就只能靠读源码文本 —— 读文本证明不了行为。 */
       el.currentTime = 0
       el.paused = true
       el.play = () => {
@@ -456,11 +472,15 @@ function createHarness(options = {}) {
 
   const styleInserts = []
 
+  /* 由**别的包**注册的客户端服务（v1.46.0）：余额那条路要的 remote.account 就是这种。
+     默认空表 —— 一条通道都没有的情形才测得到。 */
+  const extraServices = options.services && typeof options.services === 'object' ? options.services : {}
   const ctx = {
     get: (name) => {
       if (name === 'timer') return timerService
       if (name === 'styles') return { insert: (css) => { styleInserts.push(css); return () => { styleInserts.pop() } } }
       if (name === 'theme') return { getTheme: () => themeSnapshot }
+      if (Object.prototype.hasOwnProperty.call(extraServices, name)) return extraServices[name]
       return undefined
     },
     on: (name, fn) => {
@@ -474,8 +494,8 @@ function createHarness(options = {}) {
   const harness = {
     state, ctx, win, document: documentShim, bodyEl, created, frames, timers, queries,
     srcs: [], urLs: [], revoked: [], blobs: [], styleInserts,
-    /* <video> 的播放记录（v1.45.0）：冻结规则是"暂停 + 回到首帧"，
-       所以"停过没有"必须是个可断言的数字，而不是从源码里读出来的一句话。 */
+    /* <video> 的播放记录（v1.45.0）。v1.46.1 起它的用途反过来：断言"这一层一次
+       play()/pause() 都没有" —— 图片路径上不存在媒体通道，也不该有人偷偷搭回来。 */
     videoPlays: [], videoPauses: [],
     loaded: null,
     timerService,
@@ -2456,8 +2476,10 @@ if (clientSrc !== null) {
     /* ------------- 3d-sexdecies. she can look up your balance ----------------- */
     head('3d-sexdecies. she can look up your balance, and says which kind of "no" it is')
 
-    /* 余额这条路和检查更新同形：浏览器半包没有网络，宿主半包拿平台自己的
-       `deepseekAccount` 服务（凭据留在平台手里），这边用 host.call 问它。
+    /* 余额有两条通道，读的是**同一个**平台账户服务（凭据留在宿主手里）：
+       ① 客户端 Remote（默认，bundle 形态只有这条真的通）；
+       ② host 座位（动态插件形态才有），这边用 host.call 问宿主半包。
+       本节先测 host 座位那条（假座位），再测 Remote 那条（下面 3d-septendecies）。
        四种"没读到"必须是四句不同的话 —— 全说成"查不到"就是在骗人。 */
     const balanceHarness = (reply) => createHarness({
       timer: true, composerText: '',
@@ -2568,6 +2590,126 @@ if (clientSrc !== null) {
       'a throwing host call is caught and reported', JSON.stringify(balThrew))
     balThrower.win.__wisp.destroy()
     active = keepBalThrower
+
+    /* ------------- 3d-septendecies. the balance channel that really exists ------
+       平台自己的「账户」设置页走的是 ctx.remote.account.*（Remote，信封 { ok, value }）。
+       bundle 形态的客户端半包没有 host 座位，所以**这才**是真机上那条路 ——
+       1.46.0 之前它根本没被走过，菜单里点一下永远回"这个壳里查不了余额"。 */
+    const runRemote = async (account, hostCall) => {
+      const hx = createHarness({
+        timer: true, composerText: '',
+        ...(hostCall ? { hostCall } : {}),
+        services: { 'remote.account': account },
+      })
+      const keep = active
+      active = hx
+      hx.evaluate(clientSrc)
+      hx.module().default.apply(hx.ctx, { reactions: true, wander: false, celebrate: false })
+      hx.advance(1300, 100)
+      const res = await hx.win.__wisp.checkBalance()
+      const line = await spoken(hx)
+      const doctor = hx.win.__wisp.doctor().balance
+      hx.win.__wisp.destroy()
+      active = keep
+      return { res, line, doctor }
+    }
+
+    let seenClient = null
+    const remoteReady = await runRemote({
+      getBalance: async (client) => {
+        seenClient = client
+        return {
+          ok: true,
+          value: { status: 'ready', value: [{ currency: 'CNY', balance: '110.00' }], bonusWallets: [{ currency: 'CNY', balance: '10.00' }] },
+        }
+      },
+      getState: async () => ({ ok: true, value: { status: 'credential-stored' } }),
+    })
+    check(remoteReady.res.state === 'ready' && remoteReady.res.wallets[0].balance === '110.00'
+      && remoteReady.res.bonusWallets[0].balance === '10.00',
+    'the account Remote is a real channel: a wrapped ready answer lands in the ready state',
+    JSON.stringify(remoteReady.res))
+    check(remoteReady.line.includes('¥110.00') && fromPool(linesInBundle()?.balance, remoteReady.line, '¥110.00')
+      && remoteReady.line.includes('¥10.00'),
+    'and she says the amount, credit part included', remoteReady.line)
+    /* 服务端**没有**任何默认值：不传身份它直接 TypeError。这条因此必须钉住。 */
+    check(seenClient !== null && seenClient.version === pkg.version
+      && typeof seenClient.locale === 'string' && seenClient.locale !== ''
+      && typeof seenClient.timezoneOffsetSeconds === 'number' && Number.isFinite(seenClient.timezoneOffsetSeconds),
+    'the Remote call carries this call\'s own identity (version / locale / UTC offset)',
+    JSON.stringify(seenClient))
+    check(remoteReady.doctor.remoteSeat === true && remoteReady.doctor.via === 'remote',
+      'doctor() reports the Remote seat and which channel this read took',
+      JSON.stringify(remoteReady.doctor))
+
+    /* 两条通道都在 → 走平台原生那条 Remote；host 座位只当兜底 */
+    const bothSeats = await runRemote(
+      {
+        getBalance: async () => ({ ok: true, value: { status: 'ready', value: [{ currency: 'CNY', balance: '110.00' }], bonusWallets: [] } }),
+        getState: async () => ({ ok: true, value: { status: 'credential-stored' } }),
+      },
+      async () => ({ ok: true, status: 'ready', wallets: [{ currency: 'CNY', balance: '999.00' }], bonusWallets: [] }),
+    )
+    check(bothSeats.res.state === 'ready' && bothSeats.res.wallets[0].balance === '110.00'
+      && bothSeats.doctor.via === 'remote' && bothSeats.doctor.hostSeat === true,
+    'with both seats live the platform Remote wins, and the host seat stays declared',
+    JSON.stringify(bothSeats.doctor))
+
+    const remoteSignedOut = await runRemote({
+      getBalance: async () => ({ ok: true, value: null }),
+      getState: async () => ({ ok: true, value: { status: 'signed-out' } }),
+    })
+    check(remoteSignedOut.res.state === 'signed-out'
+      && fromPool(linesInBundle()?.balanceSignedOut, remoteSignedOut.line, ''),
+    'a null balance while signed out is reported as signed out', remoteSignedOut.line)
+
+    const remoteMoved = await runRemote({
+      getBalance: async () => ({ ok: true, value: null }),
+      getState: async () => ({ ok: true, value: { status: 'credential-stored' } }),
+    })
+    check(remoteMoved.res.state === 'unavailable'
+      && fromPool(linesInBundle()?.balanceUnavailable, remoteMoved.line, ''),
+    'a null balance while STILL signed in is "try again", not "log in"', remoteMoved.line)
+
+    const remoteRefused = await runRemote({ getBalance: async () => ({ ok: false, reason: 'disconnected' }) })
+    check(remoteRefused.res.state === 'failed' && remoteRefused.res.reason === 'disconnected'
+      && fromPool(linesInBundle()?.balanceFailed, remoteRefused.line, ''),
+    'a refused envelope is a failure and keeps the reason', JSON.stringify(remoteRefused.res))
+
+    const remoteFailed = await runRemote({
+      getBalance: async () => ({ ok: true, value: { status: 'failed' } }),
+      getState: async () => ({ ok: true, value: { status: 'credential-stored' } }),
+    })
+    check(remoteFailed.res.state === 'failed' && remoteFailed.res.reason === 'service-failed'
+      && !/110\.00/.test(remoteFailed.line),
+    'a platform "failed" inside the envelope never becomes a zero balance', JSON.stringify(remoteFailed.res))
+
+    const remoteThrew = await runRemote({ getBalance: async () => { throw new Error('boom') } })
+    check(remoteThrew.res.state === 'failed' && remoteThrew.res.reason === 'call-failed'
+      && remoteThrew.res.detail === 'boom',
+    'a throwing Remote call is caught and reported', JSON.stringify(remoteThrew.res))
+
+    /* 一个永远不回答的 Remote（连接断了但 promise 不落地）：不许让气泡停在"看一下……"。
+       服务和宿主半包那条路一样不接受 AbortSignal，只能自己竞速 —— 8 秒。 */
+    {
+      const hung = createHarness({
+        timer: true, composerText: '',
+        services: { 'remote.account': { getBalance: () => new Promise(() => {}) } },
+      })
+      const keepHung = active
+      active = hung
+      hung.evaluate(clientSrc)
+      hung.module().default.apply(hung.ctx, { reactions: true, wander: false, celebrate: false })
+      hung.advance(1300, 100)
+      const pending = hung.win.__wisp.checkBalance()
+      hung.advance(9000, 250)
+      const res = await pending
+      check(res.state === 'failed' && res.reason === 'call-failed' && res.detail === 'timeout',
+        'a Remote call that never answers is cut off instead of hanging the bubble',
+        JSON.stringify(res))
+      hung.win.__wisp.destroy()
+      active = keepHung
+    }
 
     /* 英文覆盖层：余额这几句也要有，而且一个汉字都不许有 —— 1.36 的英文是覆盖层，
        新加的池子漏翻就会让英文界面的人看到中文。 */
@@ -2957,11 +3099,12 @@ if (clientSrc !== null) {
       `pointermove=${mo.win.listenerCount('pointermove')} blur=${mo.win.listenerCount('blur')}`)
     active = keepMo
 
-    /* ---------------- 3f-ter. 第一条帧动画（v1.45.0）----------------------- */
-    head('3f-ter. the first frame animation: an alpha loop that freezes on demand')
+    /* ---------------- 3f-ter. 第一条帧动画（v1.45.0；v1.46.1 起是动图 <img>）-- */
+    head('3f-ter. the first frame animation: an animated WebP that steps aside to freeze')
 
-    /* 这一段测的是"叠加在立绘上的那段视频循环"，而它有三个**只有行为能证明**的点：
-       与立绘同一格、不吃指针、以及"该停的时候真的停住并回到首帧"。
+    /* 这一段测的是"叠加在立绘上的那层动图"，而它有四个**只有行为能证明**的点：
+       与立绘同一格、不吃指针、显示时立绘退场（v1.45.2）、以及"该冻结时它藏起来、
+       画面回到立绘"（v1.46.1：<img> 上的动图停不下来，藏起来是唯一的冻结方式）。
        单开一个替身：这里要真的睡着（sleepAfterMs 在别的替身里是一小时，
        而直接 mood('sleep') 更直接，也不会打乱别人的时间轴）。 */
     const mv = createHarness({ timer: true, composerText: '' })
@@ -2992,99 +3135,124 @@ if (clientSrc !== null) {
         : 'visible'
     )
 
-    /* 没有动作素材的状态**连元素都不建**：摆一个永远不播的空盒子，代价是
-       316 KB 的 base64 白解一遍，收益是零。 */
-    check(mvRoot.querySelectorAll('video').length === 0,
-      'a mood with no clip does not even build a <video> — no element, no base64 decode',
-      `${mvRoot.querySelectorAll('video').length} video(s) while idle`)
-    /* 没有素材的状态：立绘就是画面里的那个人，而且**没有第二个"她"** —— 视频不建、属性不挂。 */
+    /* 没有动作素材的状态**连元素都不建**：摆一个永远不动、还要白解 1.9 MB 的空盒子，
+       代价是真的，收益是零。 */
+    check(mvRoot.querySelectorAll('.wisp-video').length === 0 && mvRoot.querySelectorAll('video').length === 0,
+      'a mood with no clip does not even build the motion layer — no element, no base64 decode',
+      `${mvRoot.querySelectorAll('.wisp-video').length} motion layer(s) while idle`)
+    /* 没有素材的状态：立绘就是画面里的那个人，而且**没有第二个"她"** —— 动图不建、属性不挂。 */
     const mvIdleImgs = mvRoot.querySelectorAll('.wisp-img')
-    check(mvRoot.querySelectorAll('video').length === 0 && mvIdleImgs.length === 1
+    check(mvRoot.querySelectorAll('.wisp-video').length === 0 && mvIdleImgs.length === 1
       && mvVis(mvIdleImgs[0]) === 'visible' && mvRoot.dataset.frame === undefined,
-    'with no clip the frame never takes the picture: no video, one visible sprite, no "frame owns it" attribute (v1.45.2)',
-    `videos=${mvRoot.querySelectorAll('video').length} sprites=${mvIdleImgs.length} sprite=${mvVis(mvIdleImgs[0])} data-frame=${String(mvRoot.dataset.frame)}`)
+    'with no clip the frame never takes the picture: one visible sprite, no "frame owns it" attribute (v1.45.2)',
+    `motion=${mvRoot.querySelectorAll('.wisp-video').length} sprites=${mvIdleImgs.length} sprite=${mvVis(mvIdleImgs[0])} data-frame=${String(mvRoot.dataset.frame)}`)
 
     mvApi.mood('sleep')
     mv.advance(400, 100)
-    const mvVideo = mvLive()
+    const mvMotion = mvLive()
     const mvImgs = mvLean.querySelectorAll('.wisp-img')
     const mvImg = mvImgs[0] ?? null
-    check(mvVideo !== null,
-      'a mood that HAS a clip builds the <video> overlay', String(mvVideo?.tagName))
-    check(mvVideo !== null && mvVideo.parentNode === mvLean && mvImgs.length === 1,
-      'the video sits in the same layer as the sprite, next to it — so it tilts and squashes with her',
-      `video in ${String(mvVideo?.parentNode?.className)}, ${mvImgs.length} sprite layer(s)`)
+    check(mvMotion !== null && mvMotion.tagName === 'IMG',
+      'a mood that HAS a clip builds an <img> overlay — the picture pipeline, not a media pipeline',
+      String(mvMotion?.tagName))
+    /* v1.46.1 的核心：**一个 <video> 都不该存在**。这个壳不还原 VP9 的 alpha，
+       而图片路径的 alpha 是硬的（见 build.mjs 的 motion 段与 WHATS_NEW）。 */
+    check(mvRoot.querySelectorAll('video').length === 0,
+      'and not a single <video> is built anywhere in the tree — the alpha has to come from the image path',
+      `${mvRoot.querySelectorAll('video').length} video element(s)`)
+    check(mvMotion !== null && mvMotion.parentNode === mvLean && mvImgs.length === 1,
+      'it sits in the same layer as the sprite, next to it — so it tilts and squashes with her',
+      `motion in ${String(mvMotion?.parentNode?.className)}, ${mvImgs.length} sprite layer(s)`)
     /* 与立绘**逐条同款**的行内盒模型：另起一套定位，就会出现"动起来时她跳了一下"
        —— 那是只有真机上才看得见的错位。 */
     const inlineBoxOf = (el) => ['position', 'top', 'left', 'width', 'height', 'objectFit', 'objectPosition']
       .map((k) => String(el?.style?.[k] ?? ''))
     const spriteBox = inlineBoxOf(mvImg)
-    const videoBox = inlineBoxOf(mvVideo)
-    check(mvImg !== null && videoBox.join('|') === spriteBox.join('|')
-      && videoBox[0] === 'absolute' && videoBox[3] === '100%' && videoBox[5] === 'contain'
-      && videoBox[6] === 'bottom center',
+    const motionBox = inlineBoxOf(mvMotion)
+    check(mvImg !== null && motionBox.join('|') === spriteBox.join('|')
+      && motionBox[0] === 'absolute' && motionBox[3] === '100%' && motionBox[5] === 'contain'
+      && motionBox[6] === 'bottom center',
     'and it is laid out exactly like the sprite it overlays (inset 0 / 100% / contain / bottom center)',
-    `video[${videoBox.join(',')}] vs sprite[${spriteBox.join(',')}]`)
+    `motion[${motionBox.join(',')}] vs sprite[${spriteBox.join(',')}]`)
 
-    const mvAttrs = ['muted', 'playsinline', 'autoplay', 'loop']
-    check(mvVideo !== null && mvAttrs.every((a) => mvVideo.getAttribute(a) === '')
-      && mvVideo.getAttribute('preload') === 'auto',
-    'muted + playsinline + autoplay + loop + preload=auto — muted must be true before the src, or autoplay is refused',
-    mvAttrs.map((a) => `${a}=${JSON.stringify(mvVideo?.getAttribute(a))}`).join(' ') + ` preload=${JSON.stringify(mvVideo?.getAttribute('preload'))}`)
+    check(mvMotion !== null && mvMotion.getAttribute('alt') === '' && mvMotion.getAttribute('aria-hidden') === 'true'
+      && mvMotion.draggable === false,
+    'and it is marked as decoration: empty alt, aria-hidden, not draggable',
+    `alt=${JSON.stringify(mvMotion?.getAttribute('alt'))} aria-hidden=${JSON.stringify(mvMotion?.getAttribute('aria-hidden'))} draggable=${String(mvMotion?.draggable)}`)
 
     const mvCss = String(mv.styleInserts[0] ?? '')
     const mvRule = (mvCss.match(/\.wisp-video\{[^}]*\}/) ?? [''])[0]
-    check(mvVideo !== null && mvVideo.style.pointerEvents === 'none' && mvRule.includes('pointer-events:none'),
-      'the video never takes a pointer event — her silhouette hit layer still owns every click',
-      `inline=${mvVideo?.style.pointerEvents} rule=${mvRule.slice(0, 60)}…`)
-    /* reduced-motion 那条兜底：媒体查询够不着 JS 的播放状态，但它至少能让这层不出现在
+    check(mvMotion !== null && mvMotion.style.pointerEvents === 'none' && mvRule.includes('pointer-events:none'),
+      'the motion layer never takes a pointer event — her silhouette hit layer still owns every click',
+      `inline=${mvMotion?.style.pointerEvents} rule=${mvRule.slice(0, 60)}…`)
+    /* reduced-motion 那条兜底：媒体查询够不着 JS 的显隐状态，但它至少能让这层不出现在
        画面上（JS 拿不到 matchMedia 的壳里，冻结就只剩这一道）。 */
     const mvRmAt = mvCss.indexOf('@media (prefers-reduced-motion:reduce)')
-    check(!/\[data-mood="sleep"\]\s*\.wisp-video\{[^}]*filter\s*:/.test(String(clientSrc)) && /\[data-mood="sleep"\]\s*\.wisp-img\{[^}]*filter\s*:/.test(String(clientSrc)),
-      'the sleeping colour grade stays on the STATIC sprite only - never on the alpha video (it would raster black)')
+    /* 媒体查询是第二道闸：JS 拿不到 matchMedia 的壳里，冻结就只剩这一条 —— 它必须
+       仍然能把动作层从画面上拿掉（v1.46.1 之后这层是 <img>，display:none 照旧管用）。 */
+    check(mvRmAt >= 0 && mvCss.slice(mvRmAt).includes('.wisp-video{display:none!important}'),
+      'the reduced-motion block still hides the motion layer in CSS — the JS gate is not the only one',
+      mvRmAt >= 0 ? 'found in the stylesheet insert' : 'no @media (prefers-reduced-motion:reduce) block')
+    /* 动作层**不许有 CSS filter**（v1.45.3 立的规矩，v1.46.1 照旧）：滤镜会给这一层
+       再插一次栅格化，alpha 剪影被重新合成一遍 —— 那正是"她整个人变黑"那次的成因；
+       阴影与调色只属于静态立绘。
+       所以这条断言盯的必须是结构，而不是某一行的字面量：
+       ① 睡眠那档只许改 --wisp-sprite；② 只有 .wisp-img 去读它；③ 动作层一个字都不许碰。 */
+    const sleepGrade = /\[data-mood="sleep"\]\{[^}]*--wisp-sprite\s*:/.test(String(clientSrc))
+    const spriteTakesGrade = /\.wisp-img\{[^}]*filter:var\(--wisp-glow\)\s*var\(--wisp-sprite\)/.test(String(clientSrc))
+    check(!/\.wisp-video\{[^}]*filter\s*:/.test(String(clientSrc))
+      && sleepGrade && spriteTakesGrade
+      && !/\[data-mood="sleep"\]\s*\.wisp-video\{[^}]*--wisp-sprite/.test(String(clientSrc)),
+      'the sleeping colour grade stays on the STATIC sprite only - the motion layer carries no filter at all',
+      (sleepGrade ? '' : 'no [data-mood="sleep"]{--wisp-sprite:…} rule; ')
+        + (spriteTakesGrade ? '' : 'the sprite does not compose var(--wisp-glow) var(--wisp-sprite); '))
     /* 属性 -> 画面的**映射**：属性在、规则在，退场才真的发生。
        用 visibility 而不是 display:none —— 盒子留着，布局不动，退场/回场不跳。 */
     check(mvFrameRule.includes('visibility:hidden') && !mvFrameRule.includes('display:none'),
       'the stylesheet takes the sprite out through visibility, never display — the box stays, so handing the picture over does not make her jump (v1.45.2)',
       mvFrameRule || 'no .wisp-root[data-frame="on"] .wisp-img rule in the stylesheet')
 
-    const mvBlob = mv.blobs.find((b) => String(b.type).startsWith('video/'))
-    check(mvVideo !== null && String(mvVideo.src).indexOf('blob:') === 0
-      && mvBlob !== undefined && mvBlob.type === 'video/webm' && mvBlob.size > 1024,
-    'the clip bytes reach the <video> through the same Blob pipeline as the sprites (this shell refuses data: sources)',
-    `${String(mvVideo?.src).slice(0, 28)} / ${mvBlob?.type} / ${mvBlob?.size ?? 0} B`)
-    check(mvVideo !== null && mvVideo.paused === false && mvVideo.style.display !== 'none',
-      'the loop is actually playing at the default level', `paused=${mvVideo?.paused} display=${mvVideo?.style.display || '(default)'}`)
-    /* 需求的那一格：**在播的时候立绘必须不在场**（视频那一列由上面那条钉住）。
-       两层同时可见就是重影 —— alpha 视频的透明处挡不住下面那张静帧。 */
-    check(mvVideo.paused === false && mvVideo.style.display !== 'none'
+    /* 素材字节走**和立绘同一条路**：data URI -> Blob -> object URL（这个壳把 data: 源当坏图）。
+       动图那一份是唯一一个 MB 级的 image/webp blob（精灵图都是百 KB 级），按体积点名它。 */
+    const mvBlob = mv.blobs.find((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
+    check(mvMotion !== null && String(mvMotion.src).indexOf('blob:') === 0
+      && mvBlob !== undefined && mvBlob.type === 'image/webp' && mvBlob.size > 1024 * 1024,
+    'the animated WebP reaches the <img> through the same Blob pipeline as the sprites, typed image/webp',
+    `${String(mvMotion?.src).slice(0, 28)} / ${mvBlob?.type} / ${mvBlob?.size ?? 0} B`)
+    check(mvMotion !== null && mvMotion.style.display !== 'none',
+      'the animation is on screen at the default level', `display=${mvMotion?.style.display || '(default)'}`)
+    /* 需求的那一格：**动图在画面上的时候立绘必须不在场**（动图那一列由上面那条钉住）。
+       两层同时可见就是重影 —— 动图的透明处挡不住下面那张静帧。 */
+    check(mvMotion.style.display !== 'none'
       && mvVis(mvImg) === 'hidden' && mvRoot.dataset.frame === 'on'
-      && mvImg.style.visibility === 'hidden' && mvApi.doctor().motion.frame.spriteHidden === true,
-    'and while the loop plays the static sprite is GONE — two visible layers is a double image, not a fallback (v1.45.2)',
-    `paused=${mvVideo.paused} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)} doctor=${JSON.stringify(mvApi.doctor().motion.frame.spriteHidden)}`)
+      && mvImg.style.visibility === 'hidden' && mvApi.doctor().motion.frame.spriteHidden === true
+      && mvApi.doctor().motion.frame.showing === true,
+    'and while the animation is on screen the static sprite is GONE — two visible layers is a double image, not a fallback (v1.45.2)',
+    `display=${mvMotion.style.display} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)} doctor=${JSON.stringify(mvApi.doctor().motion.frame.spriteHidden)}`)
 
     /* ---- 冻结规则之一：静止档 ---- */
-    /* 先把"已经循环到一半"摆出来：不摆的话，currentTime 本来就是 0，
-       "回到首帧"这条断言会因为**没发生过任何事**而通过。 */
-    mvVideo.currentTime = 2.4
+    /* 动图没有"暂停"可以喊（<img> 上没有 pause()，也没有 currentTime 可以写回 0），
+       所以冻结的唯一正确行为是**把它藏起来、把画面交回立绘** —— 下面这几条盯的就是
+       这件事：看不见动图 + 看得见立绘，两者缺一不可。 */
     mvApi.configure({ motion: 'off' })
-    check(mvVideo.paused === true && mvVideo.currentTime === 0 && mvVideo.style.display === 'none',
-      'motion: off pauses the loop AND rewinds it to the first frame — "still" is not "slower"',
-      `paused=${mvVideo.paused} t=${mvVideo.currentTime} display=${mvVideo.style.display}`)
+    check(mvMotion.style.display === 'none',
+      'motion: off takes the animation off screen — an animated <img> cannot be paused, so hiding it IS the freeze',
+      `display=${mvMotion.style.display}`)
     check(mvImg !== null && mvImg.removed !== true
       && String(mvImg.style.opacity) !== '0' && String(mvImg.style.display) !== 'none',
     'and the static sprite is what is left on screen — the fallback is the point of freezing',
     `sprite opacity=${mvImg?.style.opacity || '(default)'} display=${mvImg?.style.display || '(default)'}`)
-    check(mvVideo.style.display === 'none' && mvVis(mvImg) === 'visible'
-      && mvRoot.dataset.frame === undefined && mvImg.style.visibility !== 'hidden',
+    check(mvMotion.style.display === 'none' && mvVis(mvImg) === 'visible'
+      && mvRoot.dataset.frame === undefined && mvImg.style.visibility !== 'hidden'
+      && mvApi.doctor().motion.frame.showing === false && mvApi.doctor().motion.frame.frozen === true,
     'and it is actually VISIBLE again, not merely present: the freeze hands the picture back to the sprite (v1.45.2)',
-    `video=${mvVideo.style.display} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)}`)
+    `motion=${mvMotion.style.display} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)}`)
 
-    /* ---- 恢复：同一个元素接着播，不重建 ---- */
+    /* ---- 恢复：同一个元素接着动，不重建 ---- */
     mvApi.configure({ motion: 'full' })
-    check(mvVideo.paused === false && mvVideo.style.display !== 'none' && mvLive() === mvVideo,
-      'putting the level back resumes that same element instead of rebuilding it',
-      `paused=${mvVideo.paused} display=${mvVideo.style.display || '(default)'}`)
+    check(mvMotion.style.display !== 'none' && mvLive() === mvMotion,
+      'putting the level back shows that same element instead of rebuilding it',
+      `display=${mvMotion.style.display || '(default)'}`)
     /* 来回切：可见性必须跟着**每一次**切换走。只切一次的实现在这里就露馅了。 */
     check(mvVis(mvImg) === 'hidden' && mvRoot.dataset.frame === 'on',
       'and resuming takes the sprite out of the picture again — the switch follows every transition, not just the first one (v1.45.2)',
@@ -3092,20 +3260,20 @@ if (clientSrc !== null) {
 
     /* ---- 躲起来（display:none）也不该占着解码器 ---- */
     mvApi.hide()
-    check(mvVideo.paused === true && mvVideo.currentTime === 0,
-      'hiding her away stops the loop too — an invisible <video> must not keep decoding',
-      `paused=${mvVideo.paused} t=${mvVideo.currentTime}`)
-    /* "被躲起来"也是冻结规则的一条：视频退场、画面归立绘 —— 她回来时看到的该是那张立绘。 */
-    check(mvVideo.paused === true && mvVideo.style.display === 'none'
+    check(mvMotion.style.display === 'none',
+      'hiding her away takes the animation off screen too — an invisible 1.9 MB loop must not keep decoding',
+      `display=${mvMotion.style.display}`)
+    /* "被躲起来"也是冻结规则的一条：动图退场、画面归立绘 —— 她回来时看到的该是那张立绘。 */
+    check(mvMotion.style.display === 'none'
       && mvVis(mvImg) === 'visible' && mvRoot.dataset.frame === undefined,
     'and while she is hidden away the frame gives the picture back as well (v1.45.2)',
-    `paused=${mvVideo.paused} video=${mvVideo.style.display} sprite=${mvVis(mvImg)} data-frame=${String(mvRoot.dataset.frame)}`)
+    `motion=${mvMotion.style.display} sprite=${mvVis(mvImg)} data-frame=${String(mvRoot.dataset.frame)}`)
     mvApi.show()
-    check(mvVideo.paused === false, 'and calling her back resumes it', `paused=${mvVideo.paused}`)
-    check(mvVideo.style.display !== 'none' && mvVis(mvImg) === 'hidden'
+    check(mvMotion.style.display !== 'none', 'and calling her back shows it again', `display=${mvMotion.style.display || '(default)'}`)
+    check(mvMotion.style.display !== 'none' && mvVis(mvImg) === 'hidden'
       && mvRoot.dataset.frame === 'on',
-    'and the loop takes the picture again the moment she is back (v1.45.2)',
-    `video=${mvVideo.style.display || '(default)'} sprite=${mvVis(mvImg)} data-frame=${String(mvRoot.dataset.frame)}`)
+    'and the animation takes the picture again the moment she is back (v1.45.2)',
+    `motion=${mvMotion.style.display || '(default)'} sprite=${mvVis(mvImg)} data-frame=${String(mvRoot.dataset.frame)}`)
 
     /* ---- 冻结规则之二：系统要求减少动态效果 ---- */
     const mvr = createHarness({ timer: true, composerText: '', reducedMotion: true })
@@ -3119,36 +3287,35 @@ if (clientSrc !== null) {
     mvrApi.mood('sleep')
     mvr.advance(400, 100)
     const mvrRoot = mvr.find('wisp-root')
-    const mvrVideo = mvr.all('wisp-video').find((el) => el.removed !== true) ?? null
-    check(mvrVideo !== null && mvrVideo.paused === true && mvrVideo.currentTime === 0
-      && mvrVideo.style.display === 'none',
-    'under prefers-reduced-motion the loop is frozen at the first frame, exactly like the "still" level',
-    `paused=${mvrVideo?.paused} t=${mvrVideo?.currentTime} display=${mvrVideo?.style.display}`)
+    const mvrMotion = mvr.all('wisp-video').find((el) => el.removed !== true) ?? null
+    check(mvrMotion !== null && mvrMotion.tagName === 'IMG' && mvrMotion.style.display === 'none',
+      'under prefers-reduced-motion the motion layer never goes on screen (an <img> has no other way to be frozen)',
+      `${String(mvrMotion?.tagName)} display=${mvrMotion?.style.display}`)
     check(mvrRoot.querySelectorAll('.wisp-img').length === 1 && mvrApi.doctor().motion.frame.frozen === true,
       'and the static sprite is the whole picture, with doctor() saying why',
       `sprites=${mvrRoot.querySelectorAll('.wisp-img').length} doctor.frozen=${mvrApi.doctor().motion.frame.frozen}`)
     check(mvrRoot.dataset.frame === undefined
       && String(mvrRoot.querySelector('.wisp-img')?.style?.visibility ?? '') !== 'hidden',
-    'and under reduced motion the sprite is visible — the loop never takes the picture (v1.45.2)',
+    'and under reduced motion the sprite is visible — the animation never takes the picture (v1.45.2)',
     `inline=${String(mvrRoot.querySelector('.wisp-img')?.style?.visibility ?? '') || '(unset)'} data-frame=${String(mvrRoot.dataset.frame)}`)
     mvrApi.destroy()
     active = mv
 
     /* ---- 加载失败：静默降级，不冒泡、不留一个空盒子 ---- */
     let mvErrThrow = null
-    try { mvVideo.dispatch('error', {}) } catch (error) { mvErrThrow = error }
-    check(mvErrThrow === null && mvVideo.style.display === 'none' && mvVideo.paused === true
+    try { mvMotion.dispatch('error', {}) } catch (error) { mvErrThrow = error }
+    check(mvErrThrow === null && mvMotion.style.display === 'none'
       && mvRoot.querySelectorAll('.wisp-img').length === 1,
-    'a clip that fails to load degrades silently: the video hides, the sprite stays, nothing throws',
-    `threw=${mvErrThrow === null ? 'no' : String(mvErrThrow.message)} display=${mvVideo.style.display} paused=${mvVideo.paused}`)
-    /* 失败是**静默**的，所以"兜底真的看得见"必须是个断言：视频这一层退场之后，
+    'a clip that fails to load degrades silently: the motion layer hides, the sprite stays, nothing throws',
+    `threw=${mvErrThrow === null ? 'no' : String(mvErrThrow.message)} display=${mvMotion.style.display}`)
+    /* 失败是**静默**的，所以"兜底真的看得见"必须是个断言：动图这一层退场之后，
        立绘要回到画面上（visibility 回 visible），而不是留下一个空盒子。 */
-    check(mvVideo.style.display === 'none' && mvVis(mvImg) === 'visible'
+    check(mvMotion.style.display === 'none' && mvVis(mvImg) === 'visible'
       && mvRoot.dataset.frame === undefined && mvImg.style.visibility !== 'hidden',
-    'and the failed clip hands the picture back: the video is gone and the sprite is visible again, silently (v1.45.2)',
-    `video=${mvVideo.style.display} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)}`)
+    'and the failed clip hands the picture back: the motion layer is gone and the sprite is visible again, silently (v1.45.2)',
+    `motion=${mvMotion.style.display} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)}`)
     check(mvApi.doctor().motion.frame.spriteHidden === false,
-      'and doctor() says the sprite owns the picture again, not just that the video is gone (v1.45.2)',
+      'and doctor() says the sprite owns the picture again, not just that the motion layer is gone (v1.45.2)',
       JSON.stringify(mvApi.doctor().motion.frame))
     check(mvApi.doctor().motion.frame.failed === true,
       'and doctor() reports the degraded frame animation instead of leaving it a mystery',
@@ -3157,13 +3324,13 @@ if (clientSrc !== null) {
     mvApi.mood('idle')
     mvApi.mood('sleep')
     mv.advance(200, 100)
-    check(mvVideo.paused === true && mvVideo.style.display === 'none' && mvLive() === mvVideo,
-      'and it is not re-created or retried on the next nap', `paused=${mvVideo.paused} display=${mvVideo.style.display}`)
-    /* 每一次 syncMotion 都喊一遍 play() 是个隐蔽的浪费（每次都造一个 promise 没人接），
-       而"稳态重算"这条路（轮询里的 setMood）会把它放大成一个持续的噪声。
-       计数钉住的是"只在状态真的变了的时候动"：这一整段里播放意图只切换了三次。 */
-    check(mv.videoPlays.length <= 4 && mv.videoPauses.length >= 3,
-      'play()/pause() follow the state transitions instead of every recompute',
+    check(mvMotion.style.display === 'none' && mvLive() === mvMotion,
+      'and it is not re-created or retried on the next nap', `display=${mvMotion.style.display}`)
+    /* 动图这一层**一次 play()/pause() 都不该出现**：那是媒体通道的 API，图片路径上没有它，
+       也不该有人偷偷搭一条回来。替身把每一次 play/pause 记在 harness 上，所以"一次都没有"
+       在这里是能数出来的事实，而不是从源码里读出来的一句话。 */
+    check(mv.videoPlays.length === 0 && mv.videoPauses.length === 0,
+      'the motion layer never calls play()/pause() — the media pipeline is gone, not merely unused',
       `${mv.videoPlays.length} play(s), ${mv.videoPauses.length} pause(s) across the whole section`)
     mvApi.destroy()
     active = keepMv
@@ -3728,6 +3895,45 @@ if (clientSrc !== null) {
     check(h.document.activeElement?.getAttribute('tabindex') === '0',
       'her body is focusable, which is what makes the menu reachable without a mouse',
       String(h.document.activeElement?.getAttribute('tabindex')))
+    /* ---- 焦点环：不能是浏览器默认那个矩形 ------------------------------------
+       用户报的"有时会出现素材的矩形边界线"就是它：默认焦点环画在 .wisp-body 这个
+       560×840 的盒子上，而盒子里大部分是透明的 —— 屏幕上于是浮着一个套住素材的
+       矩形线框。修法是两半，缺一不可：默认环关掉（样式表 + 行内各一份），键盘焦点
+       改用**贴着剪影**的辉光表达（drop-shadow 跟的是 alpha 剪影，任何尺寸都不是矩形）。 */
+    const ringCss = String(h.styleInserts[0] ?? '')
+    check(/\.wisp-body:focus[^{]*\{[^}]*outline\s*:\s*(none|0)/.test(ringCss),
+      'the browser default focus ring is switched off for her box (it draws a rectangle around the sprite)',
+      (ringCss.match(/[^{}]*\.wisp-body:focus[^{]*\{[^}]*\}/) ?? ['(no such rule)'])[0].slice(0, 96))
+    check(body5.style.outline === 'none',
+      'and the inline mirror says the same, so a shell without the stylesheet does not get the box back',
+      String(body5.style.outline))
+    check(/\[data-focus="key"\]\{[^}]*--wisp-glow\s*:[^}]*drop-shadow\([^)]*var\(--wisp-accent\)/.test(ringCss)
+      && /\.wisp-img\{[^}]*filter:var\(--wisp-glow\)\s*var\(--wisp-sprite\)/.test(ringCss),
+      'keyboard focus stays visible: an accent halo that follows her silhouette instead of a box',
+      (ringCss.match(/\[data-focus="key"\]\{[^}]*\}/) ?? ['(no such rule)'])[0].slice(0, 96))
+    /* Esc 关掉菜单 = 键盘路径：焦点交还给她，指示必须亮（上面刚走完这条路）。 */
+    check(fifth.element.dataset.focus === 'key',
+      'focus handed back by the keyboard lights the halo',
+      String(fifth.element.dataset.focus))
+    /* 鼠标点她也会把焦点交给她（onDown 里的 focusHer）—— 那一下**什么都不该画**，
+       否则就退回用户看到的那条矩形边界线。 */
+    body5.blur()
+    h.win.dispatch('pointerdown', { clientX: 400, clientY: 300 })
+    body5.focus()
+    check(fifth.element.dataset.focus === undefined,
+      'a pointer-driven focus paints nothing at all — no box, no halo',
+      String(fifth.element.dataset.focus))
+    /* 反过来也必须成立：关掉默认环**不能**变成"键盘用户什么都看不见"。 */
+    body5.blur()
+    h.win.dispatch('keydown', { key: 'Tab' })
+    body5.focus()
+    check(fifth.element.dataset.focus === 'key',
+      'and keyboard focus lights it again — switching the default ring off must not blind keyboard users',
+      String(fifth.element.dataset.focus))
+    body5.blur()
+    check(fifth.element.dataset.focus === undefined,
+      'the halo is gone the moment focus leaves her',
+      String(fifth.element.dataset.focus))
 
     /* ---- 键盘入口：声明了 role="menu" 就得有办法用键盘打开它 ---------------- */
     const bodyKey = (key, opts = {}) => body5.dispatch('keydown', Object.assign(
@@ -4057,10 +4263,10 @@ if (clientSrc !== null) {
     check(soak.urLs.length <= 13,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
-    const clipBlobs = soak.blobs.filter((b) => String(b.type).startsWith('video/'))
-    check(clipBlobs.length === 1 && clipBlobs[0].type === 'video/webm' && clipBlobs[0].size > 1024,
+    const clipBlobs = soak.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
+    check(clipBlobs.length === 1,
       'the frame-animation clip is decoded once, not once per nap',
-      `${clipBlobs.length} video blob(s), ${clipBlobs[0]?.size ?? 0} bytes`)
+      `${clipBlobs.length} motion blob(s), ${clipBlobs[0]?.size ?? 0} bytes`)
 
     soakApi.destroy()
     check(soak.pendingTimers().length === 0 && soak.revoked.length === soak.urLs.length,
@@ -4676,10 +4882,11 @@ head('4b. the frame-animation clip is inlined in the bundle (and inside its budg
 
 /* 素材是**内联**的（单文件交付，见 build.mjs 的头注释），所以它的体积是包的一部分，
    而"涨了多少"从来不会自己冒出来 —— 只有这一条盯着它。
-   预算 800 KB 是 base64 之后的长度：这一版实测 421.1 KB（原始 315.8 KB）。
-   它记在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
-   一个数写两遍就是下一次漂移的起点。 */
-const MOTION_BUDGET_KB = 800
+   预算按**实测值**设上限（v1.46.1）：动图 WebP 原始 1853.6 KB、内联 2471.5 KB
+   （480 宽 / q:v 60 / 24fps / 97 帧）。上界取 2472 KB —— 比它再大就说明素材被换过或
+   参数被动过，必须有人重新量一次再改这个数。它记在这里而不是 build.mjs 里：构建负责
+   **报**体积，预检负责**判**体积，一个数写两遍就是下一次漂移的起点。 */
+const MOTION_BUDGET_KB = 2472
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
@@ -4691,10 +4898,10 @@ const MOTION_BUDGET_KB = 800
     let motionValue = null
     try { motionValue = motionTable ? new Function(`return ${motionTable[1]}`)() : null } catch (error) { motionValue = null }
     const keys = motionValue && typeof motionValue === 'object' ? Object.keys(motionValue) : []
-    const inlined = keys.filter((k) => typeof motionValue[k] === 'string' && motionValue[k].startsWith('data:video/webm;base64,'))
+    const inlined = keys.filter((k) => typeof motionValue[k] === 'string' && motionValue[k].startsWith('data:image/webp;base64,'))
     check(keys.length > 0 && inlined.length === keys.length,
-      'the clip is embedded as a data URI — a share carries no .webm path to resolve',
-      keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]]).slice(0, 22)}…` : 'no MOTION table in the bundle')
+      'the clip is embedded as a data:image/webp URI — a share carries no .webp path to resolve',
+      keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]]).slice(0, 26)}…` : 'no MOTION table in the bundle')
 
     const bytes = keys.reduce((n, k) => n + String(motionValue[k]).length, 0)
     check(bytes > 0 && bytes <= MOTION_BUDGET_KB * 1024,
@@ -4705,8 +4912,8 @@ const MOTION_BUDGET_KB = 800
        只数长度不比内容，但"内联了另一份/半份素材"这件事一定会在这里露出来。 */
     const mismatch = []
     for (const key of keys) {
-      const file = join(here, 'assets', 'motion', `${key}.webm`)
-      if (!existsSync(file)) { mismatch.push(`${key}: assets/motion/${key}.webm 不在`); continue }
+      const file = join(here, 'assets', 'motion', `${key}.webp`)
+      if (!existsSync(file)) { mismatch.push(`${key}: assets/motion/${key}.webp 不在`); continue }
       const decoded = Buffer.from(String(motionValue[key]).slice(String(motionValue[key]).indexOf(',') + 1), 'base64')
       const onDisk = readFileSync(file)
       if (decoded.length !== onDisk.length) mismatch.push(`${key}: ${decoded.length} vs ${onDisk.length} bytes`)
@@ -4714,6 +4921,21 @@ const MOTION_BUDGET_KB = 800
     check(mismatch.length === 0,
       'and those bytes are exactly the asset on disk (same length, decoded out of the bundle)',
       mismatch.length ? mismatch.join(' | ') : keys.map((k) => `${k} ${kb(String(motionValue[k]).length)} KB inline`).join(', '))
+
+    /* 磁盘上那份文件**真的是动图**（RIFF/WEBP + ANMF 帧块）：MIME 是写死的，
+       素材被换成一张静图时，"她不动了"会和"没有素材"长得一模一样。 */
+    const animated = []
+    for (const key of keys) {
+      const file = join(here, 'assets', 'motion', `${key}.webp`)
+      if (!existsSync(file)) continue
+      const onDisk = readFileSync(file)
+      const riff = onDisk.subarray(0, 4).toString('latin1') === 'RIFF' && onDisk.subarray(8, 12).toString('latin1') === 'WEBP'
+      const frames = onDisk.toString('latin1').split('ANMF').length - 1
+      if (!riff || frames < 2) animated.push(`${key}: riff=${riff} frames=${frames}`)
+    }
+    check(animated.length === 0,
+      'and it is an ANIMATED WebP (RIFF/WEBP with a chain of ANMF frames), not a still',
+      animated.length ? animated.join(' | ') : keys.map((k) => `${k}: ${readFileSync(join(here, 'assets', 'motion', `${k}.webp`)).toString('latin1').split('ANMF').length - 1} frames`).join(', '))
 
     const moodMap = (/const MOTION_OF = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
     let wired = null
@@ -4723,8 +4945,8 @@ const MOTION_BUDGET_KB = 800
       'and the sleeping state is wired to a clip that is really in the bundle',
       wired ? JSON.stringify(wired) : 'no MOTION_OF map found')
 
-    check(!/['"][^'"]*\.webm['"]/.test(clientSrc),
-      'the bundle references no external video file')
+    check(!/['"][^'"]*\.(webm|mp4|mov)['"]/.test(clientSrc),
+      'the bundle references no external video file', 'no .webm/.mp4/.mov string in the bundle')
     check(!clientSrc.includes('__MOTION_LITERAL__'),
       'no leftover motion placeholder', 'run `node build.mjs`')
   }
@@ -5033,16 +5255,17 @@ if (existsSync(join(here, 'README.md'))) {
     fetched.win.__wisp.destroy()
     active = keepFetched
   }
-  /* 带 alpha 的视频**绝不能吃 CSS filter**：Chromium 会把它的透明区当黑色栅格化 ——
-     真机上就是"她整个人变黑了，像混合模式出问题"（v1.45.3 的成因）。 */
+  /* 动作层**绝不许吃 CSS filter**（v1.45.3 立的规矩，v1.46.1 换成动图 <img> 之后照旧）：
+     滤镜会给这一层再插一次栅格化，alpha 剪影被重新合成一遍就是"她整个人变黑"的成因。
+     阴影与调色只属于静态立绘。 */
   {
     const css = String(clientSrc)
-    const videoRule = (css.match(/\.wisp-video\{[^}]*\}/g) || []).join(' ')
-    check(videoRule.length > 0 && !/filter\s*:/.test(videoRule),
-      'no CSS filter is applied to the alpha video layer (a filter rasters it opaque-black)',
-      videoRule.slice(0, 160))
+    const motionRule = (css.match(/\.wisp-video\{[^}]*\}/g) || []).join(' ')
+    check(motionRule.length > 0 && !/filter\s*:/.test(motionRule),
+      'no CSS filter is applied to the motion layer (a filter re-rasterises the alpha cutout)',
+      motionRule.slice(0, 160))
     check(!/\[data-mood="[a-z]+"\]\s*\.wisp-video\{[^}]*filter\s*:/.test(css),
-      'and no mood rule re-adds a filter to the video either')
+      'and no mood rule re-adds a filter to the motion layer either')
   }
   const quoted = Number((/当前 \*\*(\d+) 项全 PASS/.exec(readmeText) ?? [])[1])
   const total = checks + 1
