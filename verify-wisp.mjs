@@ -2977,11 +2977,32 @@ if (clientSrc !== null) {
     const mvLean = mv.find('wisp-lean')
     const mvLive = () => mv.all('wisp-video').find((el) => el.removed !== true) ?? null
 
+    /* 静态立绘"看不看得见"（v1.45.2）在替身里由**两件事**共同决定：
+       ① 根上的 data-frame —— 行为，syncMotion() 写的那个属性；属性不写 = 退场没发生。
+       ② 样式表里把属性翻译成 visibility:hidden 的那条规则 —— 映射；规则没了，
+          属性写了也白写（画面照旧两层）。
+       行内那一份是样式表缺失时的兜底，也是同一件事的第二个落点。
+       替身没有级联引擎，所以这个 helper 把三者合成"浏览器会算出来的值"，
+       而每一条断言仍然把三者**分开点名** —— 合成值对了、其中一条断了，一样要红。 */
+    const mvFrameRule = (String(mv.styleInserts[0] ?? '').match(/\.wisp-root\[data-frame="on"\][^{]*\{[^}]*\}/) ?? [''])[0]
+    const mvVis = (el) => (
+      String(el?.style?.visibility ?? '') === 'hidden'
+      || (mvRoot.dataset.frame === 'on' && mvFrameRule.includes('visibility:hidden'))
+        ? 'hidden'
+        : 'visible'
+    )
+
     /* 没有动作素材的状态**连元素都不建**：摆一个永远不播的空盒子，代价是
        316 KB 的 base64 白解一遍，收益是零。 */
     check(mvRoot.querySelectorAll('video').length === 0,
       'a mood with no clip does not even build a <video> — no element, no base64 decode',
       `${mvRoot.querySelectorAll('video').length} video(s) while idle`)
+    /* 没有素材的状态：立绘就是画面里的那个人，而且**没有第二个"她"** —— 视频不建、属性不挂。 */
+    const mvIdleImgs = mvRoot.querySelectorAll('.wisp-img')
+    check(mvRoot.querySelectorAll('video').length === 0 && mvIdleImgs.length === 1
+      && mvVis(mvIdleImgs[0]) === 'visible' && mvRoot.dataset.frame === undefined,
+    'with no clip the frame never takes the picture: no video, one visible sprite, no "frame owns it" attribute (v1.45.2)',
+    `videos=${mvRoot.querySelectorAll('video').length} sprites=${mvIdleImgs.length} sprite=${mvVis(mvIdleImgs[0])} data-frame=${String(mvRoot.dataset.frame)}`)
 
     mvApi.mood('sleep')
     mv.advance(400, 100)
@@ -3023,6 +3044,11 @@ if (clientSrc !== null) {
       'and the reduced-motion media query hides the layer as a second guard')
     check(mvCss.includes('.wisp-root[data-mood="sleep"] .wisp-video{filter:'),
       'the sleeping colour grade is applied to the video too, so the moving frame does not look like a different asset')
+    /* 属性 -> 画面的**映射**：属性在、规则在，退场才真的发生。
+       用 visibility 而不是 display:none —— 盒子留着，布局不动，退场/回场不跳。 */
+    check(mvFrameRule.includes('visibility:hidden') && !mvFrameRule.includes('display:none'),
+      'the stylesheet takes the sprite out through visibility, never display — the box stays, so handing the picture over does not make her jump (v1.45.2)',
+      mvFrameRule || 'no .wisp-root[data-frame="on"] .wisp-img rule in the stylesheet')
 
     const mvBlob = mv.blobs.find((b) => String(b.type).startsWith('video/'))
     check(mvVideo !== null && String(mvVideo.src).indexOf('blob:') === 0
@@ -3031,6 +3057,13 @@ if (clientSrc !== null) {
     `${String(mvVideo?.src).slice(0, 28)} / ${mvBlob?.type} / ${mvBlob?.size ?? 0} B`)
     check(mvVideo !== null && mvVideo.paused === false && mvVideo.style.display !== 'none',
       'the loop is actually playing at the default level', `paused=${mvVideo?.paused} display=${mvVideo?.style.display || '(default)'}`)
+    /* 需求的那一格：**在播的时候立绘必须不在场**（视频那一列由上面那条钉住）。
+       两层同时可见就是重影 —— alpha 视频的透明处挡不住下面那张静帧。 */
+    check(mvVideo.paused === false && mvVideo.style.display !== 'none'
+      && mvVis(mvImg) === 'hidden' && mvRoot.dataset.frame === 'on'
+      && mvImg.style.visibility === 'hidden' && mvApi.doctor().motion.frame.spriteHidden === true,
+    'and while the loop plays the static sprite is GONE — two visible layers is a double image, not a fallback (v1.45.2)',
+    `paused=${mvVideo.paused} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)} doctor=${JSON.stringify(mvApi.doctor().motion.frame.spriteHidden)}`)
 
     /* ---- 冻结规则之一：静止档 ---- */
     /* 先把"已经循环到一半"摆出来：不摆的话，currentTime 本来就是 0，
@@ -3044,20 +3077,37 @@ if (clientSrc !== null) {
       && String(mvImg.style.opacity) !== '0' && String(mvImg.style.display) !== 'none',
     'and the static sprite is what is left on screen — the fallback is the point of freezing',
     `sprite opacity=${mvImg?.style.opacity || '(default)'} display=${mvImg?.style.display || '(default)'}`)
+    check(mvVideo.style.display === 'none' && mvVis(mvImg) === 'visible'
+      && mvRoot.dataset.frame === undefined && mvImg.style.visibility !== 'hidden',
+    'and it is actually VISIBLE again, not merely present: the freeze hands the picture back to the sprite (v1.45.2)',
+    `video=${mvVideo.style.display} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)}`)
 
     /* ---- 恢复：同一个元素接着播，不重建 ---- */
     mvApi.configure({ motion: 'full' })
     check(mvVideo.paused === false && mvVideo.style.display !== 'none' && mvLive() === mvVideo,
       'putting the level back resumes that same element instead of rebuilding it',
       `paused=${mvVideo.paused} display=${mvVideo.style.display || '(default)'}`)
+    /* 来回切：可见性必须跟着**每一次**切换走。只切一次的实现在这里就露馅了。 */
+    check(mvVis(mvImg) === 'hidden' && mvRoot.dataset.frame === 'on',
+      'and resuming takes the sprite out of the picture again — the switch follows every transition, not just the first one (v1.45.2)',
+      `sprite=${mvVis(mvImg)} data-frame=${String(mvRoot.dataset.frame)}`)
 
     /* ---- 躲起来（display:none）也不该占着解码器 ---- */
     mvApi.hide()
     check(mvVideo.paused === true && mvVideo.currentTime === 0,
       'hiding her away stops the loop too — an invisible <video> must not keep decoding',
       `paused=${mvVideo.paused} t=${mvVideo.currentTime}`)
+    /* "被躲起来"也是冻结规则的一条：视频退场、画面归立绘 —— 她回来时看到的该是那张立绘。 */
+    check(mvVideo.paused === true && mvVideo.style.display === 'none'
+      && mvVis(mvImg) === 'visible' && mvRoot.dataset.frame === undefined,
+    'and while she is hidden away the frame gives the picture back as well (v1.45.2)',
+    `paused=${mvVideo.paused} video=${mvVideo.style.display} sprite=${mvVis(mvImg)} data-frame=${String(mvRoot.dataset.frame)}`)
     mvApi.show()
     check(mvVideo.paused === false, 'and calling her back resumes it', `paused=${mvVideo.paused}`)
+    check(mvVideo.style.display !== 'none' && mvVis(mvImg) === 'hidden'
+      && mvRoot.dataset.frame === 'on',
+    'and the loop takes the picture again the moment she is back (v1.45.2)',
+    `video=${mvVideo.style.display || '(default)'} sprite=${mvVis(mvImg)} data-frame=${String(mvRoot.dataset.frame)}`)
 
     /* ---- 冻结规则之二：系统要求减少动态效果 ---- */
     const mvr = createHarness({ timer: true, composerText: '', reducedMotion: true })
@@ -3079,6 +3129,10 @@ if (clientSrc !== null) {
     check(mvrRoot.querySelectorAll('.wisp-img').length === 1 && mvrApi.doctor().motion.frame.frozen === true,
       'and the static sprite is the whole picture, with doctor() saying why',
       `sprites=${mvrRoot.querySelectorAll('.wisp-img').length} doctor.frozen=${mvrApi.doctor().motion.frame.frozen}`)
+    check(mvrRoot.dataset.frame === undefined
+      && String(mvrRoot.querySelector('.wisp-img')?.style?.visibility ?? '') !== 'hidden',
+    'and under reduced motion the sprite is visible — the loop never takes the picture (v1.45.2)',
+    `inline=${String(mvrRoot.querySelector('.wisp-img')?.style?.visibility ?? '') || '(unset)'} data-frame=${String(mvrRoot.dataset.frame)}`)
     mvrApi.destroy()
     active = mv
 
@@ -3089,6 +3143,15 @@ if (clientSrc !== null) {
       && mvRoot.querySelectorAll('.wisp-img').length === 1,
     'a clip that fails to load degrades silently: the video hides, the sprite stays, nothing throws',
     `threw=${mvErrThrow === null ? 'no' : String(mvErrThrow.message)} display=${mvVideo.style.display} paused=${mvVideo.paused}`)
+    /* 失败是**静默**的，所以"兜底真的看得见"必须是个断言：视频这一层退场之后，
+       立绘要回到画面上（visibility 回 visible），而不是留下一个空盒子。 */
+    check(mvVideo.style.display === 'none' && mvVis(mvImg) === 'visible'
+      && mvRoot.dataset.frame === undefined && mvImg.style.visibility !== 'hidden',
+    'and the failed clip hands the picture back: the video is gone and the sprite is visible again, silently (v1.45.2)',
+    `video=${mvVideo.style.display} sprite=${mvVis(mvImg)} inline=${mvImg?.style.visibility || '(unset)'} data-frame=${String(mvRoot.dataset.frame)}`)
+    check(mvApi.doctor().motion.frame.spriteHidden === false,
+      'and doctor() says the sprite owns the picture again, not just that the video is gone (v1.45.2)',
+      JSON.stringify(mvApi.doctor().motion.frame))
     check(mvApi.doctor().motion.frame.failed === true,
       'and doctor() reports the degraded frame animation instead of leaving it a mystery',
       JSON.stringify(mvApi.doctor().motion.frame))
