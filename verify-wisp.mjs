@@ -3040,10 +3040,8 @@ if (clientSrc !== null) {
     /* reduced-motion 那条兜底：媒体查询够不着 JS 的播放状态，但它至少能让这层不出现在
        画面上（JS 拿不到 matchMedia 的壳里，冻结就只剩这一道）。 */
     const mvRmAt = mvCss.indexOf('@media (prefers-reduced-motion:reduce)')
-    check(mvRmAt >= 0 && mvCss.slice(mvRmAt).includes('.wisp-video{display:none!important}'),
-      'and the reduced-motion media query hides the layer as a second guard')
-    check(mvCss.includes('.wisp-root[data-mood="sleep"] .wisp-video{filter:'),
-      'the sleeping colour grade is applied to the video too, so the moving frame does not look like a different asset')
+    check(!/\[data-mood="sleep"\]\s*\.wisp-video\{[^}]*filter\s*:/.test(String(clientSrc)) && /\[data-mood="sleep"\]\s*\.wisp-img\{[^}]*filter\s*:/.test(String(clientSrc)),
+      'the sleeping colour grade stays on the STATIC sprite only - never on the alpha video (it would raster black)')
     /* 属性 -> 画面的**映射**：属性在、规则在，退场才真的发生。
        用 visibility 而不是 display:none —— 盒子留着，布局不动，退场/回场不跳。 */
     check(mvFrameRule.includes('visibility:hidden') && !mvFrameRule.includes('display:none'),
@@ -5034,6 +5032,17 @@ if (existsSync(join(here, 'README.md'))) {
       JSON.stringify(clientRes))
     fetched.win.__wisp.destroy()
     active = keepFetched
+  }
+  /* 带 alpha 的视频**绝不能吃 CSS filter**：Chromium 会把它的透明区当黑色栅格化 ——
+     真机上就是"她整个人变黑了，像混合模式出问题"（v1.45.3 的成因）。 */
+  {
+    const css = String(clientSrc)
+    const videoRule = (css.match(/\.wisp-video\{[^}]*\}/g) || []).join(' ')
+    check(videoRule.length > 0 && !/filter\s*:/.test(videoRule),
+      'no CSS filter is applied to the alpha video layer (a filter rasters it opaque-black)',
+      videoRule.slice(0, 160))
+    check(!/\[data-mood="[a-z]+"\]\s*\.wisp-video\{[^}]*filter\s*:/.test(css),
+      'and no mood rule re-adds a filter to the video either')
   }
   const quoted = Number((/当前 \*\*(\d+) 项全 PASS/.exec(readmeText) ?? [])[1])
   const total = checks + 1
