@@ -17,7 +17,7 @@
  *      动画照跑但什么都不动。这条只有把 getKeyframes() 读出来才能证明。
  *   4. 动作幅度档：`静止` 下计算后的 animationName 是 none，姿势被钉在 0
  *   5. `prefers-reduced-motion`（CDP Emulation）：姿势与动作都不写
- *   6. 帧动画（v1.46.1 起是动图 WebP）：`<img>` 真的解得开（naturalWidth 480x854）、
+ *   6. 帧动画（v1.46.1 起是动图 WebP）：`<img>` 真的解得开（naturalWidth 720x1280）、
  *      与立绘同一格、冻结时 display:none 且立绘可见
  *
  * 用法：node tools/engine-probe.mjs      （WISP_CHROME=<可执行文件> 可指定浏览器）
@@ -457,10 +457,10 @@ try {
 
   /* ---------------------- 帧动画：这一段只有真引擎能回答 ----------------------
      假 DOM 能证明"把动图藏起来了、画面交回立绘"，证明不了**这张动图真的解得开**：
-     动图 WebP 在浏览器里出不出画、`naturalWidth` 是不是 480、叠在立绘上有没有
+     动图 WebP 在浏览器里出不出画、`naturalWidth` 是不是 720、叠在立绘上有没有
      对齐 —— 全是解码与合成的事，而它的失败在页面上表现为"她还是不动"，和"没有
      素材"长得一模一样。
-     这里**不读像素**：alpha 是 WebP 格式自己保证的（角落就是透的），把一张 480x854
+     这里**不读像素**：alpha 是 WebP 格式自己保证的（角落就是透的），把一张 720x1280
      的动图缩进 8x8 画布只能测出 canvas 的重采样，测不出格式；而"她是不是真的透"
      已经由 `<img>` + WebP 这条路径决定了，不需要探针再证一遍。 */
   head('the first frame animation (a real animated WebP)')
@@ -500,8 +500,8 @@ try {
   check(clip.built === true && clip.tag === 'IMG' && clip.isImg === true && clip.videos === 0,
     'the motion layer really is an <img> in the engine — and not a single <video> exists under her root',
     clip.built ? `${clip.tag} isImg=${clip.isImg} videos=${clip.videos}` : 'no motion layer was built')
-  check(clip.complete === true && clip.w === 480 && clip.h === 854,
-    'the animated WebP really decodes in the engine — 480x854 natural size, not just a data URI in the bundle',
+  check(clip.complete === true && clip.w === 720 && clip.h === 1280,
+    'the animated WebP really decodes in the engine — 720x1280 natural size, not just a data URI in the bundle',
     clip.built ? `${clip.src}… ${clip.w}x${clip.h} complete=${clip.complete}` : 'no <img> was built')
   check(clip.display !== 'none',
     'and it is on screen by default — the browser runs the animation itself', `display=${clip.display}`)
