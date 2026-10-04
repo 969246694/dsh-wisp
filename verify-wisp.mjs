@@ -4716,15 +4716,24 @@ head('3y. dialogs: about her, and the action preview')
 
   const eatCell = cells.find((c) => c.dataset.mood === 'eat')
   eatCell.dispatch('click', { preventDefault() {}, stopPropagation() {} })
-  check(dlgApi.dialog === null, 'clicking an action closes the dialog so you can see her')
+  check(dlgApi.dialog === 'actions',
+    'clicking an action KEEPS the dialog open — you can try several in a row (v1.47.1)',
+    String(dlgApi.dialog))
   check(dlgApi.currentMood === 'eat', 'and she takes that pose', String(dlgApi.currentMood))
   dlg.advance(1500, 100)
   check(dlgApi.currentMood === 'eat',
     'the reaction poll leaves the preview alone while it lasts', String(dlgApi.currentMood))
-  dlg.advance(9000, 500)
-  check(dlgApi.currentMood !== 'eat', 'and the preview does not stick forever', String(dlgApi.currentMood))
 
-  dlgApi.openActions()
+  /* 连续预览：同一个窗口里再点第二个动作，表情跟着换，窗仍然开着。 */
+  const happyCell = dlg.all('wisp-cell').filter((el) => el.removed !== true).find((c) => c.dataset.mood === 'happy')
+  happyCell.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+  check(dlgApi.dialog === 'actions' && dlgApi.currentMood === 'happy',
+    'a second click previews the next action without reopening anything',
+    'dialog=' + String(dlgApi.dialog) + ' mood=' + String(dlgApi.currentMood))
+  dlg.advance(9000, 500)
+  check(dlgApi.currentMood !== 'happy', 'and the preview does not stick forever', String(dlgApi.currentMood))
+
+  /* 关窗仍有三条路，先验右上角那个 ×（窗还开着，不用重开） */
   const x = dlg.find('wisp-dialog-x')
   check(x !== null, 'the close button is there')
   x.dispatch('click', { preventDefault() {} })
@@ -5259,14 +5268,15 @@ head('4b. the clips ship as FILES — the bundle carries only their names (v1.47
         8015.8 KB（两段 base64，v1.46.5 实测）；八条泳装再内联会到 ~45 MB ——
         所以这一条的上界是"几百字节"，不是"几 MB"。
      ② **磁盘**：素材还是跟着包走的，涨了仍然要有人重新量一次。上界按**十条**估
-        （通用 2 + 泳装 8，实测每条 2.6~3.3 MB）：27 MB 上下 + 余量 ⇒ **39000 KB**。
-        泳装那八条一旦落盘，这个数会跟着涨一次 —— 那时要有人重新量一遍再改它，
+        （通用 2 + 泳装 8）：1.47.1 八条泳装落盘之后实测 **29800.0 KB / 29.1 MB**
+        （每条 2617.0~3398.2 KB，最大的是通用的 sleepy），所以上界收到 **34000 KB**
+        （33.2 MB，约 +14% 余量）。每次素材换代都要有人重新量一遍再改它，
         而不是让它自己漂。
 
    上界写在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
    一个数写两遍就是下一次漂移的起点。 */
 const MOTION_MANIFEST_BUDGET_BYTES = 2048
-const MOTION_DISK_BUDGET_KB = 39000
+const MOTION_DISK_BUDGET_KB = 34000
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
