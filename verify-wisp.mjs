@@ -2297,8 +2297,10 @@ if (clientSrc !== null) {
 
     /* 平台事实（源码级查过）：宿主半包跑在 vm 沙箱里，harness 只给
        { defineTool, registerTool, handle }，沙箱里 nodeApiTraps() 挡住 Node API ——
-       插件**既不能联网、也不能写文件**，DSH 的安装器也没有可注入的服务。
-       所以"自己检查并安装更新"做不到；这一节测的是能真正做到的那几件事。 */
+       插件**自己**既不能联网、也不能写文件。但"装"这一步不用她自己做（v1.48.0）：
+       平台把插件管理器做成了客户端可用的 Remote 命名空间（ctx.remote.pluginManager），
+       installBundle 交给它就行 —— 平台自己的「插件」设置页走的是同一条路。
+       这一节测能真正做到的那几件事，安装那一段在下面 3d-quindecies-bis。 */
     const uv = createHarness({ timer: true, composerText: '', clipboard: true })
     const keepUv = active
     active = uv
@@ -2317,9 +2319,12 @@ if (clientSrc !== null) {
     check(typeof update?.whatsNew === 'string' && update.whatsNew.length > 0,
       'the what-is-new note covers the CURRENT version', String(update?.whatsNew))
 
-    /* 能力边界要如实报告，不能让人以为她能自己更新 */
-    check(update.canSelfUpdate === false, 'she does not pretend she can update herself',
-      String(update.canSelfUpdate))
+    /* 能力边界要如实报告 —— 但 v1.48.0 起"能自己更新"这句**成立了一半**：
+       她自己没有网络也没有 Node，可她能**让平台去装**（remote.pluginManager）。
+       所以这里验的是"她说得准"，不是"她说不能"。 */
+    check(update.canSelfUpdate === true && update.install !== undefined,
+      'she no longer claims she cannot install an update — the platform plugin manager can',
+      JSON.stringify({ canSelfUpdate: update.canSelfUpdate, via: update.install?.via }))
     check(typeof update.hint === 'string' && update.hint.includes('dsh-wisp'),
       'but she does say which package to install', String(update.hint))
     check(/沙箱|sandbox/.test(String(update.why)), 'and why — in plain words', String(update.why))
@@ -2386,6 +2391,129 @@ if (clientSrc !== null) {
       }
       hc.win.__wisp.destroy()
       active = keepHc
+    }
+
+
+    /* ---- 3d-quindecies-bis. 直接装上最新版（v1.48.0）-------------------------
+       客户端半包没有 host 座位，但 installUpdate **不需要它**：平台自己的「插件」设置页
+       走的就是 ctx.remote.pluginManager.installBundle。用假命名空间把几种结果走一遍。 */
+    {
+      const inPool = (pool, text) => (Array.isArray(pool) ? pool : [])
+        .some((line) => String(text).indexOf(String(line).split('{')[0]) === 0)
+      const mkInstaller = (services) => createHarness({ timer: true, composerText: '', services })
+      const runInstall = async (services, version) => {
+        const hx = mkInstaller(services)
+        const keep = active
+        active = hx
+        hx.evaluate(clientSrc)
+        hx.module().default.apply(hx.ctx, { reactions: true, wander: false, celebrate: false })
+        hx.advance(1300, 100)
+        const state = await hx.win.__wisp.installUpdate(version)
+        await new Promise((resolve) => setImmediate(resolve))
+        const line = String(hx.all('wisp-say').at(-1)?.textContent ?? '')
+        const doctor = hx.win.__wisp.doctor().update.install
+        hx.win.__wisp.destroy()
+        active = keep
+        return { state, line, doctor }
+      }
+
+      let asked = null
+      const applied = await runInstall({
+        'remote.pluginManager': {
+          installBundle: (spec) => { asked = spec; return Promise.resolve({ ok: true, value: { changed: true, application: 'applied', stage: 'install', target: spec } }) },
+        },
+      }, '9.9.9')
+      check(asked === 'dsh-wisp@9.9.9', 'the install asks for exactly the version that was offered', String(asked))
+      check(applied.state.state === 'installed' && applied.state.application === 'applied',
+        'a successful install lands in the installed state', JSON.stringify(applied.state))
+      check(inPool(linesInBundle()?.installDone, applied.line)
+        && applied.line.includes('9.9.9') && !applied.line.includes('dsh-wisp@'),
+      'and she says it is installed — the bare version, not the dsh-wisp@ spec', applied.line)
+      check(applied.doctor.via === 'remote.pluginManager' && applied.doctor.state === 'installed',
+        'doctor() reports the channel and the last install result', JSON.stringify(applied.doctor))
+
+      const restart = await runInstall({
+        'remote.pluginManager': {
+          installBundle: (spec) => Promise.resolve({ ok: true, value: { changed: true, application: 'restart-required', stage: 'install', target: spec } }),
+        },
+      }, '9.9.9')
+      check(restart.state.state === 'installed' && restart.state.application === 'restart-required'
+        && inPool(linesInBundle()?.installRestart, restart.line),
+      'when the platform says a restart is required she says exactly that, not "done"',
+      restart.line)
+
+      const refused = await runInstall({
+        'remote.pluginManager': {
+          installBundle: () => Promise.resolve({ ok: false, error: { code: 'no-matching-version' } }),
+        },
+      }, '9.9.9')
+      check(refused.state.state === 'failed' && refused.state.reason === 'no-matching-version'
+        && inPool(linesInBundle()?.installNotPublished, refused.line) && refused.line.includes('9.9.9'),
+      'a registry that does not have that version yet is said in its own words',
+      refused.line)
+
+      const blewUp = await runInstall({
+        'remote.pluginManager': { installBundle: () => { throw new Error('boom') } },
+      }, '9.9.9')
+      check(blewUp.state.state === 'failed' && blewUp.state.reason === 'call-failed'
+        && blewUp.state.detail === 'boom' && inPool(linesInBundle()?.installFailed, blewUp.line),
+      'a throwing install is caught and reported in plain words', JSON.stringify(blewUp.state))
+
+      const noManager = await runInstall({}, '9.9.9')
+      check(noManager.state.state === 'unsupported' && noManager.doctor.via === null
+        && inPool(linesInBundle()?.installUnsupported, noManager.line),
+      'a shell without the plugin manager is its own sentence, never a silent no-op',
+      noManager.line)
+
+      /* 弹窗里的那一步：查到新版 → 「安装 vX」按钮 → 点它真的按那一版去装 */
+      {
+        let clicked = null
+        const dlgHx = createHarness({
+          timer: true, composerText: '',
+          services: { 'remote.pluginManager': { installBundle: (spec) => { clicked = spec; return Promise.resolve({ ok: true, value: { changed: true, application: 'applied', stage: 'install', target: spec } }) } } },
+        })
+        const keepDlgHx = active
+        active = dlgHx
+        dlgHx.win.fetch = (url) => Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ version: '9.9.9' }),
+        })
+        dlgHx.evaluate(clientSrc)
+        dlgHx.module().default.apply(dlgHx.ctx, { reactions: false, wander: false, celebrate: false })
+        dlgHx.advance(1300, 100)
+        const dlgApi2 = dlgHx.win.__wisp
+        await dlgApi2.checkForUpdate()
+        await new Promise((resolve) => setImmediate(resolve))
+        dlgApi2.openAbout()
+        const actions = dlgHx.all('wisp-dialog-action').filter((el) => el.removed !== true)
+        const installBtn = actions.find((el) => String(el.textContent).includes('安装 v9.9.9'))
+        check(installBtn !== undefined,
+          'once a newer version is known, the about dialog offers an install button for THAT version',
+          actions.map((el) => el.textContent).join(' | '))
+        if (installBtn !== undefined) installBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+        await new Promise((resolve) => setImmediate(resolve))
+        check(clicked === 'dsh-wisp@9.9.9',
+          'and clicking it installs that very version through the plugin manager', String(clicked))
+        check(dlgApi2.dialog === null, 'the dialog gets out of the way while it installs', String(dlgApi2.dialog))
+        dlgHx.win.__wisp.destroy()
+        active = keepDlgHx
+      }
+
+      /* 英文覆盖层：安装这几句也要有，而且一个汉字都不许有 */
+      const enInstallKeys = ['installChecking', 'installDone', 'installRestart', 'installPending',
+        'installCancelled', 'installNotPublished', 'installFailed', 'installUnsupported']
+      const enInstallBundle = readFileSync(join(here, 'lib', 'client.js'), 'utf8')
+      const enInstallLiteral = enInstallBundle.match(/const LINES_EN = (\{[\s\S]*?\n {4}\})/)
+      let enInstallPools = null
+      try { enInstallPools = enInstallLiteral ? new Function('return ' + enInstallLiteral[1])() : null } catch (error) { enInstallPools = null }
+      const enInstallMissing = enInstallKeys.filter((k) => !Array.isArray(enInstallPools?.[k]) || enInstallPools[k].length === 0)
+      check(enInstallMissing.length === 0, 'every install line has an English pool',
+        enInstallMissing.length ? 'missing ' + enInstallMissing.join(', ') : enInstallKeys.length + ' pools')
+      const enInstallHan = []
+      for (const key of enInstallKeys) {
+        for (const line of (enInstallPools?.[key] ?? [])) if (/[\u4e00-\u9fff]/.test(line)) enInstallHan.push(key + ': ' + line)
+      }
+      check(enInstallHan.length === 0, 'and none of them contains a Han character', enInstallHan.join(' | ') || 'clean')
     }
 
     /* 失败时也要能追问：doctor() 必须留下**每个源各自的**原因，

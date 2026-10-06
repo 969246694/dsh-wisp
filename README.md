@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.47.1`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
+**当前版本 `1.48.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -84,7 +84,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **787 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **800 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -606,13 +606,16 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 - 另外：即使某次真的传了参考图，代理也不会在登记表里留下痕迹（它不记参数）——
   所以"没喂参考图"最终依赖的是**自我声明 + 声明不可事后篡改**，而不是第三方取证。这一条必须说清楚。
 
-## 更新：能做什么、为什么不能自己更新
+## 更新：能做什么
 
 ### 先说结论
 
-- **检查更新：能。** 走平台给的服务 `ctx.web.fetch`（DSH 自己的 `web_fetch` 工具用的就是它）。
-- **安装更新：不能。** 插件既没有文件系统、也没有包管理器；DSH 的安装器没有以可注入服务的形式
-  暴露给插件。安装仍然要走 DSH 自己的插件列表。
+- **检查更新：能。** 客户端半包自己用 `window.fetch` 读 npm / GitHub 两个源，取版本更高的那个
+  （宿主半包那条 `ctx.web.fetch` 的路仍在，动态插件形态下才有座位）。
+- **安装更新：能（v1.48.0 起）。** 平台把**插件管理器本身**做成了客户端可用的 Remote 命名空间：
+  `ctx.remote.pluginManager.installBundle(spec)` —— 平台自己的「插件」设置页走的就是它。
+  查到新版之后，「关于她」弹窗里会出现 **「安装 vX」**，点一下就装；装完该刷新还是该重启由平台的
+  `ChangeResult.application` 说了算（`applied` / `restart-required`），她照实转述，不自作聪明。
 
 为什么必须绕这么一圈 —— 两边的限制都查到源码级：
 
@@ -649,7 +652,8 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 | **报版本** | 菜单「版本与更新」说一句「我是 1.24.0。<这一版做了什么>」；`__wisp.version` / `__wisp.doctor().update` 也能读 |
 | **更新感知** | 她记住上次见到的版本（localStorage）。**版本变了就说一句「我更新到 … 了」**；第一次安装不吭声（那时她不是更新，是刚来） |
 | **复制包名** | 同一项会把 `dsh-wisp` 复制到剪贴板，方便在 DSH 的插件列表里粘贴安装。**没有剪贴板权限时静默降级**成只说话，不报错 |
-| **能力边界如实上报** | `doctor().update` 里有 `canSelfUpdate: false` 和 `why`（写明沙箱原因） |
+| **直接安装** | 查到新版后「关于她」里出现「安装 vX」→ `remote.pluginManager.installBundle('dsh-wisp@X')`。装的就是**刚才查到的那一版**（数字与装下去的东西一致）；失败按原因说人话（`no-matching-version` = npm 还没这一版） |
+| **能力边界如实上报** | `doctor().update` 里有 `canSelfUpdate: true`、`install`（走哪条通道 + 最后一次装的结果）与 `why`（她自己仍然不碰网络与文件） |
 
 ### 真正更新它的路径
 
@@ -673,16 +677,55 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 `raw.githubusercontent.com/.../main/package.json`）。预检里有一条断言盯着"换了源
 就真的只去问新地址"，免得"支持镜像"只是文档里的一句话。
 
-**她只报告，不安装**：宿主半包在 vm 沙箱里，没有网络、没有文件系统，"装"这件事
-做不了 —— 所以 `canSelfUpdate` 恒为 `false`，`why` 里写明原因。
+**她仍然不自己碰网络与文件**：检查走客户端 `fetch`，安装走平台的插件管理器 ——
+两件事都不是她做的。她自己既没有 Node（宿主半包在 vm 沙箱里）也没有包管理器；
+`doctor().update.install.via` 会告诉你这次走的是哪条通道（`remote.pluginManager` 或 `null`），
+`install.state` 是最后一次的结果（`installed` / `failed` / `unsupported` / `pending`）。
 
 ### 预检里的守卫
 
 `WHATS_NEW` 必须写着**当前版本**，否则预检红 —— 这样"这一版做了什么"不会静默过期。
-另外 `canSelfUpdate === false`、`hint` 里必须含包名或仓库地址、`why` 里必须说明沙箱原因，
-都有断言盯着。
+另外 `hint` 里必须含包名或仓库地址、`why` 里必须说明沙箱原因、`canSelfUpdate` 必须如实，
+都有断言盯着；安装那条路另有六条断言：装的版本号是否就是提示的那一版、`applied` 与
+`restart-required` 是否说了两句不同的话、`no-matching-version` 是否有自己的句子、
+抛错是否被接住、没有插件管理器时是否明说、以及英文覆盖层齐全且无汉字。
 
 ## 变更
+
+### 1.48.0
+
+**查到新版可以直接装了 —— 不再只是"告诉你，去插件列表里自己装"。**
+
+以前这一步卡在一个真实结论上：客户端半包**没有 host RPC 座位**（1.44.0 那条教训），
+而"装"又需要文件系统和包管理器 —— 所以插件只能报版本号，让用户自己去 DSH 的插件列表粘贴包名。
+
+漏掉的是：**平台把插件管理器自己也做成了客户端可用的 Remote 命名空间**。
+
+```js
+ctx.remote.pluginManager.installBundle('dsh-wisp@1.48.0')  // → ChangeResult
+```
+
+平台自己的「插件」设置页（安装 / 更新 / 停用 / 卸载）走的就是这个命名空间
+（`installBundle` / `waitForInstall` / `cancelInstall` / `listPlugins` …）。
+它**不需要 host 座位**，也不需要插件碰网络或凭据 —— 装这一步由平台带着 pnpm 与 profile 的
+写权限去做。这也正是"dsh 里万物皆插件"该有的样子：要用什么能力，先看平台有没有把它开成服务。
+
+现在的流程：菜单「关于她…」→ **检查更新** → 查到新版时弹窗里直接出现 **「安装 v1.48.0」**
+→ 点一下就开始装，她说一句进度，装完照平台的结论说话：
+
+| 平台说 | 她说 |
+|---|---|
+| `application: 'applied'` | 装好了 —— 刷新页面就是新版 |
+| `application: 'restart-required'` | 装好了 —— 重启 DSH 后生效 |
+| 信封 `ok: false` + `no-matching-version` | npm 上还没有这一版（GitHub 先更新了）—— 等一会儿再装 |
+| 抛错 / 其他失败 | 没装成（原因进 `doctor().update.install`） |
+| 这个壳里没有插件管理器 | 明说"我装不了"，而不是装作做了 |
+
+装的是**刚才查到的那一版**（`dsh-wisp@<version>`），不是 `latest` —— 提示里的数字和装下去的
+东西必须是同一个。安装有 3 分钟的宽松截止时间；到点了不谎报失败，只说"动作已经发出去了、还没回来"。
+
+`doctor().update.canSelfUpdate` 从 `false` 改成 `true`（它现在真的能触发安装），
+同时新增 `install.via` / `install.state` 可查。
 
 ### 1.47.1
 
