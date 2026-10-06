@@ -3389,6 +3389,34 @@ if (clientSrc !== null) {
       'doctor() spells out what the level changes: gesture, lean, and how far/often she strolls',
       JSON.stringify(moFx))
 
+    /* ---- 左右晃动（v1.49.0）：一条钟摆动画 + 一个开关 ---- */
+    /* 左右晃动（v1.49.0）= 跟着鼠标侧倾的那条路，给它一个开关。 */
+    check(moRoot.dataset.sway === 'on',
+      'the pointer-follow sway is on by default — that is how she has always behaved',
+      String(moRoot.dataset.sway))
+    check(moApi.doctor().motion.sway.on === true
+      && Math.abs(moApi.doctor().motion.sway.maxDeg - moApi.doctor().motion.amp * 3.5) < 0.01,
+      'doctor() reports the switch and the most she will lean at this level',
+      JSON.stringify(moApi.doctor().motion.sway))
+    const moSwayAt = moCentre()
+    moApi.configure({ sway: false })
+    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
+    check(moRoot.dataset.sway === 'off' && moTilt() === '0deg',
+      'with the switch off the pointer no longer moves her posture at all',
+      `${moRoot.dataset.sway} / ${moTilt()}`)
+    moApi.configure({ sway: true })
+    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
+    check(moTiltNum() !== 0, 'and switching it back on restores the follow at once', moTilt())
+    /* 关掉的那一刻她可能正歪着 —— 开关必须当场把姿势归零，不能留个半截状态。 */
+    const moSwayMid = moCentre()
+    mo.win.dispatch('pointermove', { clientX: moSwayMid.x + 60, clientY: moSwayMid.y })
+    const moLeaning = moTilt()
+    moApi.configure({ sway: false })
+    check(moLeaning !== '0deg' && moTilt() === '0deg',
+      'turning the switch off mid-lean resets the posture instead of freezing her crooked',
+      `${moLeaning} -> ${moTilt()}`)
+    moApi.configure({ sway: true })
+
     const moHome = moApi.position
     moApi.configure({ wander: true, motion: 'subtle' })
     mo.advance(46000, 500)
@@ -5039,16 +5067,18 @@ if (clientSrc !== null) {
        用户看到的就是"拨了半天她还是那样动"。 */
     plugin.apply(h.ctx, { reactions: false, wander: false })
     const lvl = h.win.__wisp
-    lvl.configure({ motion: 'off', frame: false })
-    check(lvl.doctor().motion.level === 'off' && lvl.doctor().motion.frame.enabled === false,
-      'the level and the frame switch apply at once',
-      JSON.stringify({ level: lvl.doctor().motion.level, frame: lvl.doctor().motion.frame.enabled }))
+    lvl.configure({ motion: 'off', frame: false, sway: false })
+    check(lvl.doctor().motion.level === 'off' && lvl.doctor().motion.frame.enabled === false
+      && lvl.doctor().motion.sway.enabled === false,
+      'the level, the frame switch and the sway switch all apply at once',
+      JSON.stringify({ level: lvl.doctor().motion.level, frame: lvl.doctor().motion.frame.enabled, sway: lvl.doctor().motion.sway.enabled }))
     lvl.destroy()
     plugin.apply(h.ctx, { reactions: false, wander: false })
     const lvlBack = h.win.__wisp
-    check(lvlBack.doctor().motion.level === 'off' && lvlBack.doctor().motion.frame.enabled === false,
+    check(lvlBack.doctor().motion.level === 'off' && lvlBack.doctor().motion.frame.enabled === false
+      && lvlBack.doctor().motion.sway.enabled === false,
       'and they survive a remount — every menu choice is remembered, not just the size',
-      JSON.stringify({ level: lvlBack.doctor().motion.level, frame: lvlBack.doctor().motion.frame.enabled }))
+      JSON.stringify({ level: lvlBack.doctor().motion.level, frame: lvlBack.doctor().motion.frame.enabled, sway: lvlBack.doctor().motion.sway.enabled }))
     lvlBack.destroy()
     plugin.apply(h.ctx, { reactions: false, wander: false, motion: 'full' })
     const lvlPinned = h.win.__wisp
