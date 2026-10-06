@@ -65,6 +65,18 @@ jobs:
             exit 1
           }
 
+      # npm answers a bare 404 when its Trusted Publisher record does not match the
+      # run, and it never says WHICH field mismatched. So print exactly what npm will
+      # see: job_workflow_ref carries the repo + workflow filename it matches against.
+      - name: Identity npm will see (OIDC claims)
+        shell: pwsh
+        run: |
+          $url = "$env:ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org"
+          $resp = Invoke-RestMethod -Uri $url -Headers @{ Authorization = "bearer $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN" }
+          $payload = $resp.value.Split('.')[1]
+          $pad = $payload.PadRight($payload.Length + (4 - $payload.Length % 4) % 4, '=')
+          $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pad.Replace('-','+').Replace('_','/')))
+          Write-Host "NPM-WILL-SEE $json"
       # prepublishOnly runs build.mjs + verify-wisp.mjs, so a red suite blocks the
       # upload before anything leaves the machine (654 checks at the time of writing).
       - name: Publish
