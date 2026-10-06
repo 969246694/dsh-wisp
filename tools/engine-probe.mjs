@@ -20,9 +20,11 @@
  *   6. 帧动画（v1.46.1 起是动图 WebP；v1.46.5 起是两条：idle + sleepy）：
  *      `<img>` 真的解得开（naturalWidth = **素材自己的**画布宽度）、与立绘同一格、
  *      冻结时 display:none 且立绘可见
- *   7. 尺寸校正（v1.46.4）：**计算后**的 transform 真的是 scale(1.186)，底边真的下移
- *      9.3% 个盒高 —— 她在那张 720p 素材里只占 0.8352 个盒高，立绘占 0.9883。
- *      v1.46.5：idle 那段**不该**带这条校正（差 1%，小于 2% 那条线），计算后是 none
+ *   7. 尺寸校正（v1.46.4；**v1.49.3 起一条都不补**）：**计算后**的 transform 必须是
+ *      none、显示高度 = 布局盒高度、底边不挪 —— 1.46.4~1.49.2 之间这一条量的是
+ *      deepsea_sleepy 的 scale(1.186)（她在那版 720p 素材里只占 0.8352 个盒高，
+ *      立绘占 0.9883）；那版素材退役、三条深海女仆素材重做之后（差 0.89%~1.09%），
+ *      `MOTION_FIT` 是空表，base 也归零。
  *
  * 用法：node tools/engine-probe.mjs      （WISP_CHROME=<可执行文件> 可指定浏览器）
  * 退出码：0 通过或跳过 · 1 有检查没过 · 2 环境起不来（找不到可用的调试端口）
@@ -565,9 +567,10 @@ try {
   /* ---- idle：**默认**状态就该有动图（v1.46.5）----
      假 DOM 能证明"元素建了、映射对、显隐跟着状态走"，证明不了这张 720x1280 的动图
      在真引擎里**解得开**：naturalWidth 是不是素材自己的宽度、变换**之前**是不是
-     真的落在立绘那个盒子里。idle 不做尺寸校正（差 1.0~1.6%，小于 2% 那条线），
-     所以它的计算后 transform 必须是 none —— 这条同时钉住"base 那条 1.186 没有
-     落到 idle 头上"（落到她头上就是放大 18.6%，而页面上只会看起来"她今天有点大"）。 */
+     真的落在立绘那个盒子里。idle **不做**尺寸校正（差 1.0~1.1%，小于 2% 那条线），
+     所以它的计算后 transform 必须是 none —— v1.49.3 起这一条的分量更重了：base 那条
+     1.186 已经撤掉，谁要是把它加回来，**新素材** `deepsea_happy`（没有人为它写过
+     [data-clip] 规则）和这条 idle 都会当场放大 18.6%。 */
   const idleClip = await evaluate(`(async () => {
     const waitFor = async (ok, ms) => {
       const until = Date.now() + ms
@@ -611,7 +614,7 @@ try {
     'and it is laid out on exactly the sprite box, so handing the picture over cannot make her jump',
     `delta ${Number(idleClip.dx ?? NaN).toFixed(2)},${Number(idleClip.dy ?? NaN).toFixed(2)} size ${Number(idleClip.dw ?? NaN).toFixed(2)}x${Number(idleClip.dh ?? NaN).toFixed(2)}`)
   check(idleClip.built === true && String(idleClip.transform) === 'none' && idleClip.inline === 'none',
-    "and NO size correction is applied to it — computed transform is none, so the sleeping deep-sea clip's 1.186 did not leak onto it (v1.46.5 / v1.49.0)",
+    "and NO size correction is applied to it — computed transform is none, so nothing scaled her by 18.6% on the way in (v1.46.5 / v1.49.3)",
     `computed ${String(idleClip.transform)} / inline ${JSON.stringify(idleClip.inline)}`)
   check(idleClip.built === true && idleClip.display !== 'none'
     && idleClip.visibility === 'hidden' && idleClip.frame === 'on',
@@ -625,9 +628,10 @@ try {
       return ok()
     }
     window.__wisp.configure({ motion: 'full' })
-    /* 这一段量的是**唯一一条带尺寸校正的素材**：deepsea_sleepy（v1.49.0 的新名字，
-       旧名 sleepy）。默认皮肤是 canon，而 canon 那八条都不补 —— 不点名切过来的话，
-       这里量到的是"没有校正"，下面那三条 1.186 的断言会集体失效。 */
+    /* 这一段量的是深海女仆睡着那一条：deepsea_sleepy（v1.49.0 的新名字，旧名
+       sleepy）。它是 1.46.4~1.49.2 之间**唯一**带尺寸校正的素材；v1.49.3 重做之后
+       校正没了，所以下面量的是"计算后就是 none、显示高度 = 布局盒高度"。
+       默认皮肤是 canon —— 不点名切过来，量到的就不是这条素材。 */
     window.__wisp.setSkin('deepsea')
     window.__wisp.mood('sleep')
     await waitFor(() => document.querySelector('.wisp-video') !== null, 5000)
@@ -635,10 +639,10 @@ try {
     if (!motion) return { built: false }
     await waitFor(() => motion.complete && motion.naturalWidth > 0, 8000)
     const img = document.querySelector('.wisp-img')
-    /* 尺寸校正（v1.46.4）：动作层**故意**比立绘那一格大 —— 她在 720x1280 的素材里只占
-       0.8352 个盒高，立绘占 0.9883。所以"两层同格"必须量**变换之前**的布局盒：
-       行内 transform 临时置 none 读一次 rect，读完立刻还回去（行内这条盖得住样式表那条，
-       所以快照真的是干净的布局盒）。渲染后的 rect 单独读一次，用来验放大倍率与底边落点。 */
+    /* "两层同格"量的是**变换之前**的布局盒：行内 transform 临时置 none 读一次 rect，
+       读完立刻还回去（行内这条盖得住样式表那条，所以快照真的是干净的布局盒）。
+       渲染后的 rect 单独读一次，用来验"没有放大、没有下移"（v1.46.4 那会儿量的是
+       1.186 倍 + 9.3% 下移 —— 那版素材只占 0.8352 个盒高，立绘占 0.9883）。 */
     const savedZoom = motion.style.transform
     motion.style.transform = 'none'
     const a = motion.getBoundingClientRect()
@@ -677,16 +681,19 @@ try {
   check(clip.display !== 'none',
     'and it is on screen by default — the browser runs the animation itself', `display=${clip.display}`)
   check(clip.dx < 1 && clip.dy < 1 && clip.dw < 1 && clip.dh < 1,
-    'and BEFORE the size correction it is laid out on exactly the sprite box, so handing the picture over cannot make her jump',
+    'and it is laid out on exactly the sprite box, so handing the picture over cannot make her jump',
     `delta ${clip.dx.toFixed(2)},${clip.dy.toFixed(2)} size ${clip.dw.toFixed(2)}x${clip.dh.toFixed(2)}`)
-  /* 尺寸校正（v1.46.4）：**计算后**的 transform 才是"引擎认不认"的答案 —— 源码里写着
-     scale(1.186) 不算数，它要么生效、要么被别的东西盖掉。两个数一起看：
-     她的显示高度放大了多少倍，底边相对立绘那条落地线下移了多少（都按盒高归一化）。 */
-  check(/^matrix\(1\.186/.test(String(clip.transform)) && Math.abs(clip.zoom - 1.186) < 0.004,
-    'the engine really applies the size correction — the computed transform is scale(1.186), so she is as tall as the static sprite (v1.46.4)',
+  /* 尺寸校正（v1.46.4；**v1.49.3 起一条都不补**）：**计算后**的 transform 才是
+     "引擎认不认"的答案 —— 源码里写着什么不算数，它要么生效、要么被别的东西盖掉。
+     旧那版这一条量的是 1.186（deepsea_sleepy 那版素材只占 0.8352 个盒高 vs 立绘
+     0.9883）；那版素材退役、三条深海女仆素材重做之后（差 0.89%~1.09%），`MOTION_FIT`
+     是空表，所以现在两个数一起量的是"**没有**缩放、**没有**下移"：显示高度就是布局盒
+     高度，底边就落在立绘那条落地线上。 */
+  check(String(clip.transform) === 'none' && Math.abs(clip.zoom - 1) < 0.004,
+    'the engine really applies NO size correction — the computed transform is none and she renders at exactly the box height, because every clip is inside the 2% line again (v1.49.3)',
     `computed ${clip.transform} → rendered height ${clip.zoom.toFixed(4)}x the box`)
-  check(Math.abs(clip.drop - 0.0930) < 0.004 && clip.origin === '50% 100%',
-    "and it is dropped 9.3% of its own height about a bottom-centre origin, so her feet land where the sprite's do (v1.46.4)",
+  check(Math.abs(clip.drop) < 0.004 && clip.origin === '50% 100%',
+    "and nothing is dropped or lifted: the transform origin stays pinned to her feet for the case where a correction comes back (v1.46.4 / v1.49.3)",
     `bottom shift ${(clip.drop * 100).toFixed(2)}% of ${clip.layoutH}px, inline transform-origin ${clip.origin}`)
   check(clip.pointerEvents === 'none', 'the layer takes no pointer events', String(clip.pointerEvents))
   /* 重影修复（v1.45.2）：动图在画面上时立绘必须**真的**看不见（计算后的 visibility 是

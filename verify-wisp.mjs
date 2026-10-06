@@ -267,13 +267,17 @@ function createHarness(options = {}) {
       // the middle half of the width, transparent outside it. That is what the
       // shipped sprites look like (55-87% of the width is figure, the rest is
       // margin) and it makes the hit test assertable.
-      el.getContext = () => ({
+      /* 蒙版的留白默认恒为 25%（所有形状断言都按它写）。需要"换一张留白不同的图"这个场景
+       的 section 用 options.maskMargins 轮换 —— 真实的素材每张留白都不一样（v1.49.2）。 */
+    const MASK_MARGINS = options.maskMargins || [0.25]
+    el.getContext = () => ({
         drawImage() {},
         getImageData(x, y, w, h) {
+          const margin = MASK_MARGINS[maskBuilds++ % MASK_MARGINS.length]
           const data = new Uint8ClampedArray(w * h * 4)
           for (let py = 0; py < h; py++) {
             for (let px = 0; px < w; px++) {
-              const opaque = px >= w * 0.25 && px < w * 0.75
+              const opaque = px >= w * margin && px < w * (1 - margin)
               data[(py * w + px) * 4 + 3] = opaque ? 255 : 0
             }
           }
@@ -315,6 +319,8 @@ function createHarness(options = {}) {
     get textContent() { return state.composerText ?? '' },
   }
   const queries = { stop: 0, composer: 0, all: 0, pending: 0, errors: 0 }
+  /* 每建一张 alpha 蒙版就 +1：canvas 替身用它轮换留白（v1.49.2）。 */
+  let maskBuilds = 0
   const COMPOSER_HOOKS = ['[data-composer-input]', 'textarea', '[contenteditable="true"]']
 
   /* 匹配集合的唯一真源。querySelector 与 querySelectorAll 在真实 DOM 里匹配的是同一个集合，
@@ -1257,7 +1263,7 @@ if (clientSrc !== null) {
     const plugin = exportsObj?.default
     check(typeof plugin?.apply === 'function', 'exports a mountable plugin', `name=${plugin?.name}`)
 
-    plugin.apply(h.ctx, { happyMs: 6000 })
+    try { plugin.apply(h.ctx, { happyMs: 6000 }) } catch (err) { console.log('MOUNT-THREW ' + (err && err.stack ? err.stack : String(err))) }
     const api = h.win.__wisp
     check(typeof api?.destroy === 'function', 'public handle exposed', Object.keys(api ?? {}).join(','))
     check(api?.clock === 'timer-service', 'schedules on the Client timer service', String(api?.clock))
@@ -2436,11 +2442,17 @@ if (clientSrc !== null) {
     arrow('ArrowRight', true)
     check(ixApi.position.x === pos0.x + 20, 'shift+arrow is the fine step (4px)', String(ixApi.position.x))
 
-    /* 边界：一直按左键不该把她推出去 */
+    /* 边界（v1.49.2）：界线是**可见像素**的边，所以那 25% 盒宽的透明边可以出屏幕；
+       再往外按就停住，不会整只跑掉。 */
+    const nudgePad = 140          // 替身假 alpha：25% × 560（默认 size 4）
     ixApi.move(0, 100)
     for (let i = 0; i < 5; i++) arrow('ArrowLeft')
-    check(ixApi.position.x === 0 && ixApi.position.y === 100,
-      'nudging into the edge clamps instead of pushing her out',
+    check(ixApi.position.x === -80 && ixApi.position.y === 100,
+      'a nudge may walk her transparent margin off screen — the visible edge is what counts',
+      ixApi.position.x + ',' + ixApi.position.y)
+    for (let i = 0; i < 12; i++) arrow('ArrowLeft')
+    check(ixApi.position.x === -nudgePad && ixApi.position.y === 100,
+      'but pushing further clamps at the visible edge instead of letting her leave',
       ixApi.position.x + ',' + ixApi.position.y)
     for (let i = 0; i < 10; i++) arrow('ArrowUp')
     check(ixApi.position.y === 0, 'same at the top', String(ixApi.position.y))
@@ -3234,10 +3246,15 @@ if (clientSrc !== null) {
     press(c2.x, c2.y)
     h.win.dispatch('pointermove', { clientX: 9999, clientY: 9999 })
     h.win.dispatch('pointerup', {})
+    /* v1.49.2：夹取按**可见像素**算 —— 她的透明边可以探出屏幕，可见的边才停在屏幕上。
+       替身假 alpha 左右各留 25% 的盒宽（底边不留），所以右边能多走那 25%。 */
+    /* 可见范围：替身假 alpha 占中间 75% 的宽度、整列高度。所以她的**可见右边**能贴到
+       屏幕右边（盒子右移 25% 的盒宽探出屏幕外），可见下边贴到屏幕下边。 */
+    const visibleRight = BOX_W * 0.75
     const corner = api.position
-    check(corner.x === h.win.innerWidth - BOX_W && corner.y === h.win.innerHeight - BOX_H,
-      'the clamp uses the SCALED box, so she cannot hang off the edge',
-      `x=${corner.x} (max ${h.win.innerWidth - BOX_W}), y=${corner.y} (max ${h.win.innerHeight - BOX_H})`)
+    check(corner.x === h.win.innerWidth - visibleRight && corner.y === h.win.innerHeight - BOX_H,
+      'the clamp lets the VISIBLE pixels reach the edge — the transparent margin hangs off screen',
+      `x=${corner.x} (want ${h.win.innerWidth - visibleRight}), y=${corner.y} (want ${h.win.innerHeight - BOX_H})`)
 
     api.move(0, 300)
     const tr = boxAt(root.style.transform)
@@ -3727,39 +3744,52 @@ if (clientSrc !== null) {
     check(mvMotion !== null && mvMotion.style.pointerEvents === 'none' && mvRule.includes('pointer-events:none'),
       'the motion layer never takes a pointer event — her silhouette hit layer still owns every click',
       `inline=${mvMotion?.style.pointerEvents} rule=${mvRule.slice(0, 60)}…`)
-    /* 尺寸校正（v1.46.4）：动作层必须带那条 transform —— 少了它，"画面交给她"的那一刻
-       她比立绘**小 15.7%**（实测包围盒：动图 0.8352 个盒高 vs 立绘 0.9883）。
-       两条落点都点名：样式表给正常壳，行内给"样式表没插进来"的壳（精灵图 / 两层盒子 /
-       动图各有前例）。transform-origin 必须是**脚底**（50% 100%）：缩放不挪底边，
-       底边距才收得回来，"她落地"这件事才对得上。
-       这几个数是**推导出来的**，不是抄的：放大倍率 = 0.9883/0.8352 = 1.1834（取 1.186，
-       97 帧之间包围盒自己抖 ±0.2%）；下移量 t 由 0.0883*s - s*t = 0.0117 反解 = 7.84%。
-       详见 client.template.js 里 .wisp-video 上那段推导。 */
-    const mvZoomRule = /transform:scale\(1\.186\)\s*translateY\(7\.84%\)/.test(mvRule)
+    /* 尺寸校正（v1.46.4；**v1.49.3 起一条都不补**）：动作层这一格**不许**再缩放。
+       1.46.4~1.49.2 之间 base 那条 `scale(1.186) translateY(7.84%)` 是给
+       `deepsea_sleepy` 的（她那版素材只占 0.8352 个盒高 vs 立绘 0.9883，差 15.7%）；
+       那一版素材退役之后三条深海女仆素材都只差 0.89%~1.09%，`MOTION_FIT` 成了空表，
+       base 也跟着归零 —— 所以这里查的是**否定式**：不许有 scale、不许有 translate。
+       为什么这一条比原来的 1.186 更要紧：`deepsea_happy` 是**新素材**，没有人为它写过
+       [data-clip] 规则；base 里只要还剩那条 1.186，它落到新素材头上就是凭空放大 18.6%。
+       transform-origin 仍然必须钉在**脚底**（50% 100%）—— 将来真有素材超过 2% 那条线，
+       补上去的变换还是绕脚底做，"她落地"才对得上（详见 client.template.js 那段推导）。 */
+    const mvZoomRule = !/scale\(/.test(mvRule) && !/translate/.test(mvRule) && /transform:none/.test(mvRule)
     const mvZoomOrigin = /transform-origin:50% 100%/.test(mvRule)
     check(mvZoomRule && mvZoomOrigin,
-      'the stylesheet scales the motion layer by 1.186 about a bottom-centre origin — her height AND her ground contact match the static sprite (v1.46.4)',
-      mvRule ? `.wisp-video{…} zoom=${mvZoomRule} origin=${mvZoomOrigin}` : 'no .wisp-video rule in the stylesheet')
-    /* 尺寸校正（v1.46.4 / v1.49.0）：那条 1.186 只属于**一段素材** —— `deepsea_sleepy`
-       （旧名 `sleepy`；v1.49.0 按新素材名改的正是这里的键）。行内那份由
-       applyClipGeometry 按素材名写，样式表那份落在 data-clip 上。
-       默认皮肤换成了 canon（v1.48.2）之后，这条必须**点名切到 deepsea** 去验 ——
-       否则它会被 canon 那八条"都不补"盖住，谁都发现不了 1.186 已经丢了。 */
+      'the stylesheet applies NO size correction to the motion layer — no scale, no translate, origin still pinned to her feet: every clip is inside the 2% line again (v1.49.3)',
+      mvRule ? `.wisp-video{…} unscaled=${mvZoomRule} origin=${mvZoomOrigin}` : 'no .wisp-video rule in the stylesheet')
+    /* 尺寸校正（v1.46.4 / v1.49.0 / v1.49.3）：那条 1.186 **只属于一段素材**
+       （`deepsea_sleepy`，旧名 `sleepy`），而那一版素材已经不在了。行内那份由
+       applyClipGeometry 按素材名写；默认皮肤是 canon（v1.48.2）之后，这条必须
+       **点名切到 deepsea** 去验。 */
     mvApi.setSkin('deepsea')
     mvApi.mood('sleep')
     mv.advance(400, 100)
     check(mvLive() === mvIdle && mvIdle.dataset.clip === 'deepsea_sleepy'
       && String(mvIdle.src) === 'http://127.0.0.1:19387/wisp-motion/deepsea_sleepy.webp'
-      && mvIdle.style.transform === 'scale(1.186) translateY(7.84%)'
+      && mvIdle.style.transform === 'none'
       && mvIdle.style.transformOrigin === '50% 100%',
-      'the sleeping deep-sea clip is the ONE that carries the 1.186 correction — looked up by its NEW clip name, and rewritten when the skin changes (v1.46.4 / v1.49.0)',
+      'the sleeping deep-sea clip carries NO correction any more — the 1.186 retired with the clip it was measured on, and the table it came from is empty (v1.49.3)',
       `clip=${String(mvIdle.dataset.clip)} src=${String(mvIdle.src)} inline transform=${String(mvIdle.style.transform)} origin=${String(mvIdle.style.transformOrigin)}`)
+    /* **深海女仆的 `happy` 这一格是本轮新建的**（v1.49.3）：在那之前 `MOTION_OF` 里
+       没有 `'deepsea:happy'` 这个键，戳她一下只有静态立绘。素材在清单里、指纹表里
+       都查得到（4b 那两条），但那都是**声明**；这一条查的是行为 —— 同一个元素真的
+       被指向 `deepsea_happy.webp`，而且几何与其它素材一致（none）。
+       它和 `idle` / `sleepy` 那两条一起，才是"深海女仆现在有三条"。 */
+    mvApi.mood('happy')
+    mv.advance(400, 100)
+    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'deepsea_happy'
+      && String(mvIdle.src) === 'http://127.0.0.1:19387/wisp-motion/deepsea_happy.webp'
+      && mvIdle.style.transform === 'none'
+      && mvVis(mvRoot.querySelectorAll('.wisp-img')[0]) === 'hidden',
+      'the deep-sea happy state now builds its OWN clip — it was the one skin+state with no animation at all before this version (v1.49.3)',
+      `clip=${String(mvIdle.dataset.clip)} src=${String(mvIdle.src)} transform=${String(mvIdle.style.transform)} sprite=${mvVis(mvRoot.querySelectorAll('.wisp-img')[0])}`)
     mvApi.setSkin('canon')
     mvApi.mood('sleep')
     mv.advance(400, 100)
     check(mvLive() === mvIdle && mvIdle.dataset.clip === 'canon_sleepy'
       && mvIdle.style.transform === 'none' && mvIdle.style.transformOrigin === '50% 100%',
-      'and coming back to canon, the SAME element drops that correction — picture and geometry change together, per skin (v1.49.0)',
+      'and coming back to canon the SAME element re-points at canon_sleepy with the same "no correction" — picture and geometry are chosen together, per skin (v1.49.0 / v1.49.3)',
       `clip=${String(mvIdle.dataset.clip)} transform=${String(mvIdle.style.transform)}`)
     check(mvMotion !== null && mvMotion.style.transformOrigin === '50% 100%',
       'and the inline mirror always pins the transform origin to her feet, for shells where the stylesheet never arrives',
@@ -4064,9 +4094,11 @@ if (clientSrc !== null) {
         `display=${String(swMotion()?.style?.display)} sprite=${mvVis(swSprite())}`)
 
       /* 换皮肤 = 换一整套**动图**（v1.47.0）：只换图不换动图层，是这一版最容易漏的一处。
-         两个方向一起点：泳装 → 深海女仆（回到 deepsea_idle / deepsea_sleepy），
-         这也是"图与几何一起换"的证据 —— 而且这一对**几何本来就不同**
-         （deepsea_sleepy 要补 1.186，泳装那八条都不补），所以它是这条断言最强的一档。 */
+         两个方向一起点：泳装 → 深海女仆（回到 deepsea_idle / deepsea_sleepy）。
+         1.47.0~1.49.2 之间这一对还能顺便证明"几何也跟着换"（deepsea_sleepy 补 1.186、
+         泳装那八条都不补）；**v1.49.3 起两条素材的几何都是 none**（空表），所以这里
+         改成查"几何**始终**是 none，而图确实换了" —— 别把"几何一起换"这句话留成
+         一条已经不可能失败的断言。 */
       swApi.mood('sleep')
       sw.advance(300, 100)
       const swimSleepTransform = String(swMotion()?.style?.transform ?? '')
@@ -4075,17 +4107,19 @@ if (clientSrc !== null) {
       sw.advance(300, 100)
       check(String(swMotion()?.dataset?.clip ?? '') === 'deepsea_sleepy'
         && String(swMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/deepsea_sleepy.webp'
-        && String(swMotion()?.style?.transform ?? '') === 'scale(1.186) translateY(7.84%)'
-        && swimSleepTransform !== String(swMotion()?.style?.transform ?? ''),
-        'switching the skin re-points the SAME frame layer at that skin’s clip — picture AND geometry change together (v1.47.0 / v1.49.0)',
+        && String(swMotion()?.style?.transform ?? '') === 'none'
+        && swimSleepTransform === 'none',
+        'switching the skin re-points the SAME frame layer at that skin’s clip — and the geometry stays identity for both, because the correction table is empty (v1.47.0 / v1.49.3)',
         `${beforeSkinClip} ${swimSleepTransform} → ${String(swMotion()?.dataset?.clip)} ${String(swMotion()?.style?.transform)}`)
       check(swApi.setSkin('swim') === true && String(swMotion()?.dataset?.clip ?? '') === 'swim_sleepy',
         'and switching back returns the swimsuit loop, not another skin’s clip',
         String(swMotion()?.dataset?.clip))
-      /* 泳装那八条的"不补"要在**样式表**里也点名（行内那份上面已经按素材逐条对过）。 */
+      /* 泳装那八条的"不补"要在**样式表**里也点名（行内那份上面已经按素材逐条对过）。
+         v1.49.3 起 base 已经是 none，这条家族规则不再"挡"什么，但它是这一族量过包围盒
+         之后的落点（README 1.47.1 那张表），所以断言照旧。 */
       const swimNoneRule = (String(clientSrc).match(/\.wisp-video\[data-clip\^="swim_"\]\{[^}]*\}/) ?? [''])[0]
       check(/transform:none/.test(swimNoneRule) && !/scale\(/.test(swimNoneRule),
-        'the stylesheet carries the explicit "no correction" for the whole swimsuit family — the sleeping 1.186 cannot reach them (v1.47.1)',
+        'the stylesheet still carries the explicit "no correction" for the whole swimsuit family — the family-level record of a measured 0.2%~1.6% (v1.47.1 / v1.49.3)',
         swimNoneRule || 'no .wisp-video[data-clip^="swim_"] rule in the bundle')
       } else {
         /* 素材还没生成（0/8）：泳装那一档**一条动图都不该建**，而且**不许**退回通用
@@ -4199,7 +4233,7 @@ if (clientSrc !== null) {
         /* 样式表那份"不补"要按 canon_ 前缀点名 —— base 那条 1.186 落上来就是放大 18.6%。 */
         const canonNoneRule = (String(clientSrc).match(/\.wisp-video\[data-clip\^="canon_"\]\{[^}]*\}/) ?? [''])[0]
         check(/transform:none/.test(canonNoneRule) && !/scale\(/.test(canonNoneRule),
-          'the stylesheet carries the explicit "no correction" for the whole original-maid family — the sleeping 1.186 cannot reach them (v1.49.0)',
+          'the stylesheet still carries the explicit "no correction" for the whole original-maid family — the family-level record of a measured 0.0%~1.6% (v1.49.0 / v1.49.3)',
           canonNoneRule || 'no .wisp-video[data-clip^="canon_"] rule in the bundle')
 
         /* 没有素材的状态：worried 在 canon 上也没有动作段（它有自己的抖动）——
@@ -4211,8 +4245,10 @@ if (clientSrc !== null) {
           `display=${String(cnMotion()?.style?.display)} sprite=${mvVis(cnSprite())}`)
 
         /* 换皮肤 = 换一整套**动图**（v1.47.0），而且**同一状态**下两套皮肤的素材不同：
-           canon/sleep → canon_sleepy（不补），swim/sleep → swim_sleepy（不补），
-           deepsea/sleep → deepsea_sleepy（补 1.186）。三次切换都点"图与几何一起换"。 */
+           canon/sleep → canon_sleepy，swim/sleep → swim_sleepy，deepsea/sleep →
+           deepsea_sleepy。1.47.0~1.49.2 之间这三条的几何是**不一样**的
+           （只有 deepsea_sleepy 补 1.186）；v1.49.3 起表空了，三条都是 none ——
+           所以这条现在查"同一个元素换的是**图**，几何始终是 identity"。 */
         cnApi.mood('sleep')
         cn.advance(300, 100)
         const canonSleepTransform = String(cnMotion()?.style?.transform ?? '')
@@ -4221,9 +4257,9 @@ if (clientSrc !== null) {
         cn.advance(300, 100)
         check(String(cnMotion()?.dataset?.clip ?? '') === 'deepsea_sleepy'
           && String(cnMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/deepsea_sleepy.webp'
-          && String(cnMotion()?.style?.transform ?? '') === 'scale(1.186) translateY(7.84%)'
-          && canonSleepTransform !== String(cnMotion()?.style?.transform ?? ''),
-          'canon/sleep → deepsea/sleep re-points the SAME element at a different clip AND a different geometry — swapping the skin alone is not enough (v1.47.0 / v1.49.0)',
+          && String(cnMotion()?.style?.transform ?? '') === 'none'
+          && canonSleepTransform === 'none',
+          'canon/sleep → deepsea/sleep re-points the SAME element at a different clip — and with an empty correction table the geometry is identity on both sides (v1.47.0 / v1.49.3)',
           `${canonSleepClip} ${canonSleepTransform} → ${String(cnMotion()?.dataset?.clip)} ${String(cnMotion()?.style?.transform)}`)
         cnApi.setSkin('night')
         cn.advance(300, 100)
@@ -4381,7 +4417,10 @@ if (clientSrc !== null) {
       const p = fifth.position
       const ev = ctxEvent(p.x + b.w / 2, p.y + b.h / 2)
       // 现在归位用的兜底尺寸也要跟着当前尺寸走
-      return { ev, homeX: h.win.innerWidth - 26 - b.w, homeY: h.win.innerHeight - 46 - b.h }
+      /* v1.49.2："右下角"离边的 26/46 现在量的是**可见像素** —— 替身的假 alpha 左右各留
+         25% 盒宽，上下不留，所以 x 要多让出那一块。 */
+      const homeX = Math.round(h.win.innerWidth - 26 - b.w * 0.75)
+      return { ev, homeX, homeY: h.win.innerHeight - 46 - b.h }
     }
 
     const firstClick = rightClickOnHer()
@@ -4734,6 +4773,7 @@ if (clientSrc !== null) {
     check(expand('外观'), 'and the skins group can be opened')
     const skinBefore = fifth.skin
     const posBefore = fifth.position
+    const padBeforeSkin = fifth.doctor().bounds.visible.left   // 盒左 → 可见左边
     const srcBeforeSkin = spriteSrcs().at(-1)
     /* 同样不写死名字：挑一套「和当前不同」的皮肤，用它的显示名去点菜单 */
     const targetSkin = fifth.skins.find((id) => id !== skinBefore)
@@ -4745,8 +4785,14 @@ if (clientSrc !== null) {
     check(fifth.skin !== skinBefore, 'and it is a different skin than before', `${skinBefore} -> ${fifth.skin}`)
     check(spriteSrcs().at(-1) !== srcBeforeSkin, 'the sprite is swapped for the new skin',
       `${String(srcBeforeSkin).slice(0, 22)} -> ${String(spriteSrcs().at(-1)).slice(0, 22)}`)
-    check(fifth.position.x === posBefore.x && fifth.position.y === posBefore.y,
-      'switching skins leaves her where she was', `${fifth.position.x},${fifth.position.y}`)
+    /* v1.49.2：换皮肤 = 换一张留白不同的图。贴着边的换完还贴着边（位置数值会变，但
+       **可见像素到屏幕边的距离**不变）；本来不在边上的，原地不动。 */
+    const visibleLeftBefore = posBefore.x + padBeforeSkin
+    const visibleLeftAfter = fifth.position.x + fifth.doctor().bounds.visible.left
+    const wasGlued = Math.abs(visibleLeftBefore) <= 1
+    check(wasGlued ? Math.abs(visibleLeftAfter) <= 1 : fifth.position.x === posBefore.x,
+      'switching skins keeps a glued edge glued and a free position untouched',
+      `glued=${wasGlued} visibleLeft ${visibleLeftBefore} -> ${visibleLeftAfter}, x ${posBefore.x} -> ${fifth.position.x}`)
     check(JSON.parse(h.win.localStorage.getItem('dsh-wisp:skin:v1') || 'null')?.id === targetSkin,
       'the choice is remembered', h.win.localStorage.getItem('dsh-wisp:skin:v1'))
     check(fifth.setSkin('no-such-skin') === false && fifth.skin === targetSkin,
@@ -5048,11 +5094,15 @@ if (clientSrc !== null) {
     // 四个角落。期望值按【当前】尺寸算 —— 写死尺寸的话，一旦尺寸变了断言会
     // 指着正确的实现说它错。
     const cur = boxOf(pinned)
+    /* v1.49.2：角落的"距边 26 / 46"量的是**可见像素**的边。替身的假 alpha 左右各留 25%
+       盒宽、每一行都不透明（上下不留白），所以左右要多让出 25%，上下照旧。 */
+    const visibleLeftEdge = Math.round(cur.w * 0.25)     // 盒左 → 可见左边
+    const visibleRightEdge = Math.round(cur.w * 0.75)    // 盒左 → 可见右边
     const EXPECT = {
-      '左上角': { x: 26, y: 46 },
-      '左下角': { x: 26, y: h.win.innerHeight - 46 - cur.h },
-      '右上角': { x: h.win.innerWidth - 26 - cur.w, y: 46 },
-      '右下角': { x: h.win.innerWidth - 26 - cur.w, y: h.win.innerHeight - 46 - cur.h },
+      '左上角': { x: 26 - visibleLeftEdge, y: 46 },
+      '左下角': { x: 26 - visibleLeftEdge, y: h.win.innerHeight - 46 - cur.h },
+      '右上角': { x: h.win.innerWidth - 26 - visibleRightEdge, y: 46 },
+      '右下角': { x: h.win.innerWidth - 26 - visibleRightEdge, y: h.win.innerHeight - 46 - cur.h },
     }
     for (const [label, want] of Object.entries(EXPECT)) {
       openMenuOn(pinned)
@@ -5061,6 +5111,44 @@ if (clientSrc !== null) {
       check(hit && pinned.position.x === want.x && pinned.position.y === want.y,
         `the ${label} item puts her there`, `${pinned.position.x},${pinned.position.y} (want ${want.x},${want.y})`)
     }
+    /* v1.49.2：**留白不同的图必须落在同一个地方**（可见的像素不动，留白由坐标吸收）。
+       单开一个 harness：它的蒙版留白按 maskMargins 轮换，于是"换一套皮肤"就等于
+       "换一张留白不同的图"，而别的 section 的蒙版形状断言仍然按固定的 25% 写。 */
+    const mm = createHarness({ timer: true, composerText: '', maskMargins: [0.25, 0.4] })
+    const mmKeep = active
+    active = mm
+    mm.evaluate(clientSrc)
+    mm.module().default.apply(mm.ctx, { reactions: false, wander: false })
+    mm.advance(60, 10)
+    const mmApi = mm.win.__wisp
+    const mmVisible = () => mmApi.doctor().bounds.visible
+    /* "离屏幕边多远"是**屏幕坐标**里的事，所以断言也写在屏幕坐标里。 */
+    const mmGaps = () => {
+      const v = mmVisible()
+      return {
+        right: Math.round(mm.win.innerWidth - (mmApi.position.x + v.right)),
+        left: Math.round(mmApi.position.x + v.left),
+        bottom: Math.round(mm.win.innerHeight - (mmApi.position.y + v.bottom)),
+      }
+    }
+    /* 把她放到靠近右下角的位置：这时她"更靠近的边"就是右边和底边。 */
+    mmApi.move(mm.win.innerWidth - 700, mm.win.innerHeight - 900)
+    mm.advance(20, 10)
+    const marginBefore = mmVisible().right
+    const gapsBefore = mmGaps()
+    const mmOther = mmApi.skins.find((id) => id !== mmApi.skin)
+    mmApi.configure({ skin: mmOther })
+    mm.advance(80, 10)
+    const marginAfter = mmVisible().right
+    const gapsAfter = mmGaps()
+    check(marginAfter !== marginBefore
+      && Math.abs(gapsAfter.right - gapsBefore.right) <= 1
+      && Math.abs(gapsAfter.bottom - gapsBefore.bottom) <= 1,
+      'a figure with a DIFFERENT transparent margin keeps the same distance from the screen edge she sits against',
+      `margin ${marginBefore}->${marginAfter}, right gap ${gapsBefore.right}->${gapsAfter.right}, bottom gap ${gapsBefore.bottom}->${gapsAfter.bottom}`)
+    mmApi.destroy()
+    active = mmKeep
+
     pinned.destroy()
 
     /* v1.48.3：菜单里调过的**每一项**都要活过刷新，不只尺寸。
@@ -5931,13 +6019,17 @@ head('4b. the clips ship as FILES — the bundle carries only their names (v1.47
         于是上界跟着提到 **69000 KB / 67.4 MB**（约 +14% 重编码余量 —— 和上一版
         同一条规矩）。1.49.2 重做 `canon_eat`（4272.5 → 3399.9 KB），十八条实测
         **59304.4 KB / 57.9 MB**（最大的换成 `canon_happy` 3927.1 KB），上界跟着
-        收到 **68000 KB / 66.4 MB**（+14.7%，还是那条规矩）。每次素材换代都要有人
+        收到 **68000 KB / 66.4 MB**（+14.7%，还是那条规矩）。1.49.3 深海女仆那三条
+        一起重做（`deepsea_happy` 是**新增**的一条：2947.7 KB；`deepsea_idle`
+        2693.3 → 2873.3 KB；`deepsea_sleepy` 3318.6 → 2671.8 KB），十八条实测
+        **61785.5 KB / 60.3 MB**（最大的仍是 `canon_happy` 3927.1 KB），上界跟着
+        提到 **71000 KB / 69.3 MB**（+14.9%，还是那条规矩）。每次素材换代都要有人
         重新量一遍再改它，而不是让它自己漂。
 
    上界写在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
    一个数写两遍就是下一次漂移的起点。 */
 const MOTION_MANIFEST_BUDGET_BYTES = 2048
-const MOTION_DISK_BUDGET_KB = 68000
+const MOTION_DISK_BUDGET_KB = 71000
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
@@ -5959,14 +6051,17 @@ const MOTION_DISK_BUDGET_KB = 68000
     check(keys.length > 0 && named.length === keys.length && stillInlined.length === 0,
       'every MOTION entry is a clip FILE NAME — the bytes are not in the bundle any more (v1.47.0)',
       keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]])}` : 'no MOTION table in the bundle')
-    /* **深海女仆那两段都要在**（v1.46.5 / v1.49.0）：站着那一段和睡着那一段是两条独立的
-       素材，只进一条（或者 build 的发现规则又把 motion/ 当成皮肤跳过了）在页面上表现为
-       "她某个状态不动"，而那和"没有素材"长得一模一样。
-       这两个名字也是 v1.49.0 改名的落点之一：`idle` / `sleepy` 是本轮**退役**的旧名，
-       清单里再出现它们就等于改名只改了一半。 */
-    check(keys.includes('deepsea_idle') && keys.includes('deepsea_sleepy'),
-      'BOTH deep-sea loops are still there — the standing one and the sleeping one, under their new per-skin names (v1.49.0)',
-      keys.length ? keys.join(', ') : 'no clips at all')
+    /* **深海女仆那三条都要在**（v1.46.5 / v1.49.0 / v1.49.3）：站着、开心、睡着是三条
+       独立的素材，只进一条（或者 build 的发现规则又把 motion/ 当成皮肤跳过了）在页面上
+       表现为"她某个状态不动"，而那和"没有素材"长得一模一样。
+       v1.49.3 从两条变三条：`happy` 是**新建**的（`deepsea:happy` 这一格在那之前根本
+       没有素材 —— 戳她一下只有静态立绘），另外两条是拿当前立绘**重做**的（它们背后
+       的立绘在 1.47.1 被重画过）。三条一起点名，少一条就红。 */
+    const deepseaClips = keys.filter((k) => k.startsWith('deepsea_'))
+    check(deepseaClips.length === 3
+      && ['deepsea_idle', 'deepsea_happy', 'deepsea_sleepy'].every((k) => keys.includes(k)),
+      'all THREE deep-sea loops are there — standing, happy and sleeping, under their per-skin names (v1.49.3)',
+      deepseaClips.length ? deepseaClips.join(', ') : 'no deep-sea clip at all')
     check(!keys.includes('idle') && !keys.includes('sleepy'),
       'and the retired shared names are gone from the manifest — a clip called `idle` would mean the rename never happened',
       keys.filter((k) => k === 'idle' || k === 'sleepy').join(', ') || 'no bare `idle`/`sleepy` clip left')
@@ -5997,12 +6092,14 @@ const MOTION_DISK_BUDGET_KB = 68000
        字节"，所以换一个字节就红。这是一张**声明表**，不是推导：素材是怎么来的
        写在生成区的 `tools/canon.mjs` / `swim.mjs` 里，这里只记住当时用的是谁。
 
-       两条深海女仆素材是**已知的历史例外**：它们的立绘在 1.47.1（e3dae8c）被
+       两条深海女仆素材曾是**已知的历史例外**：它们的立绘在 1.47.1（e3dae8c）被
        重做过一版（字节与像素都变了），而那两条素材是 1.46.5（8e08b5a）做的 ——
-       也就是说它们**已经**漂过一次，重做它们不在 1.49.2 的范围里。这里记的是
-       **当前**立绘的指纹：挡得住下一次改动，挡不住那一次（要修那次漂移只能重做
-       那两条素材）。其余十六条的立绘都没有在素材生成之后动过，记的就是生成时
-       那一版。 */
+       也就是说它们**已经**漂过一次；表里当时记的是**当前**立绘，挡得住下一次改动，
+       挡不住那一次。
+
+       **v1.49.3 把那一次补上了**：三条深海女仆素材全部拿当前立绘重做（`happy` 那条
+       是新加的，`idle` / `sleepy` 是重做的），于是这张表里不再有例外 —— 十八条
+       每一条都是"素材是拿这一版立绘做的"。 */
     const MOTION_SOURCES = {
       canon_idle: ['assets/canon/idle.webp', '2BD644A4CEC6783ACE58EEF0EC8A513A034A120E121A6EBBB6A6A5B9E78BDD52'],
       canon_attn: ['assets/canon/attn.webp', '0894E83DBD96BE38F78E575C586F073056ED68D298FC3E35032DB402497B3A6B'],
@@ -6021,8 +6118,10 @@ const MOTION_DISK_BUDGET_KB = 68000
       swim_proud: ['assets/swim/proud.webp', 'FFFB37166FAB2141B048179CBE0ACD61654BEB260136D3FDC828C69280709D3D'],
       swim_eat: ['assets/swim/eat.webp', '8B954CC93D83CB1FC30406132B9F71D12B210F79B99DC0AA2D3AC7993A4EA018'],
       swim_poked: ['assets/swim/poked.webp', 'D62232787A41FBB07B51568C1B86C0D170493F5814FC3D52E9469F678FE9A1EE'],
-      /* 上面说的那两条历史例外：记的是**当前**立绘。 */
+      /* 1.49.3 的落点：立绘换过新的一版（`happy` 是**新建**那一条的来源，
+         `idle` / `sleepy` 是重做那两条的来源）—— 三条一起记，都是当前立绘的字节。 */
       deepsea_idle: ['assets/deepsea/idle.webp', 'CACF8609605D867F454103EA3CFD2EA9844284D7757ED2DCF8A39ACD83F5E33C'],
+      deepsea_happy: ['assets/deepsea/happy.webp', 'EA78CAA40F57B08652D7E4205740B3EABB470495FADE629DAAEC462D023F8A40'],
       deepsea_sleepy: ['assets/deepsea/sleepy.webp', '3C35B8FF143A72E98155180A6D2F160B55A374E02A286B409021657CF1600CB5'],
     }
     {
