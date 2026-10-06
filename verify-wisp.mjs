@@ -30,6 +30,7 @@
    ========================================================================== */
 
 import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { verifyAudit } from './tools/audit-log.mjs'
@@ -5928,12 +5929,15 @@ head('4b. the clips ship as FILES — the bundle carries only their names (v1.47
         上界收到 34000 KB；1.49.0 又落盘原版八条（每条 3537.2~4272.5 KB），
         十八条实测 **60177.1 KB / 58.8 MB**（最大的换成 `canon_eat` 4272.5 KB），
         于是上界跟着提到 **69000 KB / 67.4 MB**（约 +14% 重编码余量 —— 和上一版
-        同一条规矩）。每次素材换代都要有人重新量一遍再改它，而不是让它自己漂。
+        同一条规矩）。1.49.2 重做 `canon_eat`（4272.5 → 3399.9 KB），十八条实测
+        **59304.4 KB / 57.9 MB**（最大的换成 `canon_happy` 3927.1 KB），上界跟着
+        收到 **68000 KB / 66.4 MB**（+14.7%，还是那条规矩）。每次素材换代都要有人
+        重新量一遍再改它，而不是让它自己漂。
 
    上界写在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
    一个数写两遍就是下一次漂移的起点。 */
 const MOTION_MANIFEST_BUDGET_BYTES = 2048
-const MOTION_DISK_BUDGET_KB = 69000
+const MOTION_DISK_BUDGET_KB = 68000
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
@@ -5982,6 +5986,71 @@ const MOTION_DISK_BUDGET_KB = 69000
     check(onDiskBytes > 0 && onDiskBytes <= MOTION_DISK_BUDGET_KB * 1024,
       `and every clip it names really exists under assets/motion/, inside the ${MOTION_DISK_BUDGET_KB} KB disk budget`,
       `${kb(onDiskBytes)} KB on disk for ${keys.length} clips`)
+
+    /* ---- 每条素材的**来源立绘**必须还是当前立绘（v1.49.2）--------------------
+       踩到的坑：`assets/canon/eat.webp` 被换成了新画的一张，而
+       `assets/motion/canon_eat.webp` 还是拿**旧图**合成的 —— 她站着是一张脸、
+       动起来是另一张脸。画面上不报错，四条命令也全绿（那条素材本身完全合法：
+       720x1280 / 97 帧 / 三条门槛都过），所以这一条**只能靠指纹查**。
+
+       指纹 = 生成那条素材时用的立绘的 sha256（大写十六进制）。查的是"当前立绘的
+       字节"，所以换一个字节就红。这是一张**声明表**，不是推导：素材是怎么来的
+       写在生成区的 `tools/canon.mjs` / `swim.mjs` 里，这里只记住当时用的是谁。
+
+       两条深海女仆素材是**已知的历史例外**：它们的立绘在 1.47.1（e3dae8c）被
+       重做过一版（字节与像素都变了），而那两条素材是 1.46.5（8e08b5a）做的 ——
+       也就是说它们**已经**漂过一次，重做它们不在 1.49.2 的范围里。这里记的是
+       **当前**立绘的指纹：挡得住下一次改动，挡不住那一次（要修那次漂移只能重做
+       那两条素材）。其余十六条的立绘都没有在素材生成之后动过，记的就是生成时
+       那一版。 */
+    const MOTION_SOURCES = {
+      canon_idle: ['assets/canon/idle.webp', '2BD644A4CEC6783ACE58EEF0EC8A513A034A120E121A6EBBB6A6A5B9E78BDD52'],
+      canon_attn: ['assets/canon/attn.webp', '0894E83DBD96BE38F78E575C586F073056ED68D298FC3E35032DB402497B3A6B'],
+      canon_happy: ['assets/canon/happy.webp', '01F35C652289894A8F1CFD89EC408A0372ADA0110B7D7451FF2258019D5061BF'],
+      canon_sleepy: ['assets/canon/sleepy.webp', '9EF276EC97939AA9FCBA0A98ED28F9AE7F4D8E1FC89A6505D2AA4EDDF75F01AB'],
+      canon_work: ['assets/canon/work.webp', 'D2BC5E9C88E077786AFAF0572D41CA8F8D7C6542A2236DB75EED2DAA66662617'],
+      canon_proud: ['assets/canon/proud.webp', 'DDA34CDFC15A978D22F8510C60AC77776F0369607ED27EE943C634628C441ECC'],
+      /* 这一条是 1.49.2 的落点：立绘换了新的一张（`45E5D3F1…`），素材跟着重做。 */
+      canon_eat: ['assets/canon/eat.webp', '45E5D3F11E4E707BD8BD17572BDA851C191F8CCEF3C503A2F7228C69F0CEC8D0'],
+      canon_poked: ['assets/canon/poked.webp', '7738A9E3090B91EA89CB2E78F6C8BC5C37C684570C81568AE05E739B5EFCEFC8'],
+      swim_idle: ['assets/swim/idle.webp', '34B966C92B1E30119C96BEA5AE558C4F9B1244550A3DFB10EC819AE2F5B8EE26'],
+      swim_attn: ['assets/swim/attn.webp', '723B3DA12C98028C03E80C1D1E810D04ABF779AFABBD8E36D1D42B6D72C606BC'],
+      swim_happy: ['assets/swim/happy.webp', '311FE375CF1726E8F40AA80D34D6E340D41C550CB4971FCC0435E510B72DD282'],
+      swim_sleepy: ['assets/swim/sleepy.webp', 'FFC0B4D23F7AB823AAD4AA9EB8A3D933D394391BFB3005CF0E86808F878B3806'],
+      swim_work: ['assets/swim/work.webp', '757F063C436CDE35FE80658375A3BA2D64B5B8976392D1BA0FE1A46B5B7D6633'],
+      swim_proud: ['assets/swim/proud.webp', 'FFFB37166FAB2141B048179CBE0ACD61654BEB260136D3FDC828C69280709D3D'],
+      swim_eat: ['assets/swim/eat.webp', '8B954CC93D83CB1FC30406132B9F71D12B210F79B99DC0AA2D3AC7993A4EA018'],
+      swim_poked: ['assets/swim/poked.webp', 'D62232787A41FBB07B51568C1B86C0D170493F5814FC3D52E9469F678FE9A1EE'],
+      /* 上面说的那两条历史例外：记的是**当前**立绘。 */
+      deepsea_idle: ['assets/deepsea/idle.webp', 'CACF8609605D867F454103EA3CFD2EA9844284D7757ED2DCF8A39ACD83F5E33C'],
+      deepsea_sleepy: ['assets/deepsea/sleepy.webp', '3C35B8FF143A72E98155180A6D2F160B55A374E02A286B409021657CF1600CB5'],
+    }
+    {
+      const undeclared = keys.filter((k) => !MOTION_SOURCES[k])
+      const invented = Object.keys(MOTION_SOURCES).filter((k) => !keys.includes(k))
+      check(undeclared.length === 0 && invented.length === 0,
+        'every shipped clip DECLARES which still it was made from — a new clip cannot skip the fingerprint table (v1.49.2)',
+        undeclared.length || invented.length
+          ? `undeclared: ${undeclared.join(', ') || '—'} · not shipped: ${invented.join(', ') || '—'}`
+          : `${keys.length} clips → ${new Set(Object.values(MOTION_SOURCES).map(([rel]) => rel)).size} stills`)
+
+      const goneStill = []
+      const drifted = []
+      for (const [clip, [rel, want]] of Object.entries(MOTION_SOURCES)) {
+        const p = join(here, rel)
+        if (!existsSync(p)) { goneStill.push(`${clip} → ${rel}`); continue }
+        const got = createHash('sha256').update(readFileSync(p)).digest('hex').toUpperCase()
+        if (got !== want) drifted.push(`${clip}: ${rel} ${got.slice(0, 12)}… ≠ ${want.slice(0, 12)}…`)
+      }
+      check(goneStill.length === 0,
+        'and every still it names is still in the package',
+        goneStill.length ? goneStill.join(' | ') : `${Object.keys(MOTION_SOURCES).length} still(s) present`)
+      check(drifted.length === 0,
+        'and every one of those stills is still the SAME BYTES the clip was made from — a redrawn sprite plus a stale clip is invisible: she stands as one person and moves as another (v1.49.2)',
+        drifted.length
+          ? `${drifted.join(' | ')} — 重画了立绘就要重做那条素材，并在这里更新指纹`
+          : Object.entries(MOTION_SOURCES).map(([k, [rel, h]]) => `${k}=${h.slice(0, 8)}…`).join(' · '))
+    }
 
     /* ---- 边缘平滑度不是"看起来"的事，是**编码参数**的事（v1.46.4）----
        colorkey 的 blend 是边缘过渡带的半宽：0.02 那条带只有 0.04 的色距宽度，
