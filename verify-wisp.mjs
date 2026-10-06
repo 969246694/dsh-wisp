@@ -759,20 +759,61 @@ head('1b. the host half answers checkUpdate through the platform web service')
 {
   const mod = await import(pathToFileURL(hostPath).href + '?probe=update')
   const { readPublishedVersion, compareVersions, registerHandlers, inject } = mod
-  const { readBalance, accountClientMetadata, normalizeWallets, resolveWebService, readManagedVersion } = mod
+  const { readBalance, accountClientMetadata, normalizeWallets, resolveWebService, readManagedVersion, resolveAccountService } = mod
 
-  /* web 服务必须声明为**可选**：硬依赖一个没加载的服务会让 fiber 永远 waiting，
-     她会直接从界面上消失。这条是安全属性，不是风格偏好。 */
-  const declaresWeb = inject && typeof inject === 'object'
-  check(Boolean(declaresWeb) && Array.isArray(inject.optional) && inject.optional.includes('web'),
-    'web is declared as an OPTIONAL inject', JSON.stringify(inject))
-  check(Boolean(declaresWeb) && Array.isArray(inject.required) && !inject.required.includes('web'),
-    'and not as a required one — a missing service must not hide her', JSON.stringify(inject))
-  /* 余额服务同理：桌面版有、别的壳可能没有。硬依赖它 = 在那些壳里她整个人消失。 */
-  check(Boolean(declaresWeb) && inject.optional.includes('deepseekAccount')
-    && !inject.required.includes('deepseekAccount'),
-  'deepseekAccount is optional too — the balance must degrade, not take her down',
+  /* ---------------------------------------------------------------------------
+     `inject` 的形状曾经在这里被断言**反了**（v1.48.3 更正）。
+     旧断言要求 `{ required: [], optional: ['web','deepseekAccount'] }` —— 一个**看起来**
+     像"可选依赖声明"、实际上把整个宿主半包钉死的字面量：
+
+       cordis 的静态 `inject` 不是 `{ required, optional }`。它是"服务名 → 拦截配置"的
+       映射（或名字数组），loader 的归一化规则就是
+         Array.isArray(inject) ? [...inject] : Object.keys(inject)
+       —— 于是上面那个字面量声明的是两个**叫 `required` 和 `optional` 的服务**。
+       任何组合里都不存在这两个服务，`Fiber._refresh()` 永远凑不齐 `_store`，fiber 停在
+       PENDING，`apply()` 一次都不执行：`/wisp-motion/` 路由、checkUpdate、checkBalance
+       全都不存在，而界面上的表现只是"她不动了 / 查不了更新"。安装日志原话：
+         wisp (dsh-wisp): pending (waiting for services: required, optional)
+
+     所以判据不是"web 要声明成 optional"，而是**声明的服务名必须都是运行时确实注册的**
+     —— 这份包能证明的只有空集：需要的服务全部在调用时用 `ctx.get(name)` 取
+     （web / deepseekAccount / fs，另有 pluginManager）。下面按 cordis 自己的规则复算
+     一遍声明：任何会让 fiber 永久 pending 的形状都红，那个字面量本身再单独钉一遍。 */
+  const cordisInjectNames = (decl) => {
+    if (decl === null || decl === undefined) return []
+    if (Array.isArray(decl)) return [...decl]
+    if (typeof decl === 'object') return Object.keys(decl)
+    return [String(decl)]
+  }
+  const declaredNames = cordisInjectNames(inject)
+  check(declaredNames.length === 0,
+    'the host half declares NO service dependency — a fiber with zero names to wait for cannot be parked',
+    `inject=${JSON.stringify(inject)} → cordis 会等 [${declaredNames.join(', ')}]`)
+  check(!(inject && typeof inject === 'object' && !Array.isArray(inject)
+    && ('required' in inject || 'optional' in inject)),
+  'and the { required, optional } literal is gone — cordis reads those two keys as service NAMES (the pending bug, pinned here)',
   JSON.stringify(inject))
+  /* 不靠声明也要拿得到服务：`ctx.get` 是调用时查表；而 `ctx.web` / `ctx.deepseekAccount`
+     在没声明的壳里要么不存在、要么**抛错**。这里把属性访问做成会抛的，两条解析路都必须
+     照样拿到服务 —— "没有声明"与"拿不到服务"是两件事。 */
+  const webStub = { fetch: async () => ({ statusCode: 200, body: { kind: 'text', content: '{"version":"1.0.0"}' } }) }
+  const accountStub = { getBalance: async () => null, getState: async () => ({ status: 'signed-out' }) }
+  const throwingProps = {
+    get: (name) => (name === 'web' ? webStub : name === 'deepseekAccount' ? accountStub : undefined),
+    get web() { throw new Error('cannot get property "web" without inject') },
+    get deepseekAccount() { throw new Error('cannot get property "deepseekAccount" without inject') },
+  }
+  check(resolveWebService(throwingProps).service === webStub
+    && resolveAccountService(throwingProps).service === accountStub,
+  'both services are resolved through ctx.get at call time — a declaration is not what makes them reachable',
+  JSON.stringify({ web: resolveWebService(throwingProps).how, account: resolveAccountService(throwingProps).how }))
+  /* 最极端的组合：没有服务、没有 ctx.get、没有 effect。apply() 必须照样跑完 ——
+     这是"任何组合都不会把 fiber 钉住"的正面证明。 */
+  let bareThrew = null
+  try { mod.apply({}, {}) } catch (error) { bareThrew = error }
+  check(bareThrew === null,
+    'apply() survives a context with no services, no ctx.get and no effect — activation never depends on a composition',
+    bareThrew ? String(bareThrew.message) : 'ok')
   check(mod.VERSION === pkg.version, 'the host half stamps the packaged version',
     `${mod.VERSION} vs ${pkg.version}`)
 
@@ -1101,6 +1142,47 @@ head('1b. the host half answers checkUpdate through the platform web service')
   } catch (error) { appliedThrew = true }
   check(appliedThrew === false && handlers.has('checkUpdate') && effects.length === 1,
     'apply() registers the handler and keeps its disposer on the fiber', effects.join(', '))
+
+  /* v1.48.3：`__diag` 现在也回答"宿主半包到底跑没跑、注册了哪两个 handler"。
+     这条现场检查口是被那次 pending 事故逼出来的：fiber 停在 PENDING 时，路由没注册、
+     检查更新没有、查余额没有 —— 三种症状在外部看起来和"这一段就这样"完全一样。
+     这里用假 req/res 把那条线上诊断真的取一次，证明它报的是 apply() 的实况。 */
+  {
+    let diagRoute = null
+    let diagApplyError = null
+    try {
+      mod.apply({
+        inject: (deps, cb) => {
+          cb({
+            /* effect() 必须**真的执行**那个回调：路由就是在那里面注册的。 */
+            webServer: { register: (route) => { diagRoute = route; return () => {} } },
+            effect: (fn) => { fn(); return () => {} },
+          })
+        },
+        effect: () => () => {},
+      }, {})
+    } catch (error) { diagApplyError = String(error && error.message ? error.message : error) }
+    const response = { status: 0, headers: null, body: null }
+    let diag = null
+    if (diagRoute !== null && typeof diagRoute.handler === 'function') {
+      await diagRoute.handler(
+        { method: 'GET', url: `${mod.MOTION_ROUTE_PATH}/${mod.MOTION_DIAG_NAME}` },
+        {
+          writeHead(status, headers) { response.status = status; response.headers = headers },
+          end(chunk) { response.body = chunk ?? null },
+          destroy() {},
+        },
+      )
+      try { diag = JSON.parse(String(response.body ?? '')) } catch (error) { diag = null }
+    }
+    check(diag !== null && diag.host?.applied === true
+      && Array.isArray(diag.host?.handlers) && diag.host.handlers.includes('checkUpdate') && diag.host.handlers.includes('checkBalance')
+      && diag.host?.motion?.registered === true,
+    'and __diag reports that apply() ran and registered BOTH host handlers — the question a PENDING fiber made unanswerable',
+    diag === null
+      ? `status=${response.status} route=${diagRoute === null ? 'none' : 'yes'}${diagApplyError ? ` apply threw=${diagApplyError}` : ''}`
+      : JSON.stringify(diag.host))
+  }
 
   if (previousSeat === undefined) delete globalThis.harness
   else globalThis.harness = previousSeat
@@ -4397,6 +4479,12 @@ if (clientSrc !== null) {
     check(fifth.configure({ skin: 'deepsea' }) && fifth.skin === 'deepsea',
       'configure({skin}) goes through the same path as the menu', String(fifth.skin))
 
+    /* v1.48.2：默认皮肤 = 列表**第一位** = canon（原版女仆）。
+       默认值由 build.mjs 的 SKIN_PRIORITY 决定（首位即默认），所以这一条同时钉住两件事。 */
+    check(fifth.skins[0] === 'canon',
+      'the default skin is 原版女仆 (canon) and it leads the skin list',
+      fifth.skins.slice(0, 4).join(', '))
+
     // 大小现在是滑块：用键盘调（不关菜单），再用菜单动作验证"选了就关"
     body5.dispatch('contextmenu', rightClickOnHer().ev)
     check(menuOf() !== null, 'the menu opens for the size check')
@@ -4852,9 +4940,11 @@ if (clientSrc !== null) {
        上限 12 -> 13：v1.45.0 起那段帧动画素材也走同一条 Blob 通道，它**只该解一次**
        （这一轮里她睡着了 60 次）。v1.46.5 再 +1 = 14：idle 也接上了素材（挂载时解一次，
        120 轮里她醒着 60 次，一次都不该重解）。
-       **v1.47.0 起动图不再走 Blob**（它是宿主路由下的文件 URL），所以这个数只数立绘
-       —— 14 这个上界照旧成立，只是现在有了富余。 */
-    check(soak.urLs.length <= 14,
+       **v1.47.0 起动图不再走 Blob**（它是宿主路由下的文件 URL），所以这个数只数立绘。
+       **v1.48.2 再 +1 = 15**：默认皮肤从 deepsea 换成 canon，而这一轮 soak 只在
+       classic / deepsea 之间来回切 —— 挂载时多出来的 canon 那一张是**新的第三套**，
+       所以上界跟着 +1（仍然与切换次数无关，120 次切换一个都不多）。 */
+    check(soak.urLs.length <= 15,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
     /* 反过来钉"没有被内联回来"：只要有一份 MB 级的 image/webp blob，就说明构建又把

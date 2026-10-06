@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.48.1`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
+**当前版本 `1.48.3`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -84,7 +84,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **814 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **817 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -572,9 +572,14 @@ ctx.get('timer').interval(fn, ms)  // → disposer
 - **平台给的网络通道 `ctx.web.fetch` 设不了请求头**：它的请求类型就是 `{ url: string }`，
   provider 只读 `url`，方法硬编码 GET、请求头硬编码 UA/Accept。所以**任何需要鉴权头的接口
   在插件里都打不通** —— 这和有没有 key 无关，是通道本身的形状。
-- **能拿到的是服务**：`ctx.get('<name>')` 无需声明即可取；`ctx.<name>` 属性访问需要在
-  `inject` 里声明。两者都要**声明成 optional** —— 硬依赖一个没提供的服务会让 fiber 永远
-  `waiting`，她就直接从界面上消失了（`web` 与 `deepseekAccount` 都是这么声明的）。
+- **能拿到的是服务，而且要在调用时拿**：`ctx.get('<name>')` **不需要任何声明**，直接查
+  当前注册表。所以本插件**一条 `inject` 都不声明**（`export const inject = []`），
+  `web` / `deepseekAccount` / `fs` 全在调用时用 `ctx.get(name)` 取。
+- **`inject` 是"服务名 → 拦截配置"的映射，不是 `{ required, optional }`**：把对象写成
+  `{ required: [], optional: ['web'] }`，cordis 读到的是**两个叫 `required` 和 `optional`
+  的服务名**（归一化规则就是 `Array.isArray(inject) ? inject : Object.keys(inject)`）。
+  没有任何组合提供这两个服务 ⇒ fiber 永远停在 `PENDING`、`apply()` 一次都不执行，
+  路由与两个 handler 全部不存在。1.47.x/1.48.x 就是这么被钉死的（详见 1.48.3 一节）。
 - **凭据不属于插件**：余额走 `deepseekAccount`（"only Host consumers can obtain a request
   credential"），插件拿到的是归一化后的结果。`doctor().balance` 里只有数字和状态，
   没有任何 token —— 这是设计，不是巧合。
@@ -746,6 +751,64 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 抛错是否被接住、没有插件管理器时是否明说、以及英文覆盖层齐全且无汉字。
 
 ## 变更
+
+### 1.48.3
+
+**宿主半包之前一次都没跑过 —— `inject` 那一行声明把整个插件钉死在 `PENDING`。**
+
+怎么发现的：`plugin_manager list_plugins` 里 `dsh-wisp` 的 `fiberPhase` 是 **`pending`**，
+安装日志原话是 `wisp (dsh-wisp): pending (waiting for services: required, optional)`。
+fiber 从未激活 ⇒ `apply()` 一次都没执行 ⇒ `/wisp-motion/` 路由、`checkUpdate`、
+`checkBalance` **全部不存在**；而客户端半包走的是另一条投递路径（`/plugins` 路由直接从磁盘发
+`lib/client.js`），所以只有客户端改动会"立竿见影"。
+
+**成因：cordis 的静态 `inject` 不是 `{ required, optional }`，而是"服务名 → 拦截配置"的映射**
+（或名字数组），归一化规则就是
+
+```js
+Array.isArray(inject) ? [...inject] : Object.keys(inject)
+```
+
+于是 `export const inject = { required: [], optional: ['web', 'deepseekAccount'] }` 声明的
+是**两个叫 `required` 和 `optional` 的服务** —— 这两个名字在**任何**组合里都不存在。
+`Fiber._refresh()` 因此永远凑不齐 `_store`，fiber 永远停在 `PENDING`，`apply()` 永远不会被调用。
+
+**为什么重启没用。** 声明每次开机都要重新读一遍，于是每次开机都以同样的方式 park —— 这不是
+"加载时序没赶上"，重启多少次都不会变。而界面上看到的只是"她不动""查不了更新""查余额说这个
+壳里没有"，三种症状各自都像"这一段本来就这样"。
+
+**修法：一条 `inject` 都不声明（`export const inject = []`）。** 这个插件本来就在**调用时**
+用 `ctx.get(name)` 取服务（`resolveWebService` / `createServiceReader` / `resolveAccountService` /
+`readManagedVersion`）—— `ctx.get` 读注册表**不需要任何声明**。零声明 = `_refresh()` 无服务可等，
+**任何组合里 fiber 都会立刻激活**；反过来说，这里每加一个服务名，就多一个能让整只插件消失的
+失败点，所以"能激活"优先于"声明得漂亮"。余额那一路顺手补齐：`ctx.deepseekAccount` 在没提供该
+服务的壳里是**抛错**而不是 `undefined`，现在先 `ctx.get('deepseekAccount')`、属性访问只作兜底
+且包在 guard 里 —— "这个壳没有账户服务"因此仍然是一句话，而不是一次 rejected 调用。
+
+**现场检查口：`GET /wisp-motion/__diag` 现在也回答"宿主半包到底跑没跑"。** 它多了一段 `host`：
+`applied` / `at` / `registered` / `reason` / `handlers`（`checkUpdate`、`checkBalance`）/ `motion`。
+被 pending 钉死时，"路由没注册"和"这一段就是这样"从外面看一模一样，有了这段 JSON 就不必猜。
+
+**预检里有一条断言曾经是反的，v1.48.3 改正并钉住。** 旧断言要求 `inject` 必须是
+`{ required: [], optional: ['web', 'deepseekAccount'] }`（"web 要声明成可选"）—— 那条所谓的
+安全属性本身就是把 fiber 钉死的声明。现在的判据是**声明的服务名必须都是运行时确实注册的**，
+而这份包能证明的只有空集（需要的服务全部调用时 `ctx.get`），所以断言就是"零声明"；那个字面量
+再单独钉一条（出现 `required` / `optional` 键就红）。另外两条：把属性访问做成会抛错时，两个服务
+仍必须能通过 `ctx.get` 拿到；`apply()` 在"没有服务、没有 `ctx.get`、没有 `effect`"的上下文里
+也必须照样跑完 —— 这是"任何组合都不会把她钉住"的正面证明。
+
+预检 815 → **817 项**。
+
+### 1.48.2
+
+**默认皮肤换成「原版女仆」（`canon`），皮肤列表里也排到第一位。**
+
+`canon` 是对齐社区规范的那一套（深蓝长直发 + 鲸鳍耳 + 女仆装），在此之前门面一直是「深海女仆」。
+默认皮肤由 `build.mjs` 的 `SKIN_PRIORITY` 决定 —— **列表首位就是默认**，所以只改了一行顺序：
+`['canon', 'deepsea', …]`。构建产物里精灵图的顺序跟着变，菜单「外观」里第一项自然就是它。
+
+对**已经在用**的人没有影响：配置里的 `skin`、或上次在菜单里选过的那一套仍然优先（记在 localStorage），
+只有新装、或清过存储的用户才会看到新的默认。
 
 ### 1.48.1
 
@@ -1315,9 +1378,13 @@ pause()  →  currentTime = 0  →  display: none
    现在**每个源有自己的截止时间**，谁卡住谁自己出局。
 
 2. **`ctx.web` 是启动那一刻的快照。** 宿主半包由 bundle patch 插进来，可能比 `web` 服务
-   先就位；而 `inject.optional` 的依赖**在启动时缺席不会事后补上** —— `ctx.web` 会永远是
-   `undefined`，检查更新从此永久失效，且看起来像"今天网不好"。
+   先就位，`ctx.web` 因此可能是 `undefined`，而检查更新看起来就像"今天网不好"。
    现在服务在**调用时**解析：先 `ctx.get('web')`（调用时查表），再退回 `ctx.web`。
+
+   > **1.48.3 更正。** 当时把原因写成"`inject.optional` 的依赖在启动时缺席不会事后补上"，
+   > 机制说错了：那个 `{ required: [], optional: ['web','deepseekAccount'] }` 字面量让 fiber
+   > **永远**停在 `PENDING`，**根本没有"启动时的那份快照"** —— `apply()` 从未运行过
+   > （见 1.48.3 一节）。结论（服务必须在调用时用 `ctx.get` 取）仍然成立，而且现在是唯一的路。
 
 3. **失败不再是一句没法追的话。** 客户端以前把 `sources` 丢掉，只留一个 `reason`；
    现在每个源各自的原因与 detail 都会留在 `doctor().update.lastCheck` 里 ——
@@ -2108,6 +2175,13 @@ v1.31.0 · 深海女仆
 
 - **`web` 声明为可选 inject 是安全属性**：硬依赖一个没加载的服务会让 fiber 永远 `waiting`，
   **她会直接消失**。预检里两条断言盯着（必须可选、不能必需）。
+
+  > **1.48.3 更正：这段结论错了一半，而且预检里那两条断言也是反的。**
+  > "不能硬依赖"是对的，但**"可选"救不了它**：cordis 的静态 `inject` 把**对象键**当作服务名
+  > （`Array.isArray(inject) ? inject : Object.keys(inject)`），所以 `{ optional: ['web'] }`
+  > 在它眼里只是声明了一个**叫 `optional` 的服务**，`['web']` 是给这个服务名配的拦截配置。
+  > 没有任何组合提供 `optional`（或 `required`）⇒ fiber 永远 `PENDING`、`apply()` 永不执行。
+  > 正确做法是**一条都不声明** + 全部调用时 `ctx.get`；详见 1.48.3 一节。
 
 - **更正上一版 README 的错误结论。** 上一版写"不能检查更新" ✗ —— 那是建立在"服务目录里没有网络类
   服务"上的，而我漏看了 `ctx.web`：它是**注册表式**服务，提供者 `web-fetch-http` 只往里

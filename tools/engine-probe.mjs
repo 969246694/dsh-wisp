@@ -197,6 +197,11 @@ const evaluate = async (expression) => {
 try {
   await send('Runtime.enable')
   await send('Page.enable')
+  /* 视口再兜一层：`--window-size` 在某些环境里会被无视（这台机器实测拿到过
+     500x450 —— 而她在 (600,150)、盒子 560x840，整个人落在视口外，
+     elementFromPoint 全返回 null，命中与焦点四条检查一起假红）。
+     用 CDP 强制覆盖，跟真实窗口尺寸彻底脱钩。 */
+  await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1200, deviceScaleFactor: 1, mobile: false })
 
   /* 页面必须落在一个**真的 origin** 上（见上面 clipServer 那段）：动图是相对
      `document.baseURI` 解析的，about:blank 上解析不出来 —— 而那是探针环境的问题，
@@ -261,13 +266,18 @@ try {
     const c = document.createElement('canvas'); c.width = 96; c.height = 144
     const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, 96, 144)
     const data = ctx.getImageData(0, 0, 96, 144).data
+    /* 采样点的坐标必须按**图的实际 rect** 推，不能拿 position + 硬编码 560x840：
+       1.48 起层级是 body > motion > lean > sprite，盒子的原点与尺寸都可能变，
+       按 position 推出来的点会飘到她身上、甚至飘出视口（elementFromPoint 直接 null）
+       —— 那就是一连串假红。这条就是被 1.48.1 的层级改动顶出来的。 */
+    const rect = document.querySelector('.wisp-img').getBoundingClientRect()
     const p = window.__wisp.position
     const clear = [], solid = []
     for (let row = 2; row < 142; row += 4) {
       for (let col = 2; col < 94; col += 4) {
         const a = data[(row * 96 + col) * 4 + 3]
-        const x = Math.round(p.x + (col + 0.5) * (560 / 96))
-        const y = Math.round(p.y + (row + 0.5) * (840 / 144))
+        const x = Math.round(rect.left + (col + 0.5) * (rect.width / 96))
+        const y = Math.round(rect.top + (row + 0.5) * (rect.height / 144))
         if (a === 0) clear.push({ x, y })
         else if (a > 240) solid.push({ x, y })
       }
@@ -275,6 +285,7 @@ try {
     const hitEl = document.querySelector('.wisp-hit')
     return {
       clear, solid,
+      geom: 'pos=' + p.x + ',' + p.y + ' rect=' + Math.round(rect.left) + ',' + Math.round(rect.top) + ' ' + Math.round(rect.width) + 'x' + Math.round(rect.height) + ' vp=' + innerWidth + 'x' + innerHeight,
       hasHitLayer: hitEl !== null,
       clip: hitEl ? String(hitEl.style.clipPath).slice(0, 0) + String(getComputedStyle(hitEl).clipPath).slice(0, 48) : null,
       bodyPointerEvents: getComputedStyle(document.querySelector('.wisp-body')).pointerEvents,
@@ -288,7 +299,7 @@ try {
     String(picks.clip) + '…')
   check(picks.clear.length > picks.solid.length,
     'and most of her box really is transparent — which is why a box-shaped hit area is wrong',
-    `${picks.solid.length} opaque samples vs ${picks.clear.length} transparent`)
+    `${picks.solid.length} opaque samples vs ${picks.clear.length} transparent | ${picks.geom}`)
 
   const clearPoint = picks.clear[Math.floor(picks.clear.length / 2)]
   const solidPoint = picks.solid[Math.floor(picks.solid.length / 2)]
