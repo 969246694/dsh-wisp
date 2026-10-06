@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.47.1`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
+**当前版本 `1.48.1`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -84,7 +84,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **787 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **814 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -137,6 +137,23 @@ WISP_CHROME=/path/to/chrome node tools/engine-probe.mjs
 两者**不互相替代**。
 pnpm 布局下顶层没有 `playwright-core` 这个名字（只有 `.pnpm/playwright-core@<ver>/`），
 所以脚本会显式扫 `.pnpm`。
+
+### 素材路由的端到端 HTTP 检查：`tools/motion-http.mjs`
+
+预检把 `/wisp-motion/` 的 handler 当**函数**驱动了一遍 —— 它证明不了"注册键能不能被载体匹配上"。
+1.47.x 的 404 恰恰死在这一条上：路由注册成功、函数级断言全绿，而请求一次都没到过 handler
+（注册键带了尾斜杠，载体的前缀匹配自己补那个斜杠）。所以这里起一个**真的 `node:http` 载体**：
+
+```bash
+node tools/motion-http.mjs                                  # 自建载体，不需要应用在跑
+node tools/motion-http.mjs --live http://127.0.0.1:19387    # 打运行中的应用，四个验收原样重跑
+```
+
+自建那一半用的是真的 `registerMotionRoute()`、载体原样的注册表与匹配规则、以及一份按
+`Service.listService("fs")` 签名实现的本地 fs 后端（`resolve` / `contains` / `stat` / `readBytes`），
+然后发真的 HTTP：200 的字节数与磁盘逐条比对，404 必须带 `x-wisp-motion: hit`（不带就说明答话的
+不是本插件的 handler）。`--live` 那一半是给"进程里到底是哪一代模块"用的：宿主半包是旧模块世代时，
+四个请求会全 404 且**一个标记都没有** —— 那就是该重启进程的信号。
 
 ## 打包与分享
 
@@ -203,6 +220,44 @@ classic 皮肤的绿幕原图已经不在了，那些分档是**唯一**的重�
 字节留在 `assets/motion/` 里，由**宿主半包**（`lib/index.js`）注册的
 `/wisp-motion/<文件>` 路由发给页面；客户端只做
 `new URL('wisp-motion/<文件>', document.baseURI)`。
+
+**1.48.1：这条路由在此之前一个字节都没发出去过。** 路由**注册成功了**，但注册在
+`/wisp-motion/`（**带尾斜杠**）上，而载体的前缀匹配是
+`pathname === prefix || pathname.startsWith(prefix + '/')` —— 斜杠由**载体**补，
+所以那个键只匹配 `/wisp-motion` 与 `/wisp-motion//…`，页面要的
+`/wisp-motion/idle.webp` 一条都匹配不上：请求全部落进平台自己的 404 兜底。
+现在有两个名字，别再当成一个：
+
+| 名字 | 值 | 用在哪 |
+|---|---|---|
+| `MOTION_ROUTE_PATH` | `/wisp-motion` | **注册键**（载体自己补斜杠） |
+| `MOTION_PATH` | `/wisp-motion/` | URL 前缀（客户端、预检、诊断） |
+
+读文件也一样换了路：宿主半包用平台的 **`fs` 服务**（`ctx.get('fs')`）而不是 `node:fs`。
+签名是从活的 Service 注册表里查的，不是猜的：`fs.resolve(path, opts?)`（本地后端会
+**realpath**）、`fs.contains(parent, child)`（canonical 包含判断）、`fs.stat(target)`
+（`type`/`size`）、`fs.readBytes(target, signal, maxBytes)`（超限报 `FS_TOO_LARGE`）。
+于是"文件名合法"之外还有一道**真实路径**前缀校验：`assets/motion/` 里的符号链接指到
+包外，`resolve` 之后的真实路径落在目录外，`contains` 直接挡下 —— 名字正则一个人挡不住这个。
+
+**一个 404 说不清是哪一半坏 —— 现在说得清了。** 每个响应都带 `x-wisp-motion: hit`
+（平台兜底的 404 没有这个头、也没有 content-type），另有只读诊断：
+
+```
+GET /wisp-motion/__diag[?name=<素材名>]     # 200 application/json
+```
+
+它回：注册键与载体规则跑出来的匹配结论（`registeredKeyMatchesExample` /
+`trailingSlashKeyMatchesExample`）、这个 handler 已经答过多少请求（`hits`/`served`/`notFound`）、
+**走哪条读路径**（`reader.via` + 方法签名出处）、要读的**绝对路径**、真读一遍的
+字节数与 `RIFF/WEBP` 魔数、最后一次失败的错误名（含 `code`）。它**只读**：不改状态、
+不发素材、`node` 那一段只是"这个壳里 Node 那条路通不通"的旁证（发送**不走**它）。
+
+**失败仍然是静默的、而且是有意的**：路由不在（Desktop 载体没有 HTTP 服务器）、404、解码失败
+—— `<img>` 的 `error` 一到，动图藏起来、画面交回静态立绘，她还是好好地站在那儿。
+`__wisp.doctor().motion.frame` 会报出 `asset` / `src` / `failed` / `failedClips` /
+**`fetchError`**（`{ clip, src, at, count }`，没失败过是 `null`）—— 以前只有 `failed: true`，
+"这一段没有素材"和"URL 取不到字节"长得一模一样；现在后者在 `fetchError` 里有 URL 和时间。
 
 为什么必须这样：720p 的动图是 MB 级素材 —— 通用那两条内联就是 7.83 MB，八条泳装再内联
 会到 ~45 MB。换外置之后 `lib/client.js` 从 **15.3 MB 回到 7.8 MB**（1.47.1 实测 **8.25 MB**，
@@ -606,13 +661,16 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 - 另外：即使某次真的传了参考图，代理也不会在登记表里留下痕迹（它不记参数）——
   所以"没喂参考图"最终依赖的是**自我声明 + 声明不可事后篡改**，而不是第三方取证。这一条必须说清楚。
 
-## 更新：能做什么、为什么不能自己更新
+## 更新：能做什么
 
 ### 先说结论
 
-- **检查更新：能。** 走平台给的服务 `ctx.web.fetch`（DSH 自己的 `web_fetch` 工具用的就是它）。
-- **安装更新：不能。** 插件既没有文件系统、也没有包管理器；DSH 的安装器没有以可注入服务的形式
-  暴露给插件。安装仍然要走 DSH 自己的插件列表。
+- **检查更新：能。** 客户端半包自己用 `window.fetch` 读 npm / GitHub 两个源，取版本更高的那个
+  （宿主半包那条 `ctx.web.fetch` 的路仍在，动态插件形态下才有座位）。
+- **安装更新：能（v1.48.0 起）。** 平台把**插件管理器本身**做成了客户端可用的 Remote 命名空间：
+  `ctx.remote.pluginManager.installBundle(spec)` —— 平台自己的「插件」设置页走的就是它。
+  查到新版之后，「关于她」弹窗里会出现 **「安装 vX」**，点一下就装；装完该刷新还是该重启由平台的
+  `ChangeResult.application` 说了算（`applied` / `restart-required`），她照实转述，不自作聪明。
 
 为什么必须绕这么一圈 —— 两边的限制都查到源码级：
 
@@ -649,7 +707,8 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 | **报版本** | 菜单「版本与更新」说一句「我是 1.24.0。<这一版做了什么>」；`__wisp.version` / `__wisp.doctor().update` 也能读 |
 | **更新感知** | 她记住上次见到的版本（localStorage）。**版本变了就说一句「我更新到 … 了」**；第一次安装不吭声（那时她不是更新，是刚来） |
 | **复制包名** | 同一项会把 `dsh-wisp` 复制到剪贴板，方便在 DSH 的插件列表里粘贴安装。**没有剪贴板权限时静默降级**成只说话，不报错 |
-| **能力边界如实上报** | `doctor().update` 里有 `canSelfUpdate: false` 和 `why`（写明沙箱原因） |
+| **直接安装** | 查到新版后「关于她」里出现「安装 vX」→ `remote.pluginManager.installBundle('dsh-wisp@X')`。装的就是**刚才查到的那一版**（数字与装下去的东西一致）；失败按原因说人话（`no-matching-version` = npm 还没这一版） |
+| **能力边界如实上报** | `doctor().update` 里有 `canSelfUpdate: true`、`install`（走哪条通道 + 最后一次装的结果）与 `why`（她自己仍然不碰网络与文件） |
 
 ### 真正更新它的路径
 
@@ -673,16 +732,125 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 `raw.githubusercontent.com/.../main/package.json`）。预检里有一条断言盯着"换了源
 就真的只去问新地址"，免得"支持镜像"只是文档里的一句话。
 
-**她只报告，不安装**：宿主半包在 vm 沙箱里，没有网络、没有文件系统，"装"这件事
-做不了 —— 所以 `canSelfUpdate` 恒为 `false`，`why` 里写明原因。
+**她仍然不自己碰网络与文件**：检查走客户端 `fetch`，安装走平台的插件管理器 ——
+两件事都不是她做的。她自己既没有 Node（宿主半包在 vm 沙箱里）也没有包管理器；
+`doctor().update.install.via` 会告诉你这次走的是哪条通道（`remote.pluginManager` 或 `null`），
+`install.state` 是最后一次的结果（`installed` / `failed` / `unsupported` / `pending`）。
 
 ### 预检里的守卫
 
 `WHATS_NEW` 必须写着**当前版本**，否则预检红 —— 这样"这一版做了什么"不会静默过期。
-另外 `canSelfUpdate === false`、`hint` 里必须含包名或仓库地址、`why` 里必须说明沙箱原因，
-都有断言盯着。
+另外 `hint` 里必须含包名或仓库地址、`why` 里必须说明沙箱原因、`canSelfUpdate` 必须如实，
+都有断言盯着；安装那条路另有六条断言：装的版本号是否就是提示的那一版、`applied` 与
+`restart-required` 是否说了两句不同的话、`no-matching-version` 是否有自己的句子、
+抛错是否被接住、没有插件管理器时是否明说、以及英文覆盖层齐全且无汉字。
 
 ## 变更
+
+### 1.48.1
+
+**动作素材的 HTTP 路由真的能取到字节了 —— 根因是注册键多了一个尾斜杠，不是读不到文件。**
+
+现象（1.47.0 起就在，只是没人量过）：`GET http://127.0.0.1:19387/wisp-motion/idle.webp` → **404**，
+客户端静默降级回静态立绘 ⇒ 用户看到的是"帧动画开关开着、她还是静的"。
+
+**而一个 404 说不出是哪一半坏了**，这正是它藏了两版的原因：
+
+| 可能 | 现场 |
+|---|---|
+| ① 路由没被命中（没注册 / 注册了但匹配不上） | 请求根本没进 handler，平台自己的 404 兜底答的 |
+| ② 路由匹配上了、但读不到文件 | handler 跑了，自己发的 404 |
+
+分辨的办法（这一版才有的）：**每个响应都带 `x-wisp-motion: hit`** —— 平台兜底的 404 既没有这个头、
+也没有 `content-type`；再加一条只读诊断 `GET /wisp-motion/__diag`，它把"注册键在载体规则下匹不匹配得上"
+直接算给你看，连同命中次数、走哪条读路径、要读的绝对路径、真读一遍的字节数与最后一次错误。
+
+答案落在 ①，而且是更细的那一种：**路由注册成功了，注册键却匹配不上任何页面请求**。
+载体（`@deepseek-ai/dsh-host-webserver` 的 `match()`）的前缀匹配不是 `startsWith(prefix)`：
+
+```js
+pathname === prefix || pathname.startsWith(`${prefix}/`)   // 斜杠由载体自己补
+```
+
+1.47.0/1.47.1 注册的是 `'/wisp-motion/'`（带尾斜杠）：它只匹配 `/wisp-motion` 与 `/wisp-motion//…`，
+页面唯一会请求的 `/wisp-motion/idle.webp` 一条都匹配不上。于是 fiber 拿到了路由、dispose 正常、
+函数级预检全绿，而**一次请求都没到过 handler**。现在两个名字分开、不再混用：
+
+| 名字 | 值 | 用在哪 |
+|---|---|---|
+| `MOTION_ROUTE_PATH` | `/wisp-motion` | **注册键**（载体自己补斜杠） |
+| `MOTION_PATH` | `/wisp-motion/` | URL 前缀（客户端、预检、诊断） |
+
+预检里照着载体那条规则把两种拼法各跑一遍：正确的键必须匹配，带尾斜杠的那种必须**不**匹配。
+
+**读文件走平台的服务，不走 Node 模块**：`ctx.get('fs')`（拿不到时退回 `ctx.fs`，每次请求惰性解析）。
+签名是查过活的 Service 注册表才写的，不是猜的：`fs.resolve(path, opts?)`（本地后端会 **realpath**）、
+`fs.contains(parent, child)`（canonical 包含判断）、`fs.stat(target, signal?)`（`type` / `size`）、
+`fs.readBytes(target, signal, maxBytes)`（超限报 `FS_TOO_LARGE`）。于是除名字规则（单段、无分隔符、
+无 `..`）之外还有一道**真实路径**前缀校验：`assets/motion/` 里的符号链接指到包外，
+`resolve` 出来的真实路径就落在目录外，`contains` 直接拒。预检用一个记账的假 fs 服务把这条链
+完整驱动一遍（resolve → contains → stat → readBytes），并钉住"**服务不在时返回读不到，
+绝不偷偷回落到 `node:fs`**"。
+
+**验收：四个 HTTP 结果（真 socket、真 handler）**。`node tools/motion-http.mjs` 自建一个真载体
+（`node:http` + 载体原样的注册表与匹配规则），让真的 `registerMotionRoute()` 自己把路由挂上去：
+
+| 请求 | 结果 |
+|---|---|
+| `GET /wisp-motion/idle.webp` | **200** · **2757928 B**，与磁盘逐字节一致（2693.3 KB） |
+| `GET /wisp-motion/swim_idle.webp` | **200** · **2823104 B**，与磁盘逐字节一致 |
+| `GET /wisp-motion/nope.webp` | **404**，带 `x-wisp-motion: hit`（答话的是我们的 handler） |
+| `GET /wisp-motion/../package.json` | **404**，没有字节漏出去；`..%2f`（能进到 handler 的那种写法）同样 404 且带标记 |
+
+**运行中的那个进程要重启一次 —— 这是唯一没能在活进程里验到的部分，说清楚：**
+平台的 `dsh-hmr` 文件监视器忽略 `**/node_modules`，而插件目录正是
+`profiles/desktop/node_modules/dsh-wisp`（一个指向仓库的符号链接）；Loader 导入模块也不带缓存戳，
+所以重新激活一个已安装的条目拿到的还是**同一代**模块。平台自己的插件开发文档写得很直白：
+"replacing an installed package requires restart to load a fresh JavaScript module generation"。
+于是 `lib/index.js` 改完之后活进程里仍是旧模块 —— 用
+`node tools/motion-http.mjs --live http://127.0.0.1:19387` 一眼能看出来：四个请求全是 404，
+而且**没有一个带 `x-wisp-motion` 头**（答话的是平台兜底）。重启托盘进程后再跑同一条命令，
+应当看到 200 与上面的字节数。
+
+**客户端多了一条可观测性**：`doctor().motion.frame` 新增 `fetchError`（`{ clip, src, at, count }`，
+没失败过是 `null`）与 `failedClips`。以前只有 `failed: true` —— "这一段没有素材"和"URL 取不到字节"
+在报告里长得一模一样，而画面上都只是静态立绘。失败依旧**静默降级**（藏动图、交回立绘、不抛、
+不写控制台），变的只是事后查得到什么。
+
+### 1.48.0
+
+**查到新版可以直接装了 —— 不再只是"告诉你，去插件列表里自己装"。**
+
+以前这一步卡在一个真实结论上：客户端半包**没有 host RPC 座位**（1.44.0 那条教训），
+而"装"又需要文件系统和包管理器 —— 所以插件只能报版本号，让用户自己去 DSH 的插件列表粘贴包名。
+
+漏掉的是：**平台把插件管理器自己也做成了客户端可用的 Remote 命名空间**。
+
+```js
+ctx.remote.pluginManager.installBundle('dsh-wisp@1.48.0')  // → ChangeResult
+```
+
+平台自己的「插件」设置页（安装 / 更新 / 停用 / 卸载）走的就是这个命名空间
+（`installBundle` / `waitForInstall` / `cancelInstall` / `listPlugins` …）。
+它**不需要 host 座位**，也不需要插件碰网络或凭据 —— 装这一步由平台带着 pnpm 与 profile 的
+写权限去做。这也正是"dsh 里万物皆插件"该有的样子：要用什么能力，先看平台有没有把它开成服务。
+
+现在的流程：菜单「关于她…」→ **检查更新** → 查到新版时弹窗里直接出现 **「安装 v1.48.0」**
+→ 点一下就开始装，她说一句进度，装完照平台的结论说话：
+
+| 平台说 | 她说 |
+|---|---|
+| `application: 'applied'` | 装好了 —— 刷新页面就是新版 |
+| `application: 'restart-required'` | 装好了 —— 重启 DSH 后生效 |
+| 信封 `ok: false` + `no-matching-version` | npm 上还没有这一版（GitHub 先更新了）—— 等一会儿再装 |
+| 抛错 / 其他失败 | 没装成（原因进 `doctor().update.install`） |
+| 这个壳里没有插件管理器 | 明说"我装不了"，而不是装作做了 |
+
+装的是**刚才查到的那一版**（`dsh-wisp@<version>`），不是 `latest` —— 提示里的数字和装下去的
+东西必须是同一个。安装有 3 分钟的宽松截止时间；到点了不谎报失败，只说"动作已经发出去了、还没回来"。
+
+`doctor().update.canSelfUpdate` 从 `false` 改成 `true`（它现在真的能触发安装），
+同时新增 `install.via` / `install.state` 可查。
 
 ### 1.47.1
 

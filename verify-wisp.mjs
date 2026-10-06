@@ -629,10 +629,32 @@ head('1c. the host half claims /wisp-motion/ on the platform HTTP carrier (v1.47
   check(threw === null && Array.isArray(injected) && injected.includes('webServer') && registered.length === 1,
     'apply() claims its route through ctx.inject([\'webServer\']) — exactly one registration',
     `inject=${JSON.stringify(injected)} routes=${registered.length}${threw ? ` threw=${threw.message}` : ''}`)
-  check(registered[0]?.kind === 'prefix' && registered[0]?.path === mod.MOTION_PATH
+  check(registered[0]?.kind === 'prefix' && registered[0]?.path === mod.MOTION_ROUTE_PATH
     && typeof registered[0]?.handler === 'function',
     'and it is a prefix route at the path the client half asks for, with a real handler',
     `${String(registered[0]?.kind)} ${String(registered[0]?.path)} handler=${typeof registered[0]?.handler}`)
+  /* ---- 注册键必须**真的能被载体匹配上**（v1.48.1）------------------------------
+     1.47.0/1.47.1 的 404 不是"没注册"，是注册了却永远匹配不到：载体
+     （@deepseek-ai/dsh-host-webserver 的 match()）判的是
+        pathname === prefix || pathname.startsWith(`${prefix}/`)
+     —— 斜杠由**载体**补。所以注册 '/wisp-motion/' 只匹配 '/wisp-motion' 与
+     '/wisp-motion//…'，而页面要的 '/wisp-motion/idle.webp' 一条都匹配不上：
+     fiber 拿到了路由、dispose 也正常，请求却全部落到平台自己的 404 兜底。
+     这条断言把那条规则原样跑一遍：正确的键必须匹配，带尾斜杠的那种必须不匹配。 */
+  const carrierMatches = (prefix, pathname) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  const askedUrl = `${mod.MOTION_PATH}idle.webp`
+  const askedDiag = `${mod.MOTION_ROUTE_PATH}/${mod.MOTION_DIAG_NAME}`
+  check(carrierMatches(String(registered[0]?.path), askedUrl) === true
+    && carrierMatches(String(registered[0]?.path), askedDiag) === true
+    && carrierMatches(mod.MOTION_PATH, askedUrl) === false
+    && carrierMatches(mod.MOTION_PATH, askedDiag) === false,
+    'the registered key is the one the carrier’s prefix rule actually matches (the trailing-slash spelling is the 1.47.x bug, pinned here)',
+    `registered ${String(registered[0]?.path)} → ${askedUrl}=${carrierMatches(String(registered[0]?.path), askedUrl)} · `
+    + `trailing-slash ${mod.MOTION_PATH} → ${askedUrl}=${carrierMatches(mod.MOTION_PATH, askedUrl)}`)
+  check(typeof mod.MOTION_DIAG_NAME === 'string' && carrierMatches(String(registered[0]?.path), askedDiag)
+    && mod.motionFile(mod.MOTION_DIAG_NAME) === null,
+    'the read-only diagnostic lives under the same prefix, and its name can never be served as a clip',
+    `${askedDiag} · motionFile("${mod.MOTION_DIAG_NAME}")=${String(mod.motionFile(mod.MOTION_DIAG_NAME))}`)
   check(effects.length === 1 && /wisp/i.test(String(effects[0]?.label ?? '')),
     'registered as an OWNED effect, so disabling the package takes the route down with it',
     String(effects[0]?.label ?? '(no effect)'))
@@ -647,6 +669,84 @@ head('1c. the host half claims /wisp-motion/ on the platform HTTP carrier (v1.47
     && noInject?.registered === false && typeof noInject?.why === 'string',
     'and a carrier with no webServer (or no ctx.inject at all) degrades to "no route", never to a load failure',
     `empty-carrier=${JSON.stringify(silent)} no-inject=${JSON.stringify(noInject)}`)
+}
+
+/* ========================= 1d. the runtime reader IS the platform fs service == */
+
+head('1d. the runtime reader reads through the platform fs service, never a Node module (v1.48.1)')
+
+/* 宿主半包在真壳里读素材走的必须是**服务**：方法签名是从活的 Service 注册表
+   （cordis_inspect_query → Host Service.listService，服务 fs）抄下来的，不是猜的：
+     fs.resolve(path, opts?)            -> Promise<FsTarget>
+     fs.contains(parent, child)         -> boolean
+     fs.stat(target, signal?)           -> Promise<FsInfo | undefined>
+     fs.readBytes(target, signal, cap)  -> Promise<Uint8Array>
+   这一节用一个**记账的假 fs 服务**把这条链整个驱动一遍：
+   ① 真字节回来了；② 四个方法真的被按这个顺序用了；③ 解析到包外的目标（符号链接
+   逃逸那一种）被 contains() 挡下 —— 名字正则一个人挡不住这个；④ **服务不在时
+   返回"读不到"，而不是偷偷回落到 node:fs**（那正是这一版要立的反面规矩）。 */
+{
+  const mod = await import(pathToFileURL(hostPath).href + '?probe=motion-reader')
+  const dir = mod.motionDir()
+  const idle = mod.motionFile('idle.webp')
+  const disk = idle !== null && existsSync(idle) ? readFileSync(idle) : null
+  const calls = []
+  const resolved = new Map()
+  const bytesByPath = new Map(disk === null ? [] : [[idle, disk]])
+  const fakeFs = {
+    async resolve(p) { calls.push('resolve'); const real = resolved.get(p) ?? p; return { targetKey: real, displayPath: real } },
+    contains(parent, child) {
+      calls.push('contains')
+      const root = String(parent.targetKey).replace(/[\\/]+$/, '')
+      const kid = String(child.targetKey)
+      return kid === root || kid.startsWith(`${root}\\`) || kid.startsWith(`${root}/`)
+    },
+    async stat(t) {
+      calls.push('stat')
+      if (!bytesByPath.has(t.targetKey)) return undefined
+      return { version: 'v1', type: 'file', size: bytesByPath.get(t.targetKey).length }
+    },
+    async readBytes(t, signal, maxBytes) {
+      calls.push('readBytes')
+      const bytes = bytesByPath.get(t.targetKey)
+      if (bytes === undefined) throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+      if (bytes.length > maxBytes) throw Object.assign(new Error('too large'), { code: 'FS_TOO_LARGE' })
+      return new Uint8Array(bytes)
+    },
+  }
+  const reader = mod.createServiceReader({ get: (name) => (name === 'fs' ? fakeFs : undefined) }, dir)
+  const served = await reader.read(idle)
+  check(served !== null && disk !== null && Buffer.from(served).equals(disk) && disk.length > 0,
+    'the fs-service reader hands back the clip’s real bytes',
+    served === null ? `null (${String(reader.state.lastError)})` : `${Buffer.from(served).length} B vs disk ${disk === null ? 'n/a' : disk.length} B`)
+  check(['resolve', 'contains', 'stat', 'readBytes'].every((name) => calls.includes(name))
+    && calls.indexOf('contains') < calls.indexOf('readBytes'),
+    'and it goes through the documented signatures — resolve → contains → stat → readBytes',
+    calls.join(' · '))
+  check(reader.state.lastBytes === (disk === null ? null : disk.length) && reader.state.lastError === null,
+    'and the reader state says which path ran and how many bytes it produced (that is what __diag reports)',
+    JSON.stringify({ via: reader.state.via, bytes: reader.state.lastBytes, error: reader.state.lastError }))
+  /* 符号链接逃逸：名字完全合法（`idle.webp`），但解析出来的真实路径在包外。
+     只查名字的实现会**照发**；这是 contains() 存在的理由。 */
+  if (idle !== null) {
+    resolved.set(idle, process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/hostname')
+    const escaped = await reader.read(idle)
+    check(escaped === null && reader.state.lastError === 'outside-motion-dir',
+      'a servable NAME whose real path lands outside assets/motion is refused — the symlink escape the name regex cannot see',
+      `lastError=${String(reader.state.lastError)}`)
+  }
+  /* 服务不在时：**绝不能**悄悄用 node:fs 顶上（verify 自己就跑在 Node 里，
+     所以"偷偷回落"在这条断言下会当场现形）。 */
+  const orphan = mod.createServiceReader({}, dir)
+  const orphaned = await orphan.read(idle)
+  check(orphaned === null && orphan.state.lastError === 'no-fs-service',
+    'with no fs service the reader returns NOTHING — it never quietly falls back to a Node module',
+    `lastError=${String(orphan.state.lastError)} bytes=${orphaned === null ? 'null' : orphaned.byteLength}`)
+  const throwing = mod.createServiceReader({ get: () => { throw new Error('boom') } }, dir)
+  const threw = await throwing.read(idle)
+  check(threw === null && typeof throwing.state.why === 'string' && throwing.state.why.includes('boom'),
+    'and a ctx.get that throws is reported, not swallowed into a wrong answer',
+    String(throwing.state.why))
 }
 
 /* ================================================= 1b. the update handler == */
@@ -2297,8 +2397,10 @@ if (clientSrc !== null) {
 
     /* 平台事实（源码级查过）：宿主半包跑在 vm 沙箱里，harness 只给
        { defineTool, registerTool, handle }，沙箱里 nodeApiTraps() 挡住 Node API ——
-       插件**既不能联网、也不能写文件**，DSH 的安装器也没有可注入的服务。
-       所以"自己检查并安装更新"做不到；这一节测的是能真正做到的那几件事。 */
+       插件**自己**既不能联网、也不能写文件。但"装"这一步不用她自己做（v1.48.0）：
+       平台把插件管理器做成了客户端可用的 Remote 命名空间（ctx.remote.pluginManager），
+       installBundle 交给它就行 —— 平台自己的「插件」设置页走的是同一条路。
+       这一节测能真正做到的那几件事，安装那一段在下面 3d-quindecies-bis。 */
     const uv = createHarness({ timer: true, composerText: '', clipboard: true })
     const keepUv = active
     active = uv
@@ -2317,9 +2419,12 @@ if (clientSrc !== null) {
     check(typeof update?.whatsNew === 'string' && update.whatsNew.length > 0,
       'the what-is-new note covers the CURRENT version', String(update?.whatsNew))
 
-    /* 能力边界要如实报告，不能让人以为她能自己更新 */
-    check(update.canSelfUpdate === false, 'she does not pretend she can update herself',
-      String(update.canSelfUpdate))
+    /* 能力边界要如实报告 —— 但 v1.48.0 起"能自己更新"这句**成立了一半**：
+       她自己没有网络也没有 Node，可她能**让平台去装**（remote.pluginManager）。
+       所以这里验的是"她说得准"，不是"她说不能"。 */
+    check(update.canSelfUpdate === true && update.install !== undefined,
+      'she no longer claims she cannot install an update — the platform plugin manager can',
+      JSON.stringify({ canSelfUpdate: update.canSelfUpdate, via: update.install?.via }))
     check(typeof update.hint === 'string' && update.hint.includes('dsh-wisp'),
       'but she does say which package to install', String(update.hint))
     check(/沙箱|sandbox/.test(String(update.why)), 'and why — in plain words', String(update.why))
@@ -2386,6 +2491,129 @@ if (clientSrc !== null) {
       }
       hc.win.__wisp.destroy()
       active = keepHc
+    }
+
+
+    /* ---- 3d-quindecies-bis. 直接装上最新版（v1.48.0）-------------------------
+       客户端半包没有 host 座位，但 installUpdate **不需要它**：平台自己的「插件」设置页
+       走的就是 ctx.remote.pluginManager.installBundle。用假命名空间把几种结果走一遍。 */
+    {
+      const inPool = (pool, text) => (Array.isArray(pool) ? pool : [])
+        .some((line) => String(text).indexOf(String(line).split('{')[0]) === 0)
+      const mkInstaller = (services) => createHarness({ timer: true, composerText: '', services })
+      const runInstall = async (services, version) => {
+        const hx = mkInstaller(services)
+        const keep = active
+        active = hx
+        hx.evaluate(clientSrc)
+        hx.module().default.apply(hx.ctx, { reactions: true, wander: false, celebrate: false })
+        hx.advance(1300, 100)
+        const state = await hx.win.__wisp.installUpdate(version)
+        await new Promise((resolve) => setImmediate(resolve))
+        const line = String(hx.all('wisp-say').at(-1)?.textContent ?? '')
+        const doctor = hx.win.__wisp.doctor().update.install
+        hx.win.__wisp.destroy()
+        active = keep
+        return { state, line, doctor }
+      }
+
+      let asked = null
+      const applied = await runInstall({
+        'remote.pluginManager': {
+          installBundle: (spec) => { asked = spec; return Promise.resolve({ ok: true, value: { changed: true, application: 'applied', stage: 'install', target: spec } }) },
+        },
+      }, '9.9.9')
+      check(asked === 'dsh-wisp@9.9.9', 'the install asks for exactly the version that was offered', String(asked))
+      check(applied.state.state === 'installed' && applied.state.application === 'applied',
+        'a successful install lands in the installed state', JSON.stringify(applied.state))
+      check(inPool(linesInBundle()?.installDone, applied.line)
+        && applied.line.includes('9.9.9') && !applied.line.includes('dsh-wisp@'),
+      'and she says it is installed — the bare version, not the dsh-wisp@ spec', applied.line)
+      check(applied.doctor.via === 'remote.pluginManager' && applied.doctor.state === 'installed',
+        'doctor() reports the channel and the last install result', JSON.stringify(applied.doctor))
+
+      const restart = await runInstall({
+        'remote.pluginManager': {
+          installBundle: (spec) => Promise.resolve({ ok: true, value: { changed: true, application: 'restart-required', stage: 'install', target: spec } }),
+        },
+      }, '9.9.9')
+      check(restart.state.state === 'installed' && restart.state.application === 'restart-required'
+        && inPool(linesInBundle()?.installRestart, restart.line),
+      'when the platform says a restart is required she says exactly that, not "done"',
+      restart.line)
+
+      const refused = await runInstall({
+        'remote.pluginManager': {
+          installBundle: () => Promise.resolve({ ok: false, error: { code: 'no-matching-version' } }),
+        },
+      }, '9.9.9')
+      check(refused.state.state === 'failed' && refused.state.reason === 'no-matching-version'
+        && inPool(linesInBundle()?.installNotPublished, refused.line) && refused.line.includes('9.9.9'),
+      'a registry that does not have that version yet is said in its own words',
+      refused.line)
+
+      const blewUp = await runInstall({
+        'remote.pluginManager': { installBundle: () => { throw new Error('boom') } },
+      }, '9.9.9')
+      check(blewUp.state.state === 'failed' && blewUp.state.reason === 'call-failed'
+        && blewUp.state.detail === 'boom' && inPool(linesInBundle()?.installFailed, blewUp.line),
+      'a throwing install is caught and reported in plain words', JSON.stringify(blewUp.state))
+
+      const noManager = await runInstall({}, '9.9.9')
+      check(noManager.state.state === 'unsupported' && noManager.doctor.via === null
+        && inPool(linesInBundle()?.installUnsupported, noManager.line),
+      'a shell without the plugin manager is its own sentence, never a silent no-op',
+      noManager.line)
+
+      /* 弹窗里的那一步：查到新版 → 「安装 vX」按钮 → 点它真的按那一版去装 */
+      {
+        let clicked = null
+        const dlgHx = createHarness({
+          timer: true, composerText: '',
+          services: { 'remote.pluginManager': { installBundle: (spec) => { clicked = spec; return Promise.resolve({ ok: true, value: { changed: true, application: 'applied', stage: 'install', target: spec } }) } } },
+        })
+        const keepDlgHx = active
+        active = dlgHx
+        dlgHx.win.fetch = (url) => Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ version: '9.9.9' }),
+        })
+        dlgHx.evaluate(clientSrc)
+        dlgHx.module().default.apply(dlgHx.ctx, { reactions: false, wander: false, celebrate: false })
+        dlgHx.advance(1300, 100)
+        const dlgApi2 = dlgHx.win.__wisp
+        await dlgApi2.checkForUpdate()
+        await new Promise((resolve) => setImmediate(resolve))
+        dlgApi2.openAbout()
+        const actions = dlgHx.all('wisp-dialog-action').filter((el) => el.removed !== true)
+        const installBtn = actions.find((el) => String(el.textContent).includes('安装 v9.9.9'))
+        check(installBtn !== undefined,
+          'once a newer version is known, the about dialog offers an install button for THAT version',
+          actions.map((el) => el.textContent).join(' | '))
+        if (installBtn !== undefined) installBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+        await new Promise((resolve) => setImmediate(resolve))
+        check(clicked === 'dsh-wisp@9.9.9',
+          'and clicking it installs that very version through the plugin manager', String(clicked))
+        check(dlgApi2.dialog === null, 'the dialog gets out of the way while it installs', String(dlgApi2.dialog))
+        dlgHx.win.__wisp.destroy()
+        active = keepDlgHx
+      }
+
+      /* 英文覆盖层：安装这几句也要有，而且一个汉字都不许有 */
+      const enInstallKeys = ['installChecking', 'installDone', 'installRestart', 'installPending',
+        'installCancelled', 'installNotPublished', 'installFailed', 'installUnsupported']
+      const enInstallBundle = readFileSync(join(here, 'lib', 'client.js'), 'utf8')
+      const enInstallLiteral = enInstallBundle.match(/const LINES_EN = (\{[\s\S]*?\n {4}\})/)
+      let enInstallPools = null
+      try { enInstallPools = enInstallLiteral ? new Function('return ' + enInstallLiteral[1])() : null } catch (error) { enInstallPools = null }
+      const enInstallMissing = enInstallKeys.filter((k) => !Array.isArray(enInstallPools?.[k]) || enInstallPools[k].length === 0)
+      check(enInstallMissing.length === 0, 'every install line has an English pool',
+        enInstallMissing.length ? 'missing ' + enInstallMissing.join(', ') : enInstallKeys.length + ' pools')
+      const enInstallHan = []
+      for (const key of enInstallKeys) {
+        for (const line of (enInstallPools?.[key] ?? [])) if (/[\u4e00-\u9fff]/.test(line)) enInstallHan.push(key + ': ' + line)
+      }
+      check(enInstallHan.length === 0, 'and none of them contains a Han character', enInstallHan.join(' | ') || 'clean')
     }
 
     /* 失败时也要能追问：doctor() 必须留下**每个源各自的**原因，
@@ -5411,6 +5639,69 @@ const MOTION_DISK_BUDGET_KB = 34000
     check(refused.length === 0,
       'and it stays a closed list — traversal, nested paths, other extensions and writes are all refused',
       refused.length ? refused.join(' | ') : 'traversal/nested/non-webp/prefix → 404, POST → 405')
+
+    /* ---- 404 的歧义必须能被消掉（v1.48.1）--------------------------------------
+       一个 404 有两个来源：**路由没注册**（请求根本没到我们的 handler，平台自己的
+       兜底答的）和**读不到文件**（handler 跑了，返回 404）。两者在 curl 里长得
+       一模一样 —— 1.47.x 就是卡在这里：现象是"她永远是静态立绘"，日志里只有 404。
+       解法有两半，两半都在这里驱动一遍：
+         ① 每个响应都带 `x-wisp-motion: hit` —— 平台兜底的 404 没有这个头；
+         ② GET /wisp-motion/__diag 直接给一份 JSON：注册键、载体规则跑出来的
+            匹配结论、走哪条读路径、要读的绝对路径、真读一遍的字节数、失败原因。 */
+    {
+      /* 一个 handler 连着接三个请求：(1) 一段真素材 (2) 一个不存在的名字 (3) __diag。
+         计数是**这个 handler 实例**的账，所以顺序在这里是有意义的：
+         __diag 报的是它之前已经答过什么。 */
+      const handler = hostMod.motionHandler(hostMod.defaultReadBytes)
+      const call = async (url) => {
+        const response = { status: 0, headers: null, body: null }
+        await handler({ method: 'GET', url }, {
+          writeHead(status, headers) { response.status = status; response.headers = headers },
+          end(chunk) { response.body = chunk ?? null },
+          destroy() {},
+        })
+        return response
+      }
+      const okKey = keys.find((k) => clipFile(k) !== null && clipPath(k) !== null && existsSync(clipPath(k))) ?? null
+      const okFile = okKey === null ? null : clipFile(okKey)
+      const okDisk = okKey === null ? null : readFileSync(clipPath(okKey))
+      const okRes = okFile === null ? null : await call(`${hostMod.MOTION_PATH}${okFile}`)
+      /* 失败那一侧：一个不存在的名字必须是一个**带标记的** 404（我们的 handler 跑的），
+         而不是平台兜底那种没有 content-type、没有 x-wisp-motion 的 404。 */
+      const nope = await call(`${hostMod.MOTION_PATH}nope.webp`)
+      check(nope.status === 404 && String(nope.headers?.['x-wisp-motion']) === 'hit'
+        && String(nope.headers?.['content-type']).startsWith('text/plain'),
+        'a missing clip is a 404 that still says the handler ran — never the platform’s anonymous 404',
+        `status=${nope.status} x-wisp-motion=${String(nope.headers?.['x-wisp-motion'])}`)
+      const diagUrl = `${hostMod.MOTION_ROUTE_PATH}/${hostMod.MOTION_DIAG_NAME}`
+      const probeFile = okFile ?? 'idle.webp'
+      const probeDisk = okDisk
+      const response = await call(`${diagUrl}?name=${probeFile}`)
+      let diag = null
+      try { diag = JSON.parse(String(response.body ?? '')) } catch (error) { diag = null }
+      check(response.status === 200 && String(response.headers?.['content-type']).startsWith('application/json')
+        && String(response.headers?.['x-wisp-motion']) === 'hit' && diag !== null,
+        'the read-only diagnostic answers as JSON, and carries the header that proves OUR handler ran',
+        `status=${response.status} type=${String(response.headers?.['content-type'])} x-wisp-motion=${String(response.headers?.['x-wisp-motion'])}`)
+      check(diag !== null && diag.route?.registeredAt === hostMod.MOTION_ROUTE_PATH
+        && diag.route?.registeredKeyMatchesExample === true
+        && diag.route?.trailingSlashKeyMatchesExample === false
+        && typeof diag.route?.carrierRule === 'string',
+        'and it reports WHICH spelling the carrier matches — the trailing-slash key is called out as a non-match',
+        diag === null ? 'unparseable' : `${String(diag.route?.registeredAt)} → example=${String(diag.route?.registeredKeyMatchesExample)} · slash=${String(diag.route?.trailingSlashKeyMatchesExample)}`)
+      check(diag !== null && diag.probe?.ok === true && diag.probe?.bytes === (probeDisk === null ? null : probeDisk.length)
+        && diag.probe?.magic === 'RIFF/WEBP',
+        'and its probe really reads a clip end to end — the byte count equals the file on disk (that is the "bytes are reachable" answer)',
+        diag === null ? 'unparseable' : `${String(diag.probe?.name)} → ok=${String(diag.probe?.ok)} bytes=${String(diag.probe?.bytes)} vs disk ${probeDisk === null ? 'n/a' : probeDisk.length} magic=${String(diag.probe?.magic)}`)
+      check(diag !== null && typeof diag.reader?.via === 'string' && typeof diag.signatures === 'string'
+        && diag.node?.note !== undefined,
+        'and it names the read path, quotes the service signatures it was written against, and reports the Node road separately',
+        diag === null ? 'unparseable' : `reader=${String(diag.reader?.via)} node=${JSON.stringify(diag.node)}`)
+      check(diag !== null && diag.route?.served === (okRes === null ? 0 : 1) && diag.route?.notFound >= 1
+        && diag.route?.lastStatus === 404,
+        'and it counts what THIS handler has actually answered — "did it run at all" is a number, not a guess',
+        diag === null ? 'unparseable' : JSON.stringify({ hits: diag.route?.hits, served: diag.route?.served, notFound: diag.route?.notFound, last: diag.route?.lastStatus }))
+    }
 
     /* 磁盘上那份文件**真的是动图**（RIFF/WEBP + ANMF 帧块）：MIME 是写死的，
        素材被换成一张静图时，"她不动了"会和"没有素材"长得一模一样。
