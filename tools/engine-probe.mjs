@@ -54,7 +54,9 @@ const motionCanvas = (name) => {
   }
   return { w: 0, h: 0 }
 }
-const IDLE_CANVAS = motionCanvas('idle.webp')
+/* 默认皮肤是 canon（v1.48.2 起），所以"挂载时那一档"就是 canon 的站立段。
+   v1.49.0 起它的名字是 canon_idle —— 通用兜底删掉之后，这一段只能由 canon 自己提供。 */
+const IDLE_CANVAS = motionCanvas('canon_idle.webp')
 
 /* 浏览器从哪来：环境变量优先，然后按平台猜几个常见位置。
    找不到就跳过 —— 这台机器没浏览器不是这个插件的缺陷。 */
@@ -598,18 +600,18 @@ try {
       frame: document.querySelector('.wisp-root').dataset.frame ?? null,
     }
   })()`)
-  check(idleClip.built === true && idleClip.tag === 'IMG' && idleClip.clip === 'idle',
-    'the idle state really builds the motion layer in the engine — the standing loop is live at mount (v1.46.5)',
+  check(idleClip.built === true && idleClip.tag === 'IMG' && idleClip.clip === 'canon_idle',
+    'the idle state really builds the motion layer in the engine — the original maid’s standing loop is live at mount (v1.46.5 / v1.49.0)',
     idleClip.built ? `${idleClip.tag} clip=${String(idleClip.clip)}` : 'no motion layer was built')
   check(idleClip.built === true && idleClip.complete === true
     && idleClip.w === IDLE_CANVAS.w && idleClip.h === IDLE_CANVAS.h,
-    "and the idle animated WebP decodes at the asset's own size — naturalWidth is read from assets/motion/idle.webp, not hard-coded here",
+    "and the idle animated WebP decodes at the asset's own size — naturalWidth is read from assets/motion/canon_idle.webp, not hard-coded here",
     idleClip.built ? `${idleClip.w}x${idleClip.h} vs asset ${IDLE_CANVAS.w}x${IDLE_CANVAS.h} complete=${idleClip.complete}` : 'no <img> was built')
   check(idleClip.built === true && idleClip.dx < 1 && idleClip.dy < 1 && idleClip.dw < 1 && idleClip.dh < 1,
     'and it is laid out on exactly the sprite box, so handing the picture over cannot make her jump',
     `delta ${Number(idleClip.dx ?? NaN).toFixed(2)},${Number(idleClip.dy ?? NaN).toFixed(2)} size ${Number(idleClip.dw ?? NaN).toFixed(2)}x${Number(idleClip.dh ?? NaN).toFixed(2)}`)
   check(idleClip.built === true && String(idleClip.transform) === 'none' && idleClip.inline === 'none',
-    "and NO size correction is applied to it — computed transform is none, so the sleeping clip's 1.186 did not leak onto idle (v1.46.5)",
+    "and NO size correction is applied to it — computed transform is none, so the sleeping deep-sea clip's 1.186 did not leak onto it (v1.46.5 / v1.49.0)",
     `computed ${String(idleClip.transform)} / inline ${JSON.stringify(idleClip.inline)}`)
   check(idleClip.built === true && idleClip.display !== 'none'
     && idleClip.visibility === 'hidden' && idleClip.frame === 'on',
@@ -623,6 +625,10 @@ try {
       return ok()
     }
     window.__wisp.configure({ motion: 'full' })
+    /* 这一段量的是**唯一一条带尺寸校正的素材**：deepsea_sleepy（v1.49.0 的新名字，
+       旧名 sleepy）。默认皮肤是 canon，而 canon 那八条都不补 —— 不点名切过来的话，
+       这里量到的是"没有校正"，下面那三条 1.186 的断言会集体失效。 */
+    window.__wisp.setSkin('deepsea')
     window.__wisp.mood('sleep')
     await waitFor(() => document.querySelector('.wisp-video') !== null, 5000)
     const motion = document.querySelector('.wisp-video')
@@ -642,6 +648,7 @@ try {
     const shown = motion.getBoundingClientRect()
     return {
       built: true, tag: String(motion.tagName), isImg: motion instanceof HTMLImageElement,
+      clipName: motion.dataset.clip ?? null,
       src: String(motion.src).slice(0, 5),
       complete: motion.complete, w: motion.naturalWidth, h: motion.naturalHeight,
       display: getComputedStyle(motion).display,
@@ -662,10 +669,11 @@ try {
   })()`)
   check(clip.built === true && clip.tag === 'IMG' && clip.isImg === true && clip.videos === 0,
     'the motion layer really is an <img> in the engine — and not a single <video> exists under her root',
-    clip.built ? `${clip.tag} isImg=${clip.isImg} videos=${clip.videos}` : 'no motion layer was built')
-  check(clip.complete === true && clip.w === 720 && clip.h === 1280,
-    'the animated WebP really decodes in the engine — 720x1280 natural size, not just a data URI in the bundle',
-    clip.built ? `${clip.src}… ${clip.w}x${clip.h} complete=${clip.complete}` : 'no <img> was built')
+    clip.built ? `${clip.tag} clip=${String(clip.clipName)} isImg=${clip.isImg} videos=${clip.videos}` : 'no motion layer was built')
+  check(clip.built === true && clip.clipName === 'deepsea_sleepy' && clip.complete === true
+    && clip.w === 720 && clip.h === 1280,
+    'the deep-sea sleeping clip really decodes in the engine, looked up under its NEW per-skin name — 720x1280 natural size, not just a data URI in the bundle (v1.49.0)',
+    clip.built ? `${String(clip.clipName)} ${clip.src}… ${clip.w}x${clip.h} complete=${clip.complete}` : 'no <img> was built')
   check(clip.display !== 'none',
     'and it is on screen by default — the browser runs the animation itself', `display=${clip.display}`)
   check(clip.dx < 1 && clip.dy < 1 && clip.dw < 1 && clip.dh < 1,
@@ -795,17 +803,21 @@ try {
   const SHIPPED_SWIM = existsSync(join(here, 'assets', 'motion'))
     ? readdirSync(join(here, 'assets', 'motion')).filter((f) => /^swim_[a-z]+\.webp$/.test(f)).sort()
     : []
-  if (SHIPPED_SWIM.length === 8) {
-  const swimClips = await evaluate(`(async () => {
+  /* 一个"皮肤家族"的逐条真引擎检查（v1.49.0 把泳装那一段抽成了这个函数）：
+     泳装那八条与原版那八条走的是**同一条**投递路径（外置 URL -> <img> -> 浏览器解码），
+     所以尺子只有一把 —— 两批各点一次名，谁也不许各量各的。
+     判据是**磁盘上实际带着什么**（同 verify-wisp.mjs 的 SHIPPED_SWIM / SHIPPED_CANON）。 */
+  const probeClipFamily = async (skinId, states, canvas, label) => {
+  const clips = await evaluate(`(async () => {
     const waitFor = async (ok, ms) => {
       const until = Date.now() + ms
       while (Date.now() < until) { const v = ok(); if (v) return v; await new Promise((r) => setTimeout(r, 50)) }
       return ok()
     }
     window.__wisp.configure({ motion: 'full' })
-    window.__wisp.setSkin('swim')
+    window.__wisp.setSkin(${JSON.stringify(skinId)})
     const out = []
-    for (const [state, clip] of ${JSON.stringify(SWIM_STATES)}) {
+    for (const [state, clip] of ${JSON.stringify(states)}) {
       window.__wisp.mood(state)
       const motion = await waitFor(() => {
         const el = document.querySelector('.wisp-video')
@@ -832,37 +844,40 @@ try {
     }
     return out
   })()`)
-  const swimMissing = swimClips.filter((c) => c.built !== true || c.tag !== 'IMG')
-  check(swimMissing.length === 0,
-    'all eight swimsuit clips really decode in the engine — every state builds its own <img> from the host route (v1.47.0)',
-    swimMissing.length ? swimMissing.map((c) => `${c.state}/${c.clip ?? '?'}`).join(', ') : swimClips.map((c) => c.clip).join(', '))
-  const swimSize = swimClips.filter((c) => c.built === true
-    && (c.w !== SWIM_CANVAS[c.clip]?.w || c.h !== SWIM_CANVAS[c.clip]?.h))
-  check(swimSize.length === 0,
-    "and each one decodes at its asset's own size — naturalWidth comes from assets/motion/<clip>.webp, not from a number written here",
-    swimSize.length
-      ? swimSize.map((c) => `${c.clip}: ${c.w}x${c.h} vs ${SWIM_CANVAS[c.clip]?.w}x${SWIM_CANVAS[c.clip]?.h}`).join(' | ')
-      : swimClips.map((c) => `${c.clip} ${c.w}x${c.h}`).join(', '))
-  const swimBox = swimClips.filter((c) => c.built === true
+  const missing = clips.filter((c) => c.built !== true || c.tag !== 'IMG')
+  check(missing.length === 0,
+    `all eight ${label} clips really decode in the engine — every state builds its own <img> from the host route`,
+    missing.length ? missing.map((c) => `${c.state}/${c.clip ?? '?'}`).join(', ') : clips.map((c) => c.clip).join(', '))
+  const wrongSize = clips.filter((c) => c.built === true
+    && (c.w !== canvas[c.clip]?.w || c.h !== canvas[c.clip]?.h))
+  check(wrongSize.length === 0,
+    `and each ${label} clip decodes at its asset's own size — naturalWidth comes from assets/motion/<clip>.webp, not from a number written here`,
+    wrongSize.length
+      ? wrongSize.map((c) => `${c.clip}: ${c.w}x${c.h} vs ${canvas[c.clip]?.w}x${canvas[c.clip]?.h}`).join(' | ')
+      : clips.map((c) => `${c.clip} ${c.w}x${c.h}`).join(', '))
+  const offBox = clips.filter((c) => c.built === true
     && !(c.dx < 1 && c.dy < 1 && c.dw < 1 && c.dh < 1))
-  check(swimBox.length === 0,
-    'and every one is laid out on exactly the sprite box BEFORE its size correction — the correction is the only thing that moves her, never a second grid',
-    swimBox.length
-      ? swimBox.map((c) => `${c.clip}: d=${Number(c.dx).toFixed(2)},${Number(c.dy).toFixed(2)} s=${Number(c.dw).toFixed(2)}x${Number(c.dh).toFixed(2)}`).join(' | ')
-      : swimClips.map((c) => `${c.clip} d=${Number(c.dx).toFixed(2)},${Number(c.dy).toFixed(2)}`).join(', '))
-  const swimOwner = swimClips.filter((c) => c.built === true
+  check(offBox.length === 0,
+    `and every ${label} clip is laid out on exactly the sprite box BEFORE its size correction — the correction is the only thing that moves her, never a second grid`,
+    offBox.length
+      ? offBox.map((c) => `${c.clip}: d=${Number(c.dx).toFixed(2)},${Number(c.dy).toFixed(2)} s=${Number(c.dw).toFixed(2)}x${Number(c.dh).toFixed(2)}`).join(' | ')
+      : clips.map((c) => `${c.clip} d=${Number(c.dx).toFixed(2)},${Number(c.dy).toFixed(2)}`).join(', '))
+  const wrongOwner = clips.filter((c) => c.built === true
     && !(c.display !== 'none' && c.visibility === 'hidden' && c.frame === 'on'))
-  check(swimOwner.length === 0,
-    'and while each one plays the swimsuit sprite is out of the picture — one of her, in the real engine (v1.45.2 rule)',
-    swimOwner.length
-      ? swimOwner.map((c) => `${c.clip}: display=${c.display} sprite=${c.visibility} frame=${String(c.frame)}`).join(' | ')
-      : `${swimClips.length} clips: display!=none, sprite hidden, data-frame=on`)
-  const swimUrls = swimClips.filter((c) => c.built === true && !String(c.src).startsWith(`${ORIGIN}/wisp-motion/`))
-  check(swimUrls.length === 0 && [...SWIM_STATES].every(([, clip]) => (clipHits.get(`${clip}.webp`) ?? 0) > 0),
-    'and every clip really came over HTTP from the page’s own origin — the delivery path, not an inlined copy',
-    swimUrls.length
-      ? swimUrls.map((c) => `${c.clip}: ${c.src}`).join(' | ')
-      : `${clipHits.size} clip file(s) served, e.g. ${String(swimClips[0]?.src)}`)
+  check(wrongOwner.length === 0,
+    `and while each ${label} clip plays, that skin's static sprite is out of the picture — one of her, in the real engine (v1.45.2 rule)`,
+    wrongOwner.length
+      ? wrongOwner.map((c) => `${c.clip}: display=${c.display} sprite=${c.visibility} frame=${String(c.frame)}`).join(' | ')
+      : `${clips.length} clips: display!=none, sprite hidden, data-frame=on`)
+  const badUrls = clips.filter((c) => c.built === true && !String(c.src).startsWith(`${ORIGIN}/wisp-motion/`))
+  check(badUrls.length === 0 && [...states].every(([, clip]) => (clipHits.get(`${clip}.webp`) ?? 0) > 0),
+    `and every ${label} clip really came over HTTP from the page’s own origin — the delivery path, not an inlined copy`,
+    badUrls.length
+      ? badUrls.map((c) => `${c.clip}: ${c.src}`).join(' | ')
+      : `${clipHits.size} clip file(s) served, e.g. ${String(clips[0]?.src)}`)
+  }
+  if (SHIPPED_SWIM.length === 8) {
+    await probeClipFamily('swim', SWIM_STATES, SWIM_CANVAS, 'swimsuit (v1.47.0)')
   } else {
     /* 素材还没生成（0/8）：真引擎里要看到的是**静默降级** —— 泳装那一档一个动图元素
        都不建、立绘一直在画面上，而且**不许**退回通用那段循环（穿着泳装播别的皮肤的
@@ -897,11 +912,11 @@ try {
         .map((v) => String(v.dataset.clip) + ':' + getComputedStyle(v).display)
       window.__wisp.setSkin('deepsea')
       /* 用 idle 而不是 sleep：这一页上半段那条"加载失败静默降级"的检查**故意**把
-         sleepy 这一段标成坏过的（失败按素材记，不再重指源），拿它当"回来了"的判据
-         会测到那条规则头上。 */
+         deepsea_sleepy 这一段标成坏过的（失败按素材记，不再重指源），拿它当"回来了"
+         的判据会测到那条规则头上。 */
       const back = await waitFor(() => {
         const v = document.querySelector('.wisp-video')
-        return v && v.dataset.clip === 'idle' && v.complete && v.naturalWidth > 0 ? v : null
+        return v && v.dataset.clip === 'deepsea_idle' && v.complete && v.naturalWidth > 0 ? v : null
       }, 8000)
       return {
         quiet,
@@ -915,10 +930,56 @@ try {
       && swimQuiet.quiet.frame === null && swimQuiet.quiet.asset === null,
       'with no swimsuit clips shipped, the engine builds NO frame layer for any of the eight states — and the sprite keeps the picture (v1.47.0)',
       `leaks=${swimQuiet.quiet.leaks.join(',') || 'none'} sprite=${swimQuiet.quiet.sprite} data-frame=${String(swimQuiet.quiet.frame)} asset=${String(swimQuiet.quiet.asset)}`)
-    check(swimQuiet.beforeSwitch === true && swimQuiet.backClip === 'idle' && swimQuiet.backW > 0,
+    check(swimQuiet.beforeSwitch === true && swimQuiet.backClip === 'deepsea_idle' && swimQuiet.backW > 0,
       'and a skin WITH clips brings the animation straight back in the same engine — missing swimsuit art is not a broken frame layer',
       `swim/idle quiet=${swimQuiet.beforeSwitch} → deepsea/idle clip=${String(swimQuiet.backClip)} ${swimQuiet.backW}px wide`)
     console.log(`  NOTE  ${SHIPPED_SWIM.length}/8 swimsuit clips generated yet — the eight-clip checks are replaced by the degradation checks above`)
+  }
+
+  /* ---- 原版那八条：默认皮肤，真引擎里逐条解开（v1.49.0）------------------------
+     默认皮肤就是 canon，所以"她动不动"第一眼看到的就是这八条；同时通用兜底已经删掉，
+     这八条**没有**任何东西可以顶替。walk 与泳装那八条共用 probeClipFamily 那一把尺子。 */
+  const CANON_STATES = [
+    ['idle', 'canon_idle'], ['attn', 'canon_attn'], ['happy', 'canon_happy'], ['sleep', 'canon_sleepy'],
+    ['alert', 'canon_work'], ['proud', 'canon_proud'], ['eat', 'canon_eat'], ['poked', 'canon_poked'],
+  ]
+  const CANON_CANVAS = Object.fromEntries(CANON_STATES.map(([, clip]) => [clip, motionCanvas(`${clip}.webp`)]))
+  const SHIPPED_CANON = existsSync(join(here, 'assets', 'motion'))
+    ? readdirSync(join(here, 'assets', 'motion')).filter((f) => /^canon_[a-z]+\.webp$/.test(f)).sort()
+    : []
+  if (SHIPPED_CANON.length === 8) {
+    await probeClipFamily('canon', CANON_STATES, CANON_CANVAS, 'original maid (v1.49.0)')
+  } else {
+    /* 素材没生成（0/8）：真引擎里要看到的是**静默降级**，而且**不许**退回别的皮肤那段
+       循环 —— 通用兜底已经删了，这一条就是"删干净了没有"的现场证据。 */
+    const canonQuiet = await evaluate(`(async () => {
+      const waitFor = async (ok, ms) => {
+        const until = Date.now() + ms
+        while (Date.now() < until) { const v = ok(); if (v) return v; await new Promise((r) => setTimeout(r, 50)) }
+        return ok()
+      }
+      window.__wisp.configure({ motion: 'full' })
+      window.__wisp.setSkin('canon')
+      const leaks = []
+      for (const [state] of ${JSON.stringify(CANON_STATES)}) {
+        window.__wisp.mood(state)
+        await waitFor(() => false, 120)
+        const v = document.querySelector('.wisp-video')
+        if (v && getComputedStyle(v).display !== 'none') leaks.push(state + ':' + (v.dataset.clip ?? '?'))
+      }
+      const img = document.querySelector('.wisp-img')
+      return {
+        leaks, elements: document.querySelectorAll('.wisp-video').length,
+        sprite: getComputedStyle(img).visibility,
+        frame: document.querySelector('.wisp-root').dataset.frame ?? null,
+        asset: window.__wisp.doctor().motion.frame.asset,
+      }
+    })()`)
+    check(canonQuiet.leaks.length === 0 && canonQuiet.elements === 0
+      && canonQuiet.sprite === 'visible' && canonQuiet.frame === null && canonQuiet.asset === null,
+      'with no original-maid clips shipped the engine builds NO frame layer for any of the eight states — the deleted shared fallback does not leak back in (v1.49.0)',
+      `leaks=${canonQuiet.leaks.join(',') || 'none'} elements=${canonQuiet.elements} sprite=${canonQuiet.sprite} data-frame=${String(canonQuiet.frame)} asset=${String(canonQuiet.asset)}`)
+    console.log(`  NOTE  ${SHIPPED_CANON.length}/8 original-maid clips generated yet — the eight-clip checks are replaced by the degradation checks above`)
   }
 
   console.log(`\n=== ${failures === 0 ? 'ENGINE PROBE PASSED' : `${failures} PROBE CHECK(S) FAILED`} ===`)

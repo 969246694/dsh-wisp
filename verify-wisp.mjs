@@ -38,15 +38,20 @@ const here = dirname(fileURLToPath(import.meta.url))
 const pkgPath = join(here, 'package.json')
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
 
-/* 泳装那八条帧动画素材（v1.47.0）。判据是**磁盘上实际有什么**，不是"应该有什么"：
+/* 帧动画素材（v1.47.0）。判据是**磁盘上实际有什么**，不是"应该有什么"：
    一条都没有（还没生成）与八条都在（生成完了）都是合法状态，**只到一半**不是 ——
    半套素材在页面上表现为"她有些状态不动"，而那和"没有素材"长得一模一样。
    投递机制（motion 清单 + 宿主路由 + 客户端 URL 解析）在没有素材时照样成立：
-   它是一条"有文件就发、没有就静默降级"的路。 */
+   它是一条"有文件就发、没有就静默降级"的路。
+
+   v1.49.0 起有两批八条（泳装 / 原版）。**默认皮肤是 canon**（v1.48.2），
+   所以"挂载时就有动图"那一段验的是原版那八条。 */
 const MOTION_DIR = join(here, 'assets', 'motion')
-const SHIPPED_SWIM = existsSync(MOTION_DIR)
-  ? readdirSync(MOTION_DIR).filter((f) => /^swim_[a-z]+\.webp$/.test(f)).sort()
-  : []
+const shippedClips = (prefix) => (existsSync(MOTION_DIR)
+  ? readdirSync(MOTION_DIR).filter((f) => new RegExp(`^${prefix}[a-z]+\\.webp$`).test(f)).sort()
+  : [])
+const SHIPPED_SWIM = shippedClips('swim_')
+const SHIPPED_CANON = shippedClips('canon_')
 
 const hostPath = resolve(here, pkg.main ?? 'lib/index.js')
 const clientRel = pkg.exports?.['./client']?.default
@@ -688,7 +693,7 @@ head('1d. the runtime reader reads through the platform fs service, never a Node
 {
   const mod = await import(pathToFileURL(hostPath).href + '?probe=motion-reader')
   const dir = mod.motionDir()
-  const idle = mod.motionFile('idle.webp')
+  const idle = mod.motionFile('canon_idle.webp')
   const disk = idle !== null && existsSync(idle) ? readFileSync(idle) : null
   const calls = []
   const resolved = new Map()
@@ -726,7 +731,7 @@ head('1d. the runtime reader reads through the platform fs service, never a Node
   check(reader.state.lastBytes === (disk === null ? null : disk.length) && reader.state.lastError === null,
     'and the reader state says which path ran and how many bytes it produced (that is what __diag reports)',
     JSON.stringify({ via: reader.state.via, bytes: reader.state.lastBytes, error: reader.state.lastError }))
-  /* 符号链接逃逸：名字完全合法（`idle.webp`），但解析出来的真实路径在包外。
+  /* 符号链接逃逸：名字完全合法（`canon_idle.webp`），但解析出来的真实路径在包外。
      只查名字的实现会**照发**；这是 contains() 存在的理由。 */
   if (idle !== null) {
     resolved.set(idle, process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/hostname')
@@ -3375,6 +3380,30 @@ if (clientSrc !== null) {
       '"restrained" really halves the amplitude instead of merely looking calmer',
       `${moHalfTilt}° vs ${moFullTilt}°`)
 
+    /* ---- v1.49.0：这一档不只管手势与侧倾，还管她多久溜达一次、一次走多远 ----
+       手势的半幅在 560px 上就是十几像素、一闪而过（用户报过"动作幅度好像没用"），
+       而"她走得少了、也走得更近了"过一会儿一定看得出来。 */
+    const moFx = moApi.doctor().motion.effects
+    check(moFx.gesture === 0.5 && moFx.lean === 0.5
+      && moFx.wanderRange === Math.round(260 * 0.4) && moFx.wanderEvery === Math.round(45000 * 2.5),
+      'doctor() spells out what the level changes: gesture, lean, and how far/often she strolls',
+      JSON.stringify(moFx))
+
+    const moHome = moApi.position
+    moApi.configure({ wander: true, motion: 'subtle' })
+    mo.advance(46000, 500)
+    check(moApi.position.x === moHome.x && moApi.position.y === moHome.y,
+      'in the restrained level she does not stroll when the old 45s interval is up',
+      `${moApi.position.x},${moApi.position.y}`)
+    mo.advance(70000, 500)          // 累计 116s > 45s × 2.5 = 112.5s
+    const moStroll = Math.hypot(moApi.position.x - moHome.x, moApi.position.y - moHome.y)
+    check(moStroll > 0 && moStroll <= Math.round(260 * 0.4) + 1,
+      'but she does stroll once her longer interval is up — and never past the halved range',
+      `${Math.round(moStroll)}px in one stroll, halved range would be 104px`)
+    /* 把她放回原处、并恢复全幅：后面几节共用这个 harness，不该被这段挪走的位置污染。 */
+    moApi.move(moHome.x, moHome.y)
+    moApi.configure({ motion: 'full', wander: false })
+
     /* ---- 表情变化：弹一下，而且连着的两次都要能弹 ---- */
     moApi.configure({ motion: 'full' })
     moApi.mood('happy')
@@ -3523,10 +3552,12 @@ if (clientSrc !== null) {
 
     /* ---- idle 也接上了（v1.46.5）：它是**默认**状态，所以动作层从挂载那一刻就在 ----
        这一段同时证明三件事：素材真的在包里、MOTION_OF 里接上了、syncMotion() 在挂载
-       那一刻真的跑过（在那之前这一层只在进入 sleep 时才建元素）。 */
+       那一刻真的跑过（在那之前这一层只在进入 sleep 时才建元素）。
+       **默认皮肤是 canon**（v1.48.2 起），所以这里点名的素材是 `canon_idle` ——
+       v1.49.0 删掉通用兜底之后，"默认那一档能播"这件事只能由 canon 自己那一段成立。 */
     const mvIdle = mvLive()
     const mvIdleImgs = mvRoot.querySelectorAll('.wisp-img')
-    check(mvIdle !== null && mvIdle.tagName === 'IMG' && mvIdle.dataset.clip === 'idle',
+    check(mvIdle !== null && mvIdle.tagName === 'IMG' && mvIdle.dataset.clip === 'canon_idle',
       'the idle state builds the motion layer at mount — the standing loop is wired in, not merely shipped (v1.46.5)',
       mvIdle ? `${mvIdle.tagName} clip=${String(mvIdle.dataset.clip)}` : 'no motion layer built while idle')
     check(mvIdle !== null && mvIdle.style.display !== 'none' && mvIdleImgs.length === 1
@@ -3534,19 +3565,57 @@ if (clientSrc !== null) {
       'and it owns the picture from the first frame — the sprite is out of the way, never double-exposed (v1.45.2 rules, idle edition)',
       `display=${mvIdle?.style.display} sprites=${mvIdleImgs.length} sprite=${mvVis(mvIdleImgs[0])} data-frame=${String(mvRoot.dataset.frame)}`)
     /* idle **不带**尺寸校正（差 1.0~1.6%，小于 2% 那条线）：行内必须是 none。
-       这一条和下面 sleepy 那条 1.186 是**分开点名**的 —— 只查一条的话，"base 那条
-       1.186 落到 idle 头上"（她会被放大 18.6%）这种错会整段漏过去。 */
+       这一条和下面 deepsea_sleepy 那条 1.186 是**分开点名**的 —— 只查一条的话，
+       "那条 1.186 落到 idle 头上"（她会被放大 18.6%）这种错会整段漏过去。
+       v1.49.0 起这条换成 canon_idle：**默认皮肤**的站立段照样不许被放大。 */
     check(mvIdle !== null && mvIdle.style.transform === 'none',
       'the idle clip carries NO size correction — she fills 97.2% of that frame vs 98.2% of the sprite, under the 2% line (v1.46.5)',
       `inline transform=${JSON.stringify(mvIdle?.style.transform)}`)
 
+    /* 没有动作素材的皮肤**连元素都不建**（v1.49.0：这是删掉通用兜底之后的核心行为）。
+       这条用的是**真皮肤**而不是"把清单里一行抠掉"：宵蓝礼服（night）一条动图素材都没有，
+       她挂上去就该是一个纯静态立绘 —— 没有 <img class="wisp-video">、没有 data-frame、
+       doctor() 两个字段都报空。通用兜底还在的时候，这里会建出一个播着**深海女仆**动作的
+       元素（画面上是当场换装），所以这一条正是那一版的墓碑。 */
+    const ni = createHarness({ timer: true, composerText: '' })
+    const keepNi = active
+    active = ni
+    ni.evaluate(clientSrc)
+    ni.module().default.apply(ni.ctx, {
+      skin: 'night', reactions: false, wander: false, celebrate: false, sleepAfterMs: 3600000,
+    })
+    ni.advance(1200, 100)
+    const niApi = ni.win.__wisp
+    const niRoot = ni.find('wisp-root')
+    const niClips = []
+    for (const state of ['idle', 'sleep', 'happy', 'attn', 'alert', 'proud', 'eat', 'poked', 'worried']) {
+      niApi.mood(state)
+      ni.advance(300, 100)
+      const m = ni.all('wisp-video').find((el) => el.removed !== true) ?? null
+      if (m !== null && m.style.display !== 'none') niClips.push(`${state}:${String(m.dataset.clip)}`)
+    }
+    check(niApi.skin === 'night' && niClips.length === 0
+      && niRoot.querySelectorAll('.wisp-video').length === 0 && niRoot.querySelectorAll('video').length === 0
+      && niRoot.dataset.frame === undefined,
+      'a skin with NO clips never builds a motion layer in ANY state — with the shared fallback gone, "no clip" means no element, no decode, no data-frame (v1.49.0)',
+      niClips.length ? niClips.join(' | ') : `${niRoot.querySelectorAll('.wisp-video').length} motion layer(s) across 9 states; sprite=${String(ni.all('wisp-img').find((el) => el.removed !== true)?.style?.visibility ?? '') || '(unset)'}`)
+    niApi.mood('sleep')
+    ni.advance(300, 100)
+    check(niApi.doctor().motion.frame.asset === null && niApi.doctor().motion.frame.built === false
+      && niApi.doctor().motion.frame.showing === false,
+      'and doctor() reports it as "no clip for this skin+state" rather than a broken layer — the silent-degradation contract, now per skin (v1.49.0)',
+      JSON.stringify(niApi.doctor().motion.frame))
+    niApi.destroy()
+    active = keepNi
+
     /* 没有动作素材的状态**连元素都不建**：摆一个永远不动、还要白解 3 MB 的空盒子，
-       代价是真的，收益是零。idle 接上之后，"默认那一档没有素材"在这个包里再也造不出来
-       —— 所以把 MOTION 表里 idle 那一条**删掉**再挂一次：那才是真的"这个状态没有素材"。
+       代价是真的，收益是零。（上面那条用的是"整套皮肤都没有"，这一条用的是
+       "同一套皮肤里少了一段" —— 两件事都要成立。）把 MOTION 表里 `canon_idle`
+       那一条**删掉**再挂一次：那才是真的"这个状态没有素材"。
        判据在 syncMotion() 里（查不到 key 就不建元素），不是"素材恰好缺失"。
-       v1.47.0 起表里那条长这样：`"idle": 'idle.webp',` —— 删的是**清单里的一行**，
+       v1.47.0 起表里那条长这样：`"canon_idle": 'canon_idle.webp',` —— 删的是**清单里的一行**，
        不是一段 base64（投递改了，这一段测试的意图没变）。 */
-    const noIdleSrc = String(clientSrc).replace(/^\s*"idle": '[^']*',$/m, '')
+    const noIdleSrc = String(clientSrc).replace(/^\s*"canon_idle": '[^']*',$/m, '')
     const mvNone = createHarness({ timer: true, composerText: '' })
     active = mvNone
     mvNone.evaluate(noIdleSrc)
@@ -3578,18 +3647,18 @@ if (clientSrc !== null) {
     const mvIdleSrc = String(mvIdle.src)
     mvApi.mood('sleep')
     mv.advance(400, 100)
-    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'sleepy'
-      && String(mvIdle.src) !== mvIdleSrc && String(mvIdle.src) === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp',
+    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'canon_sleepy'
+      && String(mvIdle.src) !== mvIdleSrc && String(mvIdle.src) === 'http://127.0.0.1:19387/wisp-motion/canon_sleepy.webp',
       'switching state re-points the SAME element at the other clip — the layer is not a one-shot build (v1.46.5)',
       `reused=${mvLive() === mvIdle} clip=${String(mvIdle.dataset.clip)} srcChanged=${String(mvIdle.src) !== mvIdleSrc} src=${String(mvIdle.src)}`)
     mvApi.mood('idle')
     mv.advance(400, 100)
-    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'idle' && String(mvIdle.src) === mvIdleSrc,
+    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'canon_idle' && String(mvIdle.src) === mvIdleSrc,
       'and switching back re-points it at the standing loop again — the source follows every transition, not just the first',
       `reused=${mvLive() === mvIdle} clip=${String(mvIdle.dataset.clip)} srcBack=${String(mvIdle.src) === mvIdleSrc}`)
     mvApi.mood('sleep')
     mv.advance(400, 100)
-    check(mvIdle.style.display !== 'none' && mvIdle.dataset.clip === 'sleepy',
+    check(mvIdle.style.display !== 'none' && mvIdle.dataset.clip === 'canon_sleepy',
       'and the sleeping loop is what is on screen after the round trip',
       `display=${mvIdle.style.display || '(default)'} clip=${String(mvIdle.dataset.clip)}`)
 
@@ -3642,17 +3711,43 @@ if (clientSrc !== null) {
     check(mvZoomRule && mvZoomOrigin,
       'the stylesheet scales the motion layer by 1.186 about a bottom-centre origin — her height AND her ground contact match the static sprite (v1.46.4)',
       mvRule ? `.wisp-video{…} zoom=${mvZoomRule} origin=${mvZoomOrigin}` : 'no .wisp-video rule in the stylesheet')
-    check(mvMotion !== null && mvMotion.style.transform === 'scale(1.186) translateY(7.84%)'
-      && mvMotion.style.transformOrigin === '50% 100%',
-      'and the inline mirror carries the same correction, for shells where the stylesheet never arrives',
+    /* 尺寸校正（v1.46.4 / v1.49.0）：那条 1.186 只属于**一段素材** —— `deepsea_sleepy`
+       （旧名 `sleepy`；v1.49.0 按新素材名改的正是这里的键）。行内那份由
+       applyClipGeometry 按素材名写，样式表那份落在 data-clip 上。
+       默认皮肤换成了 canon（v1.48.2）之后，这条必须**点名切到 deepsea** 去验 ——
+       否则它会被 canon 那八条"都不补"盖住，谁都发现不了 1.186 已经丢了。 */
+    mvApi.setSkin('deepsea')
+    mvApi.mood('sleep')
+    mv.advance(400, 100)
+    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'deepsea_sleepy'
+      && String(mvIdle.src) === 'http://127.0.0.1:19387/wisp-motion/deepsea_sleepy.webp'
+      && mvIdle.style.transform === 'scale(1.186) translateY(7.84%)'
+      && mvIdle.style.transformOrigin === '50% 100%',
+      'the sleeping deep-sea clip is the ONE that carries the 1.186 correction — looked up by its NEW clip name, and rewritten when the skin changes (v1.46.4 / v1.49.0)',
+      `clip=${String(mvIdle.dataset.clip)} src=${String(mvIdle.src)} inline transform=${String(mvIdle.style.transform)} origin=${String(mvIdle.style.transformOrigin)}`)
+    mvApi.setSkin('canon')
+    mvApi.mood('sleep')
+    mv.advance(400, 100)
+    check(mvLive() === mvIdle && mvIdle.dataset.clip === 'canon_sleepy'
+      && mvIdle.style.transform === 'none' && mvIdle.style.transformOrigin === '50% 100%',
+      'and coming back to canon, the SAME element drops that correction — picture and geometry change together, per skin (v1.49.0)',
+      `clip=${String(mvIdle.dataset.clip)} transform=${String(mvIdle.style.transform)}`)
+    check(mvMotion !== null && mvMotion.style.transformOrigin === '50% 100%',
+      'and the inline mirror always pins the transform origin to her feet, for shells where the stylesheet never arrives',
       `inline transform=${mvMotion?.style.transform} origin=${mvMotion?.style.transformOrigin}`)
-    /* v1.46.5：**样式表那一份**也要把 idle 显式排除掉 —— base 那条 1.186 是给 sleepy 的，
-       落到 idle 头上就是放大 18.6%（而页面上只会看起来"她今天有点大"）。行内那份上面
-       单独点了名，这里点样式表那份：两个落点各查各的，缺一个就有一个壳是错的。 */
-    const mvIdleRule = (String(clientSrc).match(/\.wisp-video\[data-clip="idle"\]\{[^}]*\}/) ?? [''])[0]
+    /* v1.46.5 / v1.49.0：**样式表那一份**也要把"不补"的那几条显式排除掉 ——
+       base 那条 1.186 是给 deepsea_sleepy 的，落到别的素材头上就是放大 18.6%
+       （而页面上只会看起来"她今天有点大"）。行内那份上面单独点了名，
+       这里点样式表那份：两个落点各查各的，缺一个就有一个壳是错的。
+       两条各点各的名字：deepsea_idle / canon_*（泳装那条在下面 3f-quater 里点）。 */
+    const mvIdleRule = (String(clientSrc).match(/\.wisp-video\[data-clip="deepsea_idle"\]\{[^}]*\}/) ?? [''])[0]
     check(/transform:none/.test(mvIdleRule) && !/scale\(/.test(mvIdleRule),
-      'the stylesheet names the idle clip too, so the sleeping 1.186 can never land on it (v1.46.5)',
-      mvIdleRule || 'no .wisp-video[data-clip="idle"] rule in the bundle')
+      'the stylesheet names the standing deep-sea clip by its NEW name, so the sleeping 1.186 can never land on it (v1.46.5 / v1.49.0)',
+      mvIdleRule || 'no .wisp-video[data-clip="deepsea_idle"] rule in the bundle')
+    const mvStaleIdleRule = /\.wisp-video\[data-clip="idle"\]/.test(String(clientSrc))
+    check(!mvStaleIdleRule,
+      'and no rule still speaks the retired shared clip name `idle` — a half-done rename is a silently upscaled companion',
+      mvStaleIdleRule ? 'found .wisp-video[data-clip="idle"]' : 'no [data-clip="idle"] rule left')
     /* reduced-motion 那条兜底：媒体查询够不着 JS 的显隐状态，但它至少能让这层不出现在
        画面上（JS 拿不到 matchMedia 的壳里，冻结就只剩这一道）。 */
     const mvRmAt = mvCss.indexOf('@media (prefers-reduced-motion:reduce)')
@@ -3689,7 +3784,7 @@ if (clientSrc !== null) {
          ② 包里**一个** MB 级 clip blob 都不该有 —— 有就说明构建又把素材内联回来了，
             而那正是这一版要修的那件事（八条泳装 +30 MB ⇒ 单文件 ~45 MB）。 */
     const mvClipBlobs = mv.blobs.filter((b) => String(b.type) === 'image/webp' && b.size > 1024 * 1024)
-    check(mvMotion !== null && String(mvMotion.src) === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp'
+    check(mvMotion !== null && String(mvMotion.src) === 'http://127.0.0.1:19387/wisp-motion/canon_sleepy.webp'
       && mvClipBlobs.length === 0,
       'the clip is fetched from the host route the page can resolve — and NOTHING multi-megabyte is inlined or blob-decoded any more (v1.47.0)',
       `src=${String(mvMotion?.src)} · ${mvClipBlobs.length} MB-scale clip blob(s)`)
@@ -3804,7 +3899,7 @@ if (clientSrc !== null) {
        照常动。把"失败"做成一个全局开关的实现在这里会露出来（她会从此一辈子不动）。 */
     mvApi.mood('idle')
     mv.advance(200, 100)
-    check(mvLive() === mvMotion && mvMotion.dataset.clip === 'idle'
+    check(mvLive() === mvMotion && mvMotion.dataset.clip === 'canon_idle'
       && mvMotion.style.display !== 'none' && mvApi.doctor().motion.frame.failed === false,
       'the failure belongs to the clip, not to the layer: the standing loop still plays after the sleeping one died (v1.46.5)',
       `clip=${String(mvMotion.dataset.clip)} display=${mvMotion.style.display || '(default)'} doctor.failed=${mvApi.doctor().motion.frame.failed}`)
@@ -3940,22 +4035,29 @@ if (clientSrc !== null) {
         `display=${String(swMotion()?.style?.display)} sprite=${mvVis(swSprite())}`)
 
       /* 换皮肤 = 换一整套**动图**（v1.47.0）：只换图不换动图层，是这一版最容易漏的一处。
-         两个方向一起点：泳装 → 通用（回到 idle/sleepy），这也是"图与几何一起换"的证据。 */
+         两个方向一起点：泳装 → 深海女仆（回到 deepsea_idle / deepsea_sleepy），
+         这也是"图与几何一起换"的证据 —— 而且这一对**几何本来就不同**
+         （deepsea_sleepy 要补 1.186，泳装那八条都不补），所以它是这条断言最强的一档。 */
       swApi.mood('sleep')
       sw.advance(300, 100)
       const swimSleepTransform = String(swMotion()?.style?.transform ?? '')
       const beforeSkinClip = String(swMotion()?.dataset?.clip ?? '')
       swApi.setSkin('deepsea')
       sw.advance(300, 100)
-      check(String(swMotion()?.dataset?.clip ?? '') === 'sleepy'
-        && String(swMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp'
+      check(String(swMotion()?.dataset?.clip ?? '') === 'deepsea_sleepy'
+        && String(swMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/deepsea_sleepy.webp'
         && String(swMotion()?.style?.transform ?? '') === 'scale(1.186) translateY(7.84%)'
         && swimSleepTransform !== String(swMotion()?.style?.transform ?? ''),
-        'switching the skin re-points the SAME frame layer at that skin’s clip — picture AND geometry change together (v1.47.0)',
+        'switching the skin re-points the SAME frame layer at that skin’s clip — picture AND geometry change together (v1.47.0 / v1.49.0)',
         `${beforeSkinClip} ${swimSleepTransform} → ${String(swMotion()?.dataset?.clip)} ${String(swMotion()?.style?.transform)}`)
       check(swApi.setSkin('swim') === true && String(swMotion()?.dataset?.clip ?? '') === 'swim_sleepy',
-        'and switching back returns the swimsuit loop, not the shared one',
+        'and switching back returns the swimsuit loop, not another skin’s clip',
         String(swMotion()?.dataset?.clip))
+      /* 泳装那八条的"不补"要在**样式表**里也点名（行内那份上面已经按素材逐条对过）。 */
+      const swimNoneRule = (String(clientSrc).match(/\.wisp-video\[data-clip\^="swim_"\]\{[^}]*\}/) ?? [''])[0]
+      check(/transform:none/.test(swimNoneRule) && !/scale\(/.test(swimNoneRule),
+        'the stylesheet carries the explicit "no correction" for the whole swimsuit family — the sleeping 1.186 cannot reach them (v1.47.1)',
+        swimNoneRule || 'no .wisp-video[data-clip^="swim_"] rule in the bundle')
       } else {
         /* 素材还没生成（0/8）：泳装那一档**一条动图都不该建**，而且**不许**退回通用
            那段循环 —— 她是穿着泳装的人，播别的皮肤的动作比不动更糟。这一条查的就是
@@ -3972,7 +4074,7 @@ if (clientSrc !== null) {
           }
         }
         check(leaked.length === 0,
-          'with no swimsuit clips shipped, NONE of the eight states plays a clip — the shared loop never leaks onto the swimsuit skin (v1.47.0)',
+          'with no swimsuit clips shipped, NONE of the eight states plays a clip — no other skin’s loop leaks onto the swimsuit skin (v1.47.0)',
           leaked.length ? leaked.join(' | ') : `0/8 clips built across ${SWIM.length} states`)
         check(silent.length === 0 && swApi.doctor().motion.frame.asset === null,
           'and the static swimsuit sprite keeps the picture the whole time — the documented silent degradation, not an empty box',
@@ -3984,14 +4086,158 @@ if (clientSrc !== null) {
         const swimSleepQuiet = swMotion() === null || swMotion().style.display === 'none'
         swApi.setSkin('deepsea')
         sw.advance(300, 100)
-        check(swimSleepQuiet && String(swMotion()?.dataset?.clip ?? '') === 'sleepy'
-          && String(swMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/sleepy.webp',
+        check(swimSleepQuiet && String(swMotion()?.dataset?.clip ?? '') === 'deepsea_sleepy'
+          && String(swMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/deepsea_sleepy.webp',
           'and switching to a skin WITH clips brings the frame animation straight back — missing swimsuit art is not a broken frame layer',
           `swim/sleep -> ${swimSleepQuiet ? 'no clip' : String(swMotion()?.dataset?.clip)}; deepsea/sleep -> clip=${String(swMotion()?.dataset?.clip)}`)
       }
 
       sw.win.__wisp.destroy()
       active = keepSw
+    }
+
+    /* ---- 3f-quinquies. 原版（canon）：八条按**皮肤+状态**点（v1.49.0）-----------
+       这一版做两件互为因果的事：给**默认皮肤** canon 补八条帧动画，并把"通用兜底"
+       删掉。两者必须一起成立 —— 兜底还在的时候，canon 有没有自己的素材在画面上
+       分辨不出来（她会照常播深海女仆那一段）；兜底删了而 canon 没有素材，默认皮肤
+       就**永远不动**。所以这里逐个状态点一遍，查的是"图 + 几何"两样，并且把
+       "换皮肤 + 换状态时两层一起换"点成一条断言。 */
+    {
+      const cn = createHarness({ timer: true, composerText: '' })
+      const keepCn = active
+      active = cn
+      cn.evaluate(clientSrc)
+      cn.module().default.apply(cn.ctx, { skin: 'canon', reactions: false, wander: false, celebrate: false })
+      cn.advance(1200, 100)
+      const cnApi = cn.win.__wisp
+      const cnRoot = cn.find('wisp-root')
+      const cnMotion = () => cn.all('wisp-video').find((el) => el.removed !== true) ?? null
+      const cnSprite = () => cn.all('wisp-img').find((el) => el.removed !== true) ?? null
+      const fitMap = (() => {
+        const src = (/const MOTION_FIT = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
+        try { return src ? new Function(`return ${src}`)() : {} } catch (error) { return {} }
+      })()
+      check(cnApi.skin === 'canon' && cnRoot.dataset.mood === 'idle',
+        'the original maid is a skin a companion can start on — and it lands in the idle state',
+        `skin=${String(cnApi.skin)} mood=${String(cnRoot.dataset.mood)}`)
+
+      const CANON = [
+        ['idle', 'canon_idle'], ['attn', 'canon_attn'], ['happy', 'canon_happy'],
+        ['sleep', 'canon_sleepy'], ['alert', 'canon_work'], ['proud', 'canon_proud'],
+        ['eat', 'canon_eat'], ['poked', 'canon_poked'],
+      ]
+      if (SHIPPED_CANON.length === 8) {
+        const wrongClip = []
+        const wrongSrc = []
+        const wrongFit = []
+        const wrongOwner = []
+        const sameClip = []
+        const seen = new Set()
+        for (const [state, clip] of CANON) {
+          cnApi.mood(state)
+          cn.advance(300, 100)
+          const m = cnMotion()
+          if (String(m?.dataset?.clip ?? '') !== clip) wrongClip.push(`${state}→${String(m?.dataset?.clip)}`)
+          if (seen.has(clip)) sameClip.push(clip)
+          seen.add(clip)
+          const wantSrc = `http://127.0.0.1:19387/wisp-motion/${clip}.webp`
+          if (String(m?.src ?? '') !== wantSrc) wrongSrc.push(`${state}→${String(m?.src)}`)
+          /* 几何跟着**素材**走：MOTION_FIT 里有就用它，没有就是 none（"不校正"是
+             显式规则，不是"忘了写"）—— 换源不换几何就是 v1.46.5 抓到过的那条。 */
+          if (String(m?.style?.transform ?? '') !== (fitMap[clip] ?? 'none')) {
+            wrongFit.push(`${state}: ${String(m?.style?.transform)} vs ${fitMap[clip] ?? 'none'}`)
+          }
+          if (m === null || m.style.display === 'none' || mvVis(cnSprite()) !== 'hidden') {
+            wrongOwner.push(`${state}: display=${String(m?.style?.display)} sprite=${mvVis(cnSprite())}`)
+          }
+        }
+        check(wrongClip.length === 0 && sameClip.length === 0,
+          'all eight original-maid states build THEIR OWN clip — one clip per state, none shared, none borrowed from another skin (v1.49.0)',
+          wrongClip.length || sameClip.length ? `${wrongClip.join(' | ')}${sameClip.length ? ` · repeated: ${sameClip.join(', ')}` : ''}` : CANON.map(([s, c]) => `${s}=${c}`).join(', '))
+        check(wrongSrc.length === 0,
+          'and each one loads it from the host route, resolved from the page base — no inlined bytes, no stale source',
+          wrongSrc.length ? wrongSrc.join(' | ') : `e.g. ${String(cnMotion()?.src)}`)
+        check(wrongFit.length === 0,
+          'and the geometry is chosen PER CLIP — switching the source rewrites the transform with it (v1.46.5 rule, original-maid edition)',
+          wrongFit.length ? wrongFit.join(' | ') : `fit=${JSON.stringify(fitMap)}`)
+        check(wrongOwner.length === 0,
+          'and while an original-maid clip plays, the static sprite is out of the picture — one of her, never two',
+          wrongOwner.length ? wrongOwner.join(' | ') : `sprite=hidden · data-frame=${String(cnRoot.dataset.frame)}`)
+        check(cnApi.doctor().motion.frame.asset === 'canon_poked'
+          && String(cnApi.doctor().motion.frame.src).endsWith('/wisp-motion/canon_poked.webp'),
+          'and doctor() reports both the clip name and where it came from, so "why is she still" is answerable',
+          JSON.stringify(cnApi.doctor().motion.frame))
+        /* 样式表那份"不补"要按 canon_ 前缀点名 —— base 那条 1.186 落上来就是放大 18.6%。 */
+        const canonNoneRule = (String(clientSrc).match(/\.wisp-video\[data-clip\^="canon_"\]\{[^}]*\}/) ?? [''])[0]
+        check(/transform:none/.test(canonNoneRule) && !/scale\(/.test(canonNoneRule),
+          'the stylesheet carries the explicit "no correction" for the whole original-maid family — the sleeping 1.186 cannot reach them (v1.49.0)',
+          canonNoneRule || 'no .wisp-video[data-clip^="canon_"] rule in the bundle')
+
+        /* 没有素材的状态：worried 在 canon 上也没有动作段（它有自己的抖动）——
+           这一层必须**藏起来**、立绘回到画面，而不是留一个空盒子。 */
+        cnApi.mood('worried')
+        cn.advance(300, 100)
+        check(cnMotion() === null || cnMotion().style.display === 'none',
+          'an original-maid state with no clip takes the frame layer off screen and hands the picture back',
+          `display=${String(cnMotion()?.style?.display)} sprite=${mvVis(cnSprite())}`)
+
+        /* 换皮肤 = 换一整套**动图**（v1.47.0），而且**同一状态**下两套皮肤的素材不同：
+           canon/sleep → canon_sleepy（不补），swim/sleep → swim_sleepy（不补），
+           deepsea/sleep → deepsea_sleepy（补 1.186）。三次切换都点"图与几何一起换"。 */
+        cnApi.mood('sleep')
+        cn.advance(300, 100)
+        const canonSleepTransform = String(cnMotion()?.style?.transform ?? '')
+        const canonSleepClip = String(cnMotion()?.dataset?.clip ?? '')
+        cnApi.setSkin('deepsea')
+        cn.advance(300, 100)
+        check(String(cnMotion()?.dataset?.clip ?? '') === 'deepsea_sleepy'
+          && String(cnMotion()?.src ?? '') === 'http://127.0.0.1:19387/wisp-motion/deepsea_sleepy.webp'
+          && String(cnMotion()?.style?.transform ?? '') === 'scale(1.186) translateY(7.84%)'
+          && canonSleepTransform !== String(cnMotion()?.style?.transform ?? ''),
+          'canon/sleep → deepsea/sleep re-points the SAME element at a different clip AND a different geometry — swapping the skin alone is not enough (v1.47.0 / v1.49.0)',
+          `${canonSleepClip} ${canonSleepTransform} → ${String(cnMotion()?.dataset?.clip)} ${String(cnMotion()?.style?.transform)}`)
+        cnApi.setSkin('night')
+        cn.advance(300, 100)
+        check(cnMotion() === null || cnMotion().style.display === 'none',
+          'and switching to a skin with no clips at all takes the layer off screen — the element is not left showing a foreign loop (v1.49.0)',
+          `skin=${String(cnApi.skin)} display=${String(cnMotion()?.style?.display)} sprite=${mvVis(cnSprite())}`)
+        check(cnApi.doctor().motion.frame.asset === null && cnApi.doctor().motion.frame.showing === false
+          && cnApi.doctor().motion.frame.spriteHidden === false
+          && String(cnMotion()?.style?.display ?? '') === 'none',
+          'and doctor() reports "no clip for this skin+state" with the layer off screen — the element may still exist (it is reused and hidden, never a second grid), but it owns nothing (v1.49.0)',
+          JSON.stringify(cnApi.doctor().motion.frame))
+        cnApi.setSkin('canon')
+        cn.advance(300, 100)
+        check(String(cnMotion()?.dataset?.clip ?? '') === 'canon_sleepy'
+          && String(cnMotion()?.style?.transform ?? '') === canonSleepTransform
+          && cnMotion() !== null && cnMotion().style.display !== 'none',
+          'and coming back re-uses the SAME element with canon’s own clip and geometry — no re-build, no stale transform',
+          `clip=${String(cnMotion()?.dataset?.clip)} transform=${String(cnMotion()?.style?.transform)}`)
+      } else {
+        /* 素材还没生成（0/8）：原版那一档**一条动图都不该建**，而且**不许**退回
+           别的皮肤那段循环 —— 兜底已经删了，这里查的就是"删干净了没有"。
+           这一档本身也是"默认皮肤不动"的诚实记录，不是空过。 */
+        const leaked = []
+        const silent = []
+        for (const [state] of CANON) {
+          cnApi.mood(state)
+          cn.advance(300, 100)
+          const m = cnMotion()
+          if (m !== null && m.style.display !== 'none') leaked.push(`${state}:${String(m.dataset.clip)}`)
+          if (mvVis(cnSprite()) !== 'visible' || cnRoot.dataset.frame === 'on') {
+            silent.push(`${state}: sprite=${mvVis(cnSprite())} frame=${String(cnRoot.dataset.frame)}`)
+          }
+        }
+        check(leaked.length === 0,
+          'with no original-maid clips shipped, NONE of the eight states plays a clip — the deleted shared fallback does not leak in (v1.49.0)',
+          leaked.length ? leaked.join(' | ') : `0/8 clips built across ${CANON.length} states`)
+        check(silent.length === 0 && cnApi.doctor().motion.frame.asset === null,
+          'and the static original-maid sprite keeps the picture the whole time — the documented silent degradation, not an empty box',
+          silent.length ? silent.join(' | ') : `sprite visible, data-frame=${String(cnRoot.dataset.frame)}, doctor.asset=null`)
+      }
+
+      cn.win.__wisp.destroy()
+      active = keepCn
     }
 
     head('3g. teardown')
@@ -4734,6 +4980,7 @@ if (clientSrc !== null) {
     check(pinned.element.style.width === '420px',
       'an explicit config size beats the remembered one', `${pinned.element.style.width}, remembered 280px`)
 
+
     // 四个角落
     const bodyOf = (inst) => inst.element.querySelector('.wisp-body')
     const boxOf = (inst) => ({
@@ -4786,6 +5033,67 @@ if (clientSrc !== null) {
         `the ${label} item puts her there`, `${pinned.position.x},${pinned.position.y} (want ${want.x},${want.y})`)
     }
     pinned.destroy()
+
+    /* v1.48.3：菜单里调过的**每一项**都要活过刷新，不只尺寸。
+       「动作幅度」是最容易被当成"没实现"的那一个 —— 点完当场生效、刷新回默认，
+       用户看到的就是"拨了半天她还是那样动"。 */
+    plugin.apply(h.ctx, { reactions: false, wander: false })
+    const lvl = h.win.__wisp
+    lvl.configure({ motion: 'off', frame: false })
+    check(lvl.doctor().motion.level === 'off' && lvl.doctor().motion.frame.enabled === false,
+      'the level and the frame switch apply at once',
+      JSON.stringify({ level: lvl.doctor().motion.level, frame: lvl.doctor().motion.frame.enabled }))
+    lvl.destroy()
+    plugin.apply(h.ctx, { reactions: false, wander: false })
+    const lvlBack = h.win.__wisp
+    check(lvlBack.doctor().motion.level === 'off' && lvlBack.doctor().motion.frame.enabled === false,
+      'and they survive a remount — every menu choice is remembered, not just the size',
+      JSON.stringify({ level: lvlBack.doctor().motion.level, frame: lvlBack.doctor().motion.frame.enabled }))
+    lvlBack.destroy()
+    plugin.apply(h.ctx, { reactions: false, wander: false, motion: 'full' })
+    const lvlPinned = h.win.__wisp
+    check(lvlPinned.doctor().motion.level === 'full',
+      'while an explicit config value still beats the remembered choice', lvlPinned.doctor().motion.level)
+    lvlPinned.destroy()
+
+    /* v1.49.0：选完档位**当场演一遍**。不演的话用户只能看到两个标签 ——
+       "灵动 / 克制"的差别本来就细，这正是"拨了好像没用"的来源。 */
+    plugin.apply(h.ctx, { reactions: false, wander: false })
+    const demo = h.win.__wisp
+    const pickLevel = (text) => {
+      const btns = demo.element.parentNode.querySelectorAll('.wisp-choice-opt')
+        .filter((b) => b.textContent === text)
+      if (btns.length !== 1) return false
+      btns[0].dispatch('click', itemEvent())
+      return true
+    }
+    openMenuOn(demo)
+    check(openGroupOn(demo, '行为') !== false, 'the behaviour group opens for the amplitude row')
+    /* 分组子菜单里**每一个** choice 行都必须真的渲染出胶囊（v1.49.0 修）。
+       分组改版时子菜单那条路自己抄了一份渲染循环、漏了 choice —— 于是「台词语言」
+       和「动作幅度」变成一个点了没反应的普通行（没有 run，异常被吞），
+       "这个功能好像没实现"就是这么来的。 */
+    const demoPills = demo.element.parentNode.querySelectorAll('.wisp-choice-opt')
+      .map((b) => String(b.textContent))
+    check(demoPills.indexOf('克制') >= 0 && demoPills.indexOf('灵动') >= 0
+      && demoPills.indexOf('静止') >= 0 && demoPills.indexOf('中文') >= 0,
+      'every choice row inside a group flyout really renders its pills, not a dead plain row',
+      demoPills.join('|'))
+    check(pickLevel('克制') === true, 'the amplitude row offers 「克制」')
+    const demoRestrained = demo.doctor()
+    check(demoRestrained.motion.level === 'subtle' && demoRestrained.motion.accent !== null
+      && Math.abs(demoRestrained.motion.tilt) > 0,
+      'picking a level demonstrates it on the spot — a pop and a lean, at that level',
+      JSON.stringify({ level: demoRestrained.motion.level, amp: demoRestrained.motion.amp, accent: demoRestrained.motion.accent, tilt: demoRestrained.motion.tilt, tiltLocal: demoRestrained.motion.tiltLocal, css: demo.element.style.getPropertyValue('--wisp-tilt') }))
+    h.advance(1000, 50)
+    check(demo.doctor().motion.tilt === 0, 'and the demo lean settles back on its own',
+      String(demo.doctor().motion.tilt))
+    pickLevel('静止')
+    const demoStill = demo.doctor()
+    check(demoStill.motion.level === 'off' && demoStill.motion.accent === null && demoStill.motion.tilt === 0,
+      'while the still level demonstrates nothing at all — no gesture, no lean',
+      JSON.stringify({ level: demoStill.motion.level, accent: demoStill.motion.accent, tilt: demoStill.motion.tilt }))
+    demo.destroy()
 
     // 首次见面提一句右键；第二次不该再念叨。
     // 新 harness 必须把全局窗口切过去（active = fresh）并重新求值，否则挂载会落到
@@ -5583,18 +5891,19 @@ head('4b. the clips ship as FILES — the bundle carries only their names (v1.47
    两个数因此分开盯，各有各的预算：
 
      ① **内联**：那张清单必须小到可以忽略（几条素材名，几十字节）。它曾经是
-        8015.8 KB（两段 base64，v1.46.5 实测）；八条泳装再内联会到 ~45 MB ——
+        8015.8 KB（两段 base64，v1.46.5 实测）；十八条素材再内联会到 ~80 MB ——
         所以这一条的上界是"几百字节"，不是"几 MB"。
-     ② **磁盘**：素材还是跟着包走的，涨了仍然要有人重新量一次。上界按**十条**估
-        （通用 2 + 泳装 8）：1.47.1 八条泳装落盘之后实测 **29800.0 KB / 29.1 MB**
-        （每条 2617.0~3398.2 KB，最大的是通用的 sleepy），所以上界收到 **34000 KB**
-        （33.2 MB，约 +14% 余量）。每次素材换代都要有人重新量一遍再改它，
-        而不是让它自己漂。
+     ② **磁盘**：素材还是跟着包走的，涨了仍然要有人重新量一次。
+        1.47.1（十条：通用 2 + 泳装 8）实测 **29800.0 KB / 29.1 MB**，
+        上界收到 34000 KB；1.49.0 又落盘原版八条（每条 3537.2~4272.5 KB），
+        十八条实测 **60177.1 KB / 58.8 MB**（最大的换成 `canon_eat` 4272.5 KB），
+        于是上界跟着提到 **69000 KB / 67.4 MB**（约 +14% 重编码余量 —— 和上一版
+        同一条规矩）。每次素材换代都要有人重新量一遍再改它，而不是让它自己漂。
 
    上界写在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
    一个数写两遍就是下一次漂移的起点。 */
 const MOTION_MANIFEST_BUDGET_BYTES = 2048
-const MOTION_DISK_BUDGET_KB = 34000
+const MOTION_DISK_BUDGET_KB = 69000
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
@@ -5616,13 +5925,17 @@ const MOTION_DISK_BUDGET_KB = 34000
     check(keys.length > 0 && named.length === keys.length && stillInlined.length === 0,
       'every MOTION entry is a clip FILE NAME — the bytes are not in the bundle any more (v1.47.0)',
       keys.length ? `${keys.join(', ')} → ${String(motionValue[keys[0]])}` : 'no MOTION table in the bundle')
-    /* **通用那两段都要在**（v1.46.5）：站着那一段和睡着那一段是两条独立的素材，
-       只进一条（或者 build 的发现规则又把 motion/ 当成皮肤跳过了）在页面上表现为
+    /* **深海女仆那两段都要在**（v1.46.5 / v1.49.0）：站着那一段和睡着那一段是两条独立的
+       素材，只进一条（或者 build 的发现规则又把 motion/ 当成皮肤跳过了）在页面上表现为
        "她某个状态不动"，而那和"没有素材"长得一模一样。
-       v1.47.0 又多了泳装那八条 —— 它们由下面那条"谁在播"的反向检查兜住。 */
-    check(keys.includes('idle') && keys.includes('sleepy'),
-      'BOTH shared loops are still there — the standing one and the sleeping one',
+       这两个名字也是 v1.49.0 改名的落点之一：`idle` / `sleepy` 是本轮**退役**的旧名，
+       清单里再出现它们就等于改名只改了一半。 */
+    check(keys.includes('deepsea_idle') && keys.includes('deepsea_sleepy'),
+      'BOTH deep-sea loops are still there — the standing one and the sleeping one, under their new per-skin names (v1.49.0)',
       keys.length ? keys.join(', ') : 'no clips at all')
+    check(!keys.includes('idle') && !keys.includes('sleepy'),
+      'and the retired shared names are gone from the manifest — a clip called `idle` would mean the rename never happened',
+      keys.filter((k) => k === 'idle' || k === 'sleepy').join(', ') || 'no bare `idle`/`sleepy` clip left')
 
     /* ① 内联的那一份必须**小**。这是这一版存在的理由：清单 = 素材名，
        八条泳装加进来也只多几十字节；换成字节就是 ~30 MB。 */
@@ -5631,7 +5944,7 @@ const MOTION_DISK_BUDGET_KB = 34000
       `the inlined part is only a NAME LIST — ${MOTION_MANIFEST_BUDGET_BYTES} B budget (a 8015.8 KB base64 table is what it replaced)`,
       `${inlineBytes} B for ${keys.length} clips`)
 
-    /* ② 磁盘上那八条 + 两条：素材仍然跟着包走，涨了要有第二个人重新量一次。 */
+    /* ② 磁盘上那十条 + 原版八条：素材仍然跟着包走，涨了要有第二个人重新量一次。 */
     const onDiskBytes = keys.reduce((n, k) => {
       const p = clipPath(k)
       return n + (p !== null && existsSync(p) ? readFileSync(p).length : 0)
@@ -5764,7 +6077,7 @@ const MOTION_DISK_BUDGET_KB = 34000
         'a missing clip is a 404 that still says the handler ran — never the platform’s anonymous 404',
         `status=${nope.status} x-wisp-motion=${String(nope.headers?.['x-wisp-motion'])}`)
       const diagUrl = `${hostMod.MOTION_ROUTE_PATH}/${hostMod.MOTION_DIAG_NAME}`
-      const probeFile = okFile ?? 'idle.webp'
+      const probeFile = okFile ?? 'canon_idle.webp'
       const probeDisk = okDisk
       const response = await call(`${diagUrl}?name=${probeFile}`)
       let diag = null
@@ -5835,27 +6148,66 @@ const MOTION_DISK_BUDGET_KB = 34000
       'and its geometry did not drift — 720x1280, 97 frames, 41ms each (24 fps): quality and keying may change, the frame budget may not (v1.46.4)',
       geometry.length ? geometry.join(' | ') : keys.map((k) => `${k}: 720x1280 / 97 frames / 41 ms = 24 fps`).join(', '))
 
-    /* 谁在播哪一段（v1.47.0 起是**按皮肤**点的）。
+    /* 谁在播哪一段（v1.47.0 起是**按皮肤**点的；v1.49.0 起**只有这一层**）。
        正向：每个 `<皮肤>:<状态>` 指向的素材必须真的在清单里（打错一个字 = 那个状态
        永远不动，而画面看不出错）。
-       反向：清单里**没有状态会播**的素材是白带的体积（磁盘预算里最贵的就是它）。 */
+       反向：清单里**没有状态会播**的素材是白带的体积（磁盘预算里最贵的就是它）。
+       还有一条**结构**断言（v1.49.0）：通用兜底必须**不存在** —— 它在的时候，
+       "这个皮肤没有素材"在画面上分辨不出来（她会借别的皮肤的动作，也就是当场换装）。 */
     const moodMap = (/const MOTION_OF = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
     let wired = null
     try { wired = moodMap ? new Function(`return ${moodMap}`)() : null } catch (error) { wired = null }
-    const baseMap = (/const MOTION_BASE = (\{[^}]*\})/.exec(clientSrc) ?? [])[1]
-    let base = null
-    try { base = baseMap ? new Function(`return ${baseMap}`)() : null } catch (error) { base = null }
-    const wiredClips = [...Object.values(wired ?? {}), ...Object.values(base ?? {})]
-    /* 孤儿只算**这个包真的带了的**通用素材：没生成的泳装素材在表里写着是**对的**
+    const wiredClips = [...Object.values(wired ?? {})]
+    /* 孤儿只算**这个包真的带了的**素材：还没生成的泳装/原版素材在表里写着是**对的**
        （那正是接线），它在页面上走静默降级，不是坏行为。素材有没有是上面那条的事。 */
     const orphans = Object.keys(wired ?? {}).filter((m) => !String(wired[m]).startsWith('swim_')
+      && !String(wired[m]).startsWith('canon_')
       && typeof motionValue?.[wired[m]] !== 'string')
     const badKeys = Object.keys(wired ?? {}).filter((m) => !/^[a-z]+:.+$/.test(m))
     const unwired = keys.filter((k) => !wiredClips.includes(k))
-    check(wired !== null && base !== null && base.idle === 'idle' && base.sleep === 'sleepy'
-      && orphans.length === 0 && unwired.length === 0 && badKeys.length === 0,
+    check(wired !== null && orphans.length === 0 && unwired.length === 0 && badKeys.length === 0,
       'every <skin>:<state> is wired to a clip that is really shipped — and no clip ships that no state can play',
-      wired ? `${JSON.stringify(wired)} · base=${JSON.stringify(base)}${unwired.length ? ` · 没人播：${unwired.join(', ')}` : ''}${orphans.length ? ` · 查不到：${orphans.join(', ')}` : ''}` : 'no MOTION_OF map found')
+      wired ? `${JSON.stringify(wired)}${unwired.length ? ` · 没人播：${unwired.join(', ')}` : ''}${orphans.length ? ` · 查不到：${orphans.join(', ')}` : ''}` : 'no MOTION_OF map found')
+
+    /* ---- 通用兜底删干净了没有（v1.49.0）--------------------------------------
+       两件事一起查，因为"删一半"在页面上不报错：
+         ① `MOTION_BASE` 这个名字在客户端半包里**一个字都不许剩**（这张表曾经是
+            "任意皮肤都能借深海女仆那一段"的唯一来源）；
+         ② `motionKeyFor` 只许有**一次**查表 —— 再有 `??` 就是第二级回退又长回来了。
+       两条都查**发行版**（lib/client.js），不是模板：改名/删除只改模板、忘了
+       `node build.mjs` 的话，页面加载的还是旧的那一份。 */
+    const noBase = !/MOTION_BASE/.test(String(clientSrc))
+    const keyFn = (/const motionKeyFor = \([^)]*\) =>([^\n]*)/.exec(String(clientSrc)) ?? [])
+    const keyBody = String(keyFn[1] ?? '')
+    const oneLevel = keyBody.length > 0 && !keyBody.includes('??')
+    check(noBase && oneLevel,
+      'the shared fallback is GONE: no MOTION_BASE table, and motionKeyFor does a single lookup — "no clip for this skin+state" is a real state now, not a silent borrow (v1.49.0)',
+      `MOTION_BASE=${noBase ? 'absent' : 'STILL PRESENT'} · motionKeyFor=${oneLevel ? 'single lookup' : (keyBody || '(not found)')}`)
+
+    /* ---- 原版那八条（v1.49.0）。和泳装同一条规矩：判据是**磁盘上实际带着什么**
+       （见文件上方 SHIPPED_CANON）—— "一条都没生成"与"八条都在"都是合法状态，
+       半套才是坏的。两个方向都查：
+         ① 每个 canon 状态指向的素材，只要它在包里就必须真的能查到；
+         ② 包里每一条 canon 素材都必须有状态会播（没人播 = 白带的体积）。 */
+    const canonKeys = Object.keys(wired ?? {}).filter((k) => k.startsWith('canon:'))
+    const canonClips = canonKeys.map((k) => wired[k])
+    const canonMissing = canonKeys.filter((k) => SHIPPED_CANON.includes(`${wired[k]}.webp`)
+      && typeof motionValue?.[wired[k]] !== 'string')
+    const canonUnwired = SHIPPED_CANON.map((f) => f.slice(0, -'.webp'.length))
+      .filter((c) => !Object.values(wired ?? {}).includes(c))
+    check(SHIPPED_CANON.length === 0 || SHIPPED_CANON.length === 8,
+      'the eight original-maid clips ship as a SET — never half of them (the default skin is canon, so a half set means some states simply never move)',
+      SHIPPED_CANON.length
+        ? `${SHIPPED_CANON.length} clip(s): ${SHIPPED_CANON.join(', ')}`
+        : '0/8 generated yet — the original-maid states stay on the static sprite, silently by design')
+    check(canonKeys.length === 8 && new Set(canonKeys).size === 8
+      && (SHIPPED_CANON.length === 0 || new Set(canonClips).size === 8)
+      && canonMissing.length === 0 && canonUnwired.length === 0,
+      'all eight original-maid states are wired, each to its OWN clip — and every clip that ships has a state to play it (v1.49.0)',
+      `wired ${canonKeys.length}/8 · shipped ${SHIPPED_CANON.length}/8`
+        + (canonUnwired.length ? ` · 没人播：${canonUnwired.join(', ')}` : '')
+        + (canonMissing.length ? ` · 查不到：${canonMissing.join(', ')}` : ''))
+
     /* 泳装那八条（v1.47.0）。判据是**磁盘上实际带着什么**（见文件上方 SHIPPED_SWIM）：
        "一条都没生成"与"八条都在"都是合法状态 —— 前者走既有的静默降级（画面回到立绘），
        半套才是坏的。所以这里查的是**接线与素材一一对上**，两个方向都查：
@@ -5872,7 +6224,7 @@ const MOTION_DISK_BUDGET_KB = 34000
       'the eight swimsuit clips ship as a SET — never half of them',
       SHIPPED_SWIM.length
         ? `${SHIPPED_SWIM.length} clip(s): ${SHIPPED_SWIM.join(', ')}`
-        : '0/8 generated yet — the swimsuit states fall back to the shared loops, silently by design')
+        : '0/8 generated yet — the swimsuit states stay on the static sprite, silently by design')
     check(swimKeys.length === 8 && new Set(swimKeys).size === 8
       && (SHIPPED_SWIM.length === 0 || new Set(swimClips).size === 8)
       && swimMissing.length === 0 && swimUnwired.length === 0,
@@ -5880,6 +6232,21 @@ const MOTION_DISK_BUDGET_KB = 34000
       `wired ${swimKeys.length}/8 · shipped ${SHIPPED_SWIM.length}/8`
         + (swimUnwired.length ? ` · 没人播：${swimUnwired.join(', ')}` : '')
         + (swimMissing.length ? ` · 查不到：${swimMissing.join(', ')}` : ''))
+
+    /* ---- 改名之后"每一条素材都只属于一套皮肤"（v1.49.0）----
+       通用兜底在的时候，同一条素材被多套皮肤共用是**设计**；现在它一定是个 bug
+       （要么表写错了，要么改名只改了一半）。逐个素材名反查它的皮肤集合。 */
+    const clipOwners = new Map()
+    for (const [key, clip] of Object.entries(wired ?? {})) {
+      const skin = key.slice(0, key.indexOf(':'))
+      if (!clipOwners.has(clip)) clipOwners.set(clip, new Set())
+      clipOwners.get(clip).add(skin)
+    }
+    const sharedClips = [...clipOwners.entries()].filter(([, skins]) => skins.size > 1)
+      .map(([clip, skins]) => `${clip}←${[...skins].join('+')}`)
+    check(wired !== null && sharedClips.length === 0,
+      'no clip is shared between skins any more — every shipped loop belongs to exactly one skin (v1.49.0)',
+      sharedClips.length ? sharedClips.join(' | ') : `${clipOwners.size} clips, each owned by one skin`)
 
     check(!/['"][^'"]*\.(webm|mp4|mov)['"]/.test(clientSrc),
       'the bundle references no external video file', 'no .webm/.mp4/.mov string in the bundle')

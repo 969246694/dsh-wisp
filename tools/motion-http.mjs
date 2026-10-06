@@ -44,10 +44,10 @@ const pick = (name) => (clips.includes(name) ? name : (clips[0] ?? null))
 
 /** 四个验收：两个真素材、一个不存在的名字、一条路径穿越。 */
 async function verifyHttp(base, { requireMarker }) {
-  const clipA = pick('idle.webp')
+  const clipA = pick('canon_idle.webp')
   const clipB = pick('swim_idle.webp')
   const cases = [
-    { label: `GET ${clipA ?? '(无素材)'}`, url: `${base}/wisp-motion/${clipA ?? 'idle.webp'}`, want: clipA === null ? null : 200, disk: clipA === null ? null : join(MOTION_DIR, clipA) },
+    { label: `GET ${clipA ?? '(无素材)'}`, url: `${base}/wisp-motion/${clipA ?? 'canon_idle.webp'}`, want: clipA === null ? null : 200, disk: clipA === null ? null : join(MOTION_DIR, clipA) },
     { label: `GET ${clipB ?? '(无素材)'}`, url: `${base}/wisp-motion/${clipB ?? 'swim_idle.webp'}`, want: clipB === null ? null : 200, disk: clipB === null ? null : join(MOTION_DIR, clipB) },
     { label: 'GET nope.webp', url: `${base}/wisp-motion/nope.webp`, want: 404, disk: null },
     /* 三个穿越写法，**都**得是 400/404：
@@ -86,7 +86,7 @@ async function verifyHttp(base, { requireMarker }) {
   }
   /* 诊断：它是"路由没被命中"和"读不到文件"的分水岭。 */
   try {
-    const res = await fetch(`${base}/wisp-motion/__diag?name=${pick('idle.webp') ?? 'idle.webp'}`, { redirect: 'manual' })
+    const res = await fetch(`${base}/wisp-motion/__diag?name=${pick('canon_idle.webp') ?? 'canon_idle.webp'}`, { redirect: 'manual' })
     const text = await res.text()
     let diag = null
     try { diag = JSON.parse(text) } catch (error) { diag = null }

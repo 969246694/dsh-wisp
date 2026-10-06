@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.48.3`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
+**当前版本 `1.49.0`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -84,7 +84,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **817 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **852 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -276,11 +276,12 @@ GET /wisp-motion/__diag[?name=<素材名>]     # 200 application/json
 
 编码命令（原素材 720×1280 / 24fps，一帧不抽；每条素材一条命令）：
 
-**泳装那八条（1.47.0 写下配方，1.47.1 按它生成；品红幕，全部同一条）**：
+**两批八条都用这一条配方（1.47.0 写下，1.47.1 生成泳装那八条，1.49.0 生成原版那八条；
+两批都是品红幕、都是同一条命令，只有 `<皮肤>` / `<立绘名>` 两处不同）**：
 
 ```
 # 0) 首帧 = 尾帧：品红画布 720x1280 + 立绘裁到包围盒(+12px) 后 scale=-1:1266，落底留 14px
-ffmpeg -f lavfi -i "color=c=0xFF00FF:s=720x1280" -i assets/swim/<状态>.webp \
+ffmpeg -f lavfi -i "color=c=0xFF00FF:s=720x1280" -i assets/<皮肤>/<立绘名>.webp \
   -filter_complex "[1:v]crop=W:H:X:Y,scale=-1:1266:flags=lanczos[fg];[0:v][fg]overlay=(W-w)/2:H-h-14,format=rgb24" \
   -frames:v 1 _first_<状态>.png     # 复制一份作 _last_<状态>.png
 
@@ -288,11 +289,11 @@ ffmpeg -f lavfi -i "color=c=0xFF00FF:s=720x1280" -i assets/swim/<状态>.webp \
 #    （首尾同一张 ⇒ 身份、画风、起手姿态被钉死，而且天然无缝循环）
 
 # 2) 抠像：幕布色**从生成片里采样**（crop=8:8:10:10 后读那一个像素），不是写死的
-ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#<采样色>:0.33:0.05,format=rgba,\
+ffmpeg -i <源>.mp4 -vf "colorkey=#<采样色>:0.33:0.05,format=rgba,\
        geq=r='r(X,Y)-max(0,min(r(X,Y),b(X,Y))-g(X,Y))':g='g(X,Y)':\
            b='b(X,Y)-max(0,min(r(X,Y),b(X,Y))-g(X,Y))':a='alpha(X,Y)',\
-       scale=720:-1:flags=lanczos" \
-       -c:v libwebp_anim -loop 0 -an -q:v 40 assets/motion/swim_<立绘名>.webp
+       fps=24,scale=720:-1:flags=lanczos" \
+       -c:v libwebp_anim -loop 0 -an -q:v 40 assets/motion/<皮肤>_<立绘名>.webp
 ```
 
 采样而不是写死是有理由的：生成片每次的"品红"都稍有不同（实测 `#FE01FF` / `#FF00FF` 都出现过），
@@ -300,6 +301,10 @@ ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#<采样色>:0.33:0.05,format=rgba,\
 1.47.1 那八条实测采到**五种**幕布色：`#FD01FC`（work / proud / eat）、`#FE00FC`（attn）、
 `#FF00FC`（idle）、`#FF00FD`（happy）、`#FF00FE`（sleepy / poked）——
 同一批请求、同一套提示词，幕布色仍然每条都不一样，这就是"必须采样"的现场证据。
+1.49.0 的原版那八条同样每条都不一样：`#FD01FC`（idle）、`#FF00FE`（attn）、`#FD00FE`（happy）……
+—— 采样这一步一次都不能省。
+（1.47.1 的泳装那八条把 `fps=24` 写在链首；`fps` 是丢帧、`colorkey` 是逐像素，
+两者与顺序无关，1.49.0 起统一成上面这个顺序。）
 
 三个指标（每条素材都要量，**不透明 ≥ 15% 是硬门槛** —— 低于它说明她被她自己抠掉了）：
 
@@ -307,19 +312,22 @@ ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#<采样色>:0.33:0.05,format=rgba,\
 * **半透明%**：`0 < alpha < 255`（平滑带，越高边缘越柔）；
 * **幕布残留%**：`alpha > 127` 且 RGB 与采样幕布色的三通道 L1 距离 / 765 ≤ 0.05 的像素比例。
 
-**两条通用素材的旧命令**（历史，配方没变）：
+**两条深海女仆素材的旧命令**（历史；配方没变，**文件名在 1.49.0 改过**：
+`assets/motion/sleepy.webp` → `deepsea_sleepy.webp`、`assets/motion/idle.webp` → `deepsea_idle.webp`
+—— 这两条本来就是拿 `assets/deepsea/{sleepy,idle}.webp` 合成的，改名是把"它属于谁"写进名字里，
+字节一个没动）：
 
 ```
-# sleepy：绿幕 #A1E47B + RGB 去绿边 G = min(G, max(R,B))
+# deepsea_sleepy（旧名 sleepy）：绿幕 #A1E47B + RGB 去绿边 G = min(G, max(R,B))
 ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#A1E47B:0.19:0.05,format=rgba,\
        geq=r='r(X,Y)':g='min(g(X,Y),max(r(X,Y),b(X,Y)))':b='b(X,Y)':a='alpha(X,Y)'" \
-       -c:v libwebp_anim -loop 0 -an -q:v 40 assets/motion/sleepy.webp
+       -c:v libwebp_anim -loop 0 -an -q:v 40 assets/motion/deepsea_sleepy.webp
 
-# idle：品红幕 #FE01FF + RGB 去品红边（把"R、B 同时高于 G"的那一份减掉）
+# deepsea_idle（旧名 idle）：品红幕 #FE01FF + RGB 去品红边（把"R、B 同时高于 G"的那一份减掉）
 ffmpeg -i <源>.mp4 -vf "fps=24,colorkey=#FE01FF:0.33:0.05,format=rgba,\
        geq=r='r(X,Y)-max(0,min(r(X,Y),b(X,Y))-g(X,Y))':g='g(X,Y)':\
            b='b(X,Y)-max(0,min(r(X,Y),b(X,Y))-g(X,Y))':a='alpha(X,Y)'" \
-       -c:v libwebp_anim -loop 0 -an -q:v 40 assets/motion/idle.webp
+       -c:v libwebp_anim -loop 0 -an -q:v 40 assets/motion/deepsea_idle.webp
 ```
 
 参数各管一件事，都别乱动：
@@ -751,6 +759,86 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 抛错是否被接住、没有插件管理器时是否明说、以及英文覆盖层齐全且无汉字。
 
 ## 变更
+
+### 1.49.0
+
+**帧动画不再有"通用兜底" —— 那两条旧素材归了位，原版（默认皮肤）补上八条。**
+
+1.47.0 把素材改成"按皮肤+状态"点，但留了一对**通用**素材（`idle` / `sleepy`）当兜底：
+任何皮肤在某个状态查不到自己那一段时，播的都是它们。这在画面上不报错，却是**当场换装**
+—— 穿着宵蓝礼服的人在做深海女仆的动作。那两条素材本来就是拿
+`assets/deepsea/{idle,sleepy}.webp` 合成的，所以这一版把它们按来源改名：
+
+| 旧名 | 新名 | 接线 |
+|---|---|---|
+| `assets/motion/idle.webp` | `assets/motion/deepsea_idle.webp` | `'deepsea:idle'` |
+| `assets/motion/sleepy.webp` | `assets/motion/deepsea_sleepy.webp` | `'deepsea:sleep'` |
+
+**改名走的是 `git mv` 语义，字节一个没动**（两条的 sha256 前后逐位相同：
+`37EEA1E4…DC55` / `4891AB90…8819`，git 里也是 `R` 而不是"删一个加一个"）。
+跟着一起改的地方：`MOTION_OF` 的两条键、`MOTION_FIT` 里那条尺寸校正的键
+（`sleepy` → `deepsea_sleepy`）、样式表里那条"显式不校正"规则
+（`[data-clip="idle"]` → `[data-clip="deepsea_idle"]`）、宿主半包 `__diag` 的默认探针名
+与示例 URL、`tools/motion-http.mjs` 的取样名，以及预检 / 探针里所有点到这两条素材的地方
+（`SHIPPED_SWIM` 旁边多了 `SHIPPED_CANON`，`motionCanvas('idle.webp')` 全部换成新名）。
+
+**兜底表删掉之后，"查不到的皮肤+状态"变成一个真实状态。** `motionKeyFor()` 只查一次
+（没有第二级 `??`），`syncMotion()` 查不到就**连 `<img>` 都不建** —— 不建元素、不解码、
+画面交给静态立绘。预检同时钉三件事：`MOTION_BASE` 这个名字在**发行版里一个字都不许剩**、
+`motionKeyFor` 不许再出现 `??`、以及宵蓝礼服（`night`）在**九个状态**下都不建动图元素、
+`doctor().motion.frame` 的 `asset` / `built` / `showing` 三个字段全空。
+真引擎探针里另有一条同题断言：素材没生成时，八个状态一个 `.wisp-video` 都不存在。
+
+**原版（canon）八条帧动画。** 默认皮肤是原版（1.48.2 起），它没有素材时"她不动"最显眼。
+八条全部照抄泳装那一轮的配方（首帧＝尾帧 + 品红幕**采样** + colorkey + 去品红边），
+每条 **720×1280 / 24 fps / 97 帧 / 4.04 秒循环**，由宿主半包按 URL 发给页面：
+
+| 状态 | 素材 | 体积 | 不透明% | 半透明% | 品红残留% |
+|---|---|---|---|---|---|
+| `idle` | `canon_idle.webp` | 3537.2 KB | **34.315** | 0.322 | **0.0000** |
+| `attn` | `canon_attn.webp` | 3599.7 KB | **35.047** | 0.310 | **0.0000** |
+| `happy` | `canon_happy.webp` | 3927.1 KB | **36.368** | 0.387 | **0.0000** |
+| `sleep` | `canon_sleepy.webp` | 3834.3 KB | **34.404** | 0.360 | **0.0000** |
+| `alert` | `canon_work.webp` | 3701.1 KB | **34.118** | 0.320 | **0.0000** |
+| `proud` | `canon_proud.webp` | 3650.1 KB | **32.631** | 0.284 | **0.0000** |
+| `eat` | `canon_eat.webp` | 4272.5 KB | **38.434** | 0.327 | **0.0000** |
+| `poked` | `canon_poked.webp` | 3855.1 KB | **34.420** | 0.356 | **0.0000** |
+
+三条门槛全过：不透明 ≥15%（实测 **32.6~38.4%**）、品红残留 ≤0.05%（实测 **0.0000%**）、
+平滑带 0.284~0.387%。八条合计 **30377.1 KB**；`assets/motion/` 现在
+**18 条 / 60177.1 KB（58.8 MB）**。采到的幕布色这一轮有**五种**：
+`#FD01FC`（idle）、`#FF00FE`（attn / sleepy / proud / eat）、`#FD00FE`（happy）、
+`#FE02FF`（work）、`#FD00FF`（poked）—— 再次印证"幕布色必须逐条采样"。
+
+**尺寸校正：八条都不用补。** 按包围盒（A>24）逐条量"她占盒子高多少"：素材
+**0.9750~0.9906**，各自对应的原版立绘 **0.9824~1.0000**，差 **0.7%~1.1%**，八条全在
+"小于 2% 就不补"那条线以内（最大的是 `canon_idle` 的 1.09%，在 210px 的盒子里 2px 量级）：
+
+| 状态 | 素材占盒高 | 立绘占盒高 | 差 |
+|---|---|---|---|
+| `idle` | 0.9891 | 1.0000 | 1.09% |
+| `attn` | 0.9812 | 0.9902 | 0.90% |
+| `happy` | 0.9906 | 1.0000 | 0.94% |
+| `sleep` | 0.9891 | 1.0000 | 1.09% |
+| `alert` | 0.9891 | 1.0000 | 1.09% |
+| `proud` | 0.9891 | 1.0000 | 1.09% |
+| `eat` | 0.9750 | 0.9824 | 0.74% |
+| `poked` | 0.9867 | 0.9961 | 0.94% |
+
+所以 `MOTION_FIT` 只经历了一次**改名**（`sleepy` → `deepsea_sleepy`），一条新条目都没加；
+样式表多了 `.wisp-video[data-clip^="canon_"]{transform:none}` —— 不补也要**显式地**不补，
+否则那条给 `deepsea_sleepy` 的 1.186 会落到这八条头上（凭空放大 18.6%）。
+这是第三批走同一条路：`deepsea_idle` 一条、`swim_*` 一条、`canon_*` 一条，各写各的。
+
+**体积上界跟着实测改了**：预检里的 `MOTION_DISK_BUDGET_KB` 从 34000 提到 **69000**
+（实测十八条 60177.1 KB；上界仍按上一版那条规矩留约 14% 重编码余量）。
+内联那份仍是文件名清单，实测 **606 B**（上界 2048 B 不变）。
+
+**这一轮一共提交了 8 次 `create_video_task`，八条全部一次过** ——
+每条调用都照例在客户端 60 秒处返回 `Request timed out`，产物在 **2.5 分钟左右**落地
+（两次超时之间隔着"先等 2~8 分钟找产物"这一步，没有任何一条被重复提交）。
+没有内容安全拒绝、没有空产出。上一轮泳装那八条是 13 次提交 7 条产出，
+这一轮八条八中，提交数与素材数第一次做到 1:1。
 
 ### 1.48.3
 
