@@ -17,7 +17,7 @@
 
    RUN
      node tools/character-prompts-v2.mjs --manifest .out        # 每套皮肤一个 manifest
-     node tools/character-prompts-v2.mjs --print classic idle   # 打印一张的完整正文
+     node tools/character-prompts-v2.mjs --print lab idle       # 打印一张的完整正文
      node tools/character-prompts-v2.mjs --stats                # 自检
    ========================================================================== */
 
@@ -31,7 +31,7 @@ const here = resolve(dirname(fileURLToPath(import.meta.url)), '..')
      canon / swim / deepsea —— 已有帧动画，静态图冻结
      chibi                  —— Q 版两头身，现有提示词已足够一致 */
 export const SKINS_V2 = [
-  'classic', 'night', 'pajama', 'sailor', 'yukata', 'qipao', 'santa',
+  'lab', 'night', 'pajama', 'sailor', 'yukata', 'qipao', 'santa',
   'office', 'sport', 'hanfu', 'miko', 'goth', 'winter', 'idol',
 ]
 
@@ -104,12 +104,18 @@ export const POSES = {
      ② 颜色写死，不写"性感 / 单薄 / 高级"这类不可核对的词；
      ③ 形状写成几何描述，并显式排除最容易跑偏的那几个东西。 */
 export const COSTUMES = {
-  classic: `【服装规格】
-① 深蓝色细吊带连衣短裙，**单层**，方领，领口不高不低、不露胸沟；
-② 身前罩一件**单层白色半身围裙**，围裙荷叶边是**深蓝色**，围裙带在**腰后**系成一个**深蓝色蝴蝶结**；
-③ 裙摆很短、**单层**、自然垂落；
-④ **不穿长袜**，直接露出整条腿；
-⑤ 脚穿**白色细带平底鞋**（平底，不是高跟鞋）。`,
+  /* v1.51.0：这一格原本是 `classic`（素绘女仆）。它退役了 —— 整套换成下面这套新设计，
+     皮肤 id 也从 classic 改成 lab，因为"素绘女仆"这个名字描述的是已经不存在的那身衣服。
+     退役记录在 audit/generation-audit.jsonl 的 retire 条目里，历史条目原样留在链上。 */
+  lab: `【服装规格】
+① **白色长款实验袍**（白大褂）：**长及膝盖**、前襟**敞开**、大翻领；两侧下摆各一个**方形贴袋**，
+   每个贴袋上绣一条**深蓝色小鲸鱼**；
+② 内搭**深蓝色高领无袖针织上衣**：贴身，高领一直包到锁骨上方；
+③ 下身**深蓝色 A 字短裙**，裙摆在膝上；
+④ 胸前挂一条**深蓝色挂绳**，末端一枚**白色方形工牌**，工牌正中印一个**深蓝色鲸鱼图案**；
+⑤ 腰间一条**深蓝色细腰带**；**腰带左侧**挂一副**护目镜**（银色金属框、蓝色镜片、深蓝色头带）；
+⑥ 腿上穿**白色过膝长袜**（到膝盖以上、大腿中部以下）；
+⑦ 脚穿**深蓝色低跟短靴**（到脚踝以上）。`,
 
   night: `【服装规格】
 ① 单层深蓝色**露肩礼服**：一字露肩剪裁，低领口露出锁骨与肩线；
@@ -281,7 +287,7 @@ if (args.includes('--print')) {
     }
   }
   console.log('皮肤 ' + SKINS_V2.length + ' 套 × 情绪 ' + MOODS.length + ' 张 = ' + SKINS_V2.length * MOODS.length + ' 张')
-  console.log('正文字数（classic/idle）：' + buildPrompt('classic', 'idle').length)
+  console.log('正文字数（lab/idle）：' + buildPrompt('lab', 'idle').length)
   console.log(bad === 0 ? '自检通过：八张正文除【姿态】外逐字相同，服装同时在规格段与末尾清单里。'
     : '自检失败：' + bad + ' 项')
   process.exit(bad === 0 ? 0 : 1)

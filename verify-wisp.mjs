@@ -5610,7 +5610,7 @@ if (clientSrc !== null) {
       soakApi.mood(i % 2 === 0 ? 'happy' : 'sleep')
       soakApi.say('soak ' + i)
       // 皮肤来回换：blob URL 必须复用，不能每轮新建
-      soakApi.setSkin(i % 2 === 0 ? 'classic' : 'deepsea')
+      soakApi.setSkin(i % 2 === 0 ? 'lab' : 'deepsea')
       // 躲起来再叫回来（每隔几轮，别每轮都动）
       if (i % 7 === 0) { soakApi.hide(); soak.advance(60, 30); soakApi.show() }
       // 拖一下

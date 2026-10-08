@@ -21,6 +21,7 @@
      node tools/audit-log.mjs --declare <manifest>     生成前：登记将要发出的参数
      node tools/audit-log.mjs --confirm <manifest>     生成后：并入代理登记表 + 记产物哈希
      node tools/audit-log.mjs --backfill --since <ISO> 回溯：只凭代理登记表补录（标注来源）
+     node tools/audit-log.mjs --retire <skin> [--reason <text>]  整套皮肤退役：旧路径不再比对存在性
 
    manifest（JSON 数组）：
      [{ "name": "ds2_idle", "prompt": "……", "skin": "deepsea", "mood": "idle",
@@ -105,7 +106,13 @@ export function verifyAudit(root = here) {
   const confirms = log.filter((e) => e.kind === 'confirm' && e.output && e.output.path)
   const latestOf = new Map()
   for (const e of confirms) latestOf.set(e.output.path, e)
-  const assets = [...latestOf.values()]
+  /* 退役（v1.51.0）：整套皮肤被换掉时，旧目录的素材会被删掉。历史条目**原样留在链上**
+     —— 那正是这个日志存在的意义 —— 但已明确退役的路径不再参与"文件还在不在"的比对。
+     没有这一条，每换一次皮肤预检就会永久变红，而"永久变红"会让真问题一起被忽略。 */
+  const retired = new Set()
+  for (const e of log) if (e.kind === 'retire' && Array.isArray(e.paths)) for (const p of e.paths) retired.add(p)
+  const assets = [...latestOf.values()].filter((e) => !retired.has(e.output.path))
+  const retiredCount = [...latestOf.keys()].filter((p) => retired.has(p)).length
   const superseded = confirms.filter((e) => latestOf.get(e.output.path) !== e)
   for (const e of assets) {
     const p = resolve(root, e.output.path)
@@ -116,7 +123,7 @@ export function verifyAudit(root = here) {
   const declaredNone = log.filter((e) => e.kind === 'declare' && e.declared
     && Array.isArray(e.declared.reference_images) && e.declared.reference_images.length === 0)
   return { entries: log.length, assets, problems, img2img, declaredNone: declaredNone.length,
-    superseded: superseded.length,
+    superseded: superseded.length, retired: retiredCount,
     backfilled: log.filter((e) => e.source === 'registry-backfill').length }
 }
 
@@ -147,6 +154,21 @@ if (flag('--verify')) {
   if (unknown.length > 0) console.log(`  ⚠ 未识别的工具名：${unknown.map((e) => e.registry.tool).join(', ')}`)
   console.log(bad === 0 && missing === 0 ? '  AUDIT OK' : `  AUDIT FAILED（${bad + missing} 个问题）`)
   process.exit(bad + missing === 0 ? 0 : 1)
+}
+
+/* ----------------------------------------------------------------- retire */
+/* 一条皮肤整套退役：登记它那八条素材路径，让它们不再参与"文件还在不在"的比对。
+   素材文件本身由人删（这个日志不碰工作区）。 */
+if (flag('--retire')) {
+  const skin = valueOf('--retire')
+  const RETIRE_MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat']
+  const paths = RETIRE_MOODS.map((m) => 'assets/' + skin + '/' + m + '.webp')
+  append({
+    kind: 'retire', source: 'manifest', at: new Date().toISOString(),
+    skin, paths, reason: valueOf('--reason') || null,
+  })
+  console.log(`retire：${skin} 的 ${paths.length} 条素材路径已登记退役（历史条目保留在链上，文件请自行删除）`)
+  process.exit(0)
 }
 
 /* --------------------------------------------------------- declare/confirm */

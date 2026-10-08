@@ -495,7 +495,7 @@ const memory = await page.evaluate(async () => {
     return Math.round(performance.memory.usedJSHeapSize / 1024 / 1024)
   }
   const before = await measure()
-  w.setSkin(w.skin === 'deepsea' ? 'classic' : 'deepsea')
+  w.setSkin(w.skin === 'deepsea' ? 'lab' : 'deepsea')
   await new Promise((r) => setTimeout(r, 900))
   const after = await measure()
   const img = document.querySelector('.wisp-img')

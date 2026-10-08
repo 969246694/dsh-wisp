@@ -68,12 +68,12 @@ const OPTIONAL_MOODS = ['report']
    这样 --from <任意目录> 的单套素材用法仍然成立。 */
 /* 这份只用于构建日志（菜单用的是客户端半包里那份）。原来它漏了 night / pajama，
    构建时显示的是裸 id —— 顺手补齐，免得下一次又以为"名字没生效"。 */
-const SKIN_LABELS = { deepsea: '深海女仆', canon: '原版女仆', classic: '素绘女仆', night: '宵蓝礼服', pajama: '宵眠睡衣', swim: '碧海泳装', sailor: '白蓝水手服', yukata: '夏夜浴衣', qipao: '深蓝旗袍', santa: '圣诞装', office: '藏蓝西装', sport: '运动装', hanfu: '深蓝汉服', chibi: 'Q版两头身', miko: '巫女装', goth: '哥特萝莉', winter: '冬日大衣', idol: '舞台偶像', default: '默认' }
+const SKIN_LABELS = { deepsea: '深海女仆', canon: '原版女仆', lab: '海洋研究员', night: '宵蓝礼服', pajama: '宵眠睡衣', swim: '碧海泳装', sailor: '白蓝水手服', yukata: '夏夜浴衣', qipao: '深蓝旗袍', santa: '圣诞装', office: '藏蓝西装', sport: '运动装', hanfu: '深蓝汉服', chibi: 'Q版两头身', miko: '巫女装', goth: '哥特萝莉', winter: '冬日大衣', idol: '舞台偶像', default: '默认' }
 const skinLabel = (id) => SKIN_LABELS[id] ?? id
 /* 顺序即优先级：列表里第一个就是默认皮肤。不这么写的话默认值会由目录名的字母序
    决定 —— 那是构建实现的偶然，不该变成产品行为。未列出的排在后面。
    v1.48.2：默认皮肤与列表首位改成 **canon（原版女仆）** —— 它是对齐社区规范的那一套。 */
-const SKIN_PRIORITY = ['canon', 'deepsea', 'classic', 'night', 'pajama', 'swim', 'sailor', 'yukata', 'qipao', 'santa', 'office', 'sport', 'hanfu', 'chibi', 'miko', 'goth', 'winter', 'idol']
+const SKIN_PRIORITY = ['canon', 'deepsea', 'lab', 'night', 'pajama', 'swim', 'sailor', 'yukata', 'qipao', 'santa', 'office', 'sport', 'hanfu', 'chibi', 'miko', 'goth', 'winter', 'idol']
 const skinRank = (id) => {
   const at = SKIN_PRIORITY.indexOf(id)
   return at < 0 ? SKIN_PRIORITY.length : at
