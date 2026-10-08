@@ -6434,6 +6434,128 @@ const MOTION_DISK_BUDGET_KB = 71000
           : Object.entries(MOTION_SOURCES).map(([k, [rel, h]]) => `${k}=${h.slice(0, 8)}…`).join(' · '))
     }
 
+    /* ---- 环缝：素材是**接得回去**的吗（v1.49.8）--------------------------------
+       19 条素材都是按"首帧 = 尾帧"生成的（first_last_frame，首尾喂同一张图），
+       意图是天然无缝循环。**但在这一版之前，这条意图一次都没有被量过** ——
+       预检钉的是 720x1280 / 97 帧 / 41ms，全是"素材长什么样"，没有一条问
+       "接到一起顺不顺"。而"她每 4 秒顿一下"在页面上不报错、不改 DOM、不留日志，
+       只会有人某天觉得"她今天有点怪"（实测：19 条里有 5 条仍然这样）。
+
+       指标（量法在 tools/motion-seam.mjs；跑它要 ffmpeg，所以**不在这里跑** ——
+       这里只查它算出来的数）：
+
+         ratio = seam / meanStep
+
+         seam     = 第 n-1 帧 → 第 0 帧（循环接回去的那一步）的 |ΔRGB| 全画布均值
+         meanStep = 相邻两帧同一个量的平均（"这条素材平时一帧动多少"）
+
+       ratio ≈ 1 表示接头和平时一帧的变化一样大；> 1.2 表示接回去那一下比平时都猛。
+
+       三件事一起钉，缺一不可：
+         ① **sha256 钉在素材字节上** —— 换一个字节就红，必须重新量
+            （和上面 MOTION_SOURCES 同一个道理：声明表的价值就在于它不会自己漂）；
+         ② **目标线** MOTION_SEAM_MAX，超了就是超了；
+         ③ **欠账表** MOTION_SEAM_KNOWN：还没重做的几条**必须**登记在案，而且
+            **只许变好** —— 登记值就是它被接受时的上界。修好一条就得把名字删掉
+            （下面有反向断言：欠账表里不许留"其实已经不欠"的名字）。
+
+       这一版清掉的两笔欠账是 canon_work（1.94 → 1.02）与 swim_work（1.41 → 0.46）：
+       两条都是**砍掉最后一帧** —— 末帧是离群帧（它的步长是自己平均的近 2 倍），
+       而砍帧走的是**容器**（每帧一个 ANMF，逐帧 blend=no，帧间没有像素依赖），
+       所以画质一个字节没动，见 tools/motion-trim.mjs。
+       剩下五条要重做素材才能修（canon_attn 遍历全部切点都回不到起点，
+       生成端才能解决），先登记、不许变坏。 */
+    const MOTION_SEAM_MAX = 1.2
+
+    /* 每个素材的**帧预算**：默认 97（720p / 24fps / 4.04s）。例外必须点名、写清帧数与理由 ——
+       "帧预算不许动"那条规矩防的是"抽帧省体积"，不是防这个；但正因为是例外，
+       它就得写在一个能被复查的地方，而不是把 97 悄悄改成别的数字。
+
+         canon_work / swim_work（96 帧）：末帧是离群帧，砍掉它环缝 1.94→1.02 / 1.41→0.46。
+         canon_attn（49 帧）：重做的那条素材里**整段就是一个 2.04 秒的闭环**（生成结果的第 39~87 帧）。
+                     那 97 帧的完整素材本身环缝 1.65x，而按真正闭合的那一段切出来是 **0.57x** ——
+                     少掉的 48 帧是冗余，不是内容（模型套了两圈，只有一圈是闭合的）。 */
+    const MOTION_FRAMES = {
+      canon_work: [96, 'last frame dropped: its step was ~2x the clip mean and it inflated the wrap 1.94 → 1.02'],
+      swim_work: [96, 'last frame dropped: the wrap fell 1.41 → 0.46'],
+      canon_attn: [49, 'the regenerated take contains one genuinely closed 2.04s cycle (its frames 39..87, wrap 0.57x); the full 97-frame take wraps at 1.65x'],
+    }
+
+    /* [素材字节的 sha256, 量出来的 ratio]。重新编码一条素材 = 这一行作废。 */
+    const MOTION_SEAM = {
+      canon_attn: ['D1F96A2E5AC8B02CBC6920107D18E307D731BAC495444BF9ADB367BCCD05E902', 0.57],
+      canon_eat: ['36ECC6BBE18816225D66DC3090306378713293A181A09FD8FFACC0E5F3E464C1', 1.32],
+      canon_happy: ['DD50A332E3A155C7CA7EA69A0C7C619F300D6ABDD3C1680B70CBCDAEDFF3F557', 0.55],
+      canon_idle: ['D769CEBDC9E7630C9C19403B3AE17C239D61B252C41E5FF3DA9AB8B3A079E070', 0.60],
+      canon_poked: ['433D3CE7E60ACAD2B1E70281629E1CB42CE697F275280896628108B296398327', 1.06],
+      canon_proud: ['F26BD78422983805D5376C8ECB782B37F0803F1F800C81DA9B9DEFFD1D32FEEA', 0.94],
+      canon_sleepy: ['A5A19C607C4BE054C68486FF0F0A6EA41ED0E0CBA83F8516C77E1B76E549FC13', 1.41],
+      canon_work: ['8FC81BE1A44DCEA8A8733A31E1DF7D3A74C94DAFE2E9C9696BE801BB1997C169', 1.02],
+      deepsea_happy: ['B8D4933255F896DEE3923473D174B1D99F617D6DC6E28026AD3EB00838288E48', 0.38],
+      deepsea_idle: ['BD32EC57DEE7299D0A8DDD3AA60A6E1815ACE9ED99BC3B4FDF6AC565223249AE', 0.65],
+      deepsea_sleepy: ['868457FD3A61EDA137787B76AD89F6DFB3703065ABF5B7188E2AA5B20F92F811', 0.80],
+      swim_attn: ['6BDFCD86F8AB7849F7B6A9B5B83685A41DAE33767BC2F72F9D7DE7A82F544454', 1.39],
+      swim_eat: ['E78AF66FD26DFBAF9557BC5B4F810B6CA6E7D0B2F602BDC100618767A3E28F65', 0.61],
+      swim_happy: ['0B5E2E809C89F222A9D0265F6AB48A0EA9929E1E301287EA444B0493DC145E30', 0.55],
+      swim_idle: ['5EEDBB557BA63A19CFCFDF18630E7084894FAEC10A6FB86B75B5BB4BA3CEE2C3', 0.96],
+      swim_poked: ['B332CDEA1DF0AC8CEBA1DFBA6F6C93A3DD1306F99DD931B0E678AC566D8A4E0C', 1.34],
+      swim_proud: ['17196266586A638FDC462D2D3E465B58B533587D5AE95B762AB5857CC12865E9', 0.59],
+      swim_sleepy: ['4150BC6E219A4741F33422286A28125BBE2DD5FF391C7A5C56D78D3662FA9B37', 0.67],
+      swim_work: ['09990AB4FB0AEA42BBEE8FF5EAD28769E82F7BE5C422113FE0B0FCCF781B3B90', 0.46],
+    }
+
+    /* 还没重做、且**已知**超线的几条。值是它被接受时的上界 —— 只许变小。 */
+    const MOTION_SEAM_KNOWN = {
+      canon_eat: 1.32,
+      canon_sleepy: 1.41,
+      swim_attn: 1.39,
+      swim_poked: 1.34,
+    }
+    {
+      const undeclared = keys.filter((k) => MOTION_SEAM[k] === undefined)
+      const invented = Object.keys(MOTION_SEAM).filter((k) => !keys.includes(k))
+      check(undeclared.length === 0 && invented.length === 0,
+        'every shipped clip DECLARES its loop-seam ratio — a new clip cannot skip the measurement (环缝闸 2026-10-09)',
+        undeclared.length || invented.length
+          ? 'undeclared: ' + (undeclared.join(', ') || '—') + ' · not shipped: ' + (invented.join(', ') || '—')
+          : keys.length + ' clips measured · worst ' + Math.max(...Object.values(MOTION_SEAM).map(([, r]) => r)).toFixed(2) + 'x')
+
+      const stale = []
+      const above = []
+      for (const [clip, [want, ratio]] of Object.entries(MOTION_SEAM)) {
+        const p = clipPath(clip)
+        if (p === null || !existsSync(p)) { stale.push(clip + ': missing'); continue }
+        const got = createHash('sha256').update(readFileSync(p)).digest('hex').toUpperCase()
+        if (got !== want) stale.push(clip + ': ' + got.slice(0, 12) + '… ≠ ' + want.slice(0, 12) + '…')
+        if (ratio > MOTION_SEAM_MAX) above.push([clip, ratio])
+      }
+      check(stale.length === 0,
+        'and each ratio is pinned to the BYTES it was measured from — re-encode a clip and the number is void until someone runs tools/motion-seam.mjs again (环缝闸 2026-10-09)',
+        stale.length
+          ? stale.join(' | ') + ' —— 量一遍：node tools/motion-seam.mjs --table'
+          : Object.entries(MOTION_SEAM).map(([k, [h]]) => k + '=' + h.slice(0, 8) + '…').join(' · '))
+
+      const unlisted = above.filter(([k]) => MOTION_SEAM_KNOWN[k] === undefined)
+      check(unlisted.length === 0,
+        'and every clip still above the ' + MOTION_SEAM_MAX + ' line is on the KNOWN list — a new offender cannot slip in unannounced',
+        unlisted.length
+          ? unlisted.map(([k, r]) => k + ' ' + r.toFixed(2)).join(', ') + ' —— 要么重做这条素材，要么把它登记进 MOTION_SEAM_KNOWN'
+          : above.length + ' clip(s) above the line, all declared')
+
+      const regressed = above.filter(([k, r]) => MOTION_SEAM_KNOWN[k] !== undefined && r > MOTION_SEAM_KNOWN[k] + 1e-9)
+      check(regressed.length === 0,
+        'and a clip on the KNOWN list may only get BETTER — the recorded value is the ceiling it was accepted at',
+        regressed.length
+          ? regressed.map(([k, r]) => k + ': ' + r.toFixed(2) + ' > 接受时的 ' + MOTION_SEAM_KNOWN[k].toFixed(2)).join(' | ')
+          : Object.entries(MOTION_SEAM_KNOWN).map(([k, v]) => k + '≤' + v.toFixed(2)).join(' · '))
+
+      const pardoned = Object.keys(MOTION_SEAM_KNOWN)
+        .filter((k) => MOTION_SEAM[k] !== undefined && MOTION_SEAM[k][1] <= MOTION_SEAM_MAX)
+      check(pardoned.length === 0,
+        'and the KNOWN list holds no stale pardons — fix a clip and its name must leave the list',
+        pardoned.length ? pardoned.join(', ') + ' 已经在线内了，请从 MOTION_SEAM_KNOWN 删掉' : 'no stale pardon')
+    }
+
     /* ---- 边缘平滑度不是"看起来"的事，是**编码参数**的事（v1.46.4）----
        colorkey 的 blend 是边缘过渡带的半宽：0.02 那条带只有 0.04 的色距宽度，
        边缘几乎是**一刀切** —— 1 bit 的 alpha 在 560px 的显示尺寸上就是一排台阶
@@ -6634,6 +6756,17 @@ const MOTION_DISK_BUDGET_KB = 71000
        素材了；而"她变糊了"和"她掉帧了"在页面上都不会报错，只会有人某天觉得"她今天不太对"。
        容器结构：VP8X 的画布宽高各 3 字节（存的是值-1），ANMF 的帧时长在块内偏移 12 处，
        同样 3 字节、单位毫秒。 */
+    /* 帧数是**声明过的例外**，不是默认值：名字必须在清单里，也必须真的就是声明的那个数
+       （下面那个循环按 wantFrames 查）。把 97 改成别的数字了事是过不去的。 */
+    {
+      const notShipped = Object.keys(MOTION_FRAMES).filter((k) => !keys.includes(k))
+      const badShape = Object.entries(MOTION_FRAMES).filter(([, v]) => !Array.isArray(v) || !Number.isInteger(v[0]) || v[0] < 2 || typeof v[1] !== "string" || v[1].length < 20)
+      check(notShipped.length === 0 && badShape.length === 0,
+        "every declared frame budget ships, and carries both a real frame count and a real reason — a silent frame-budget change is what this table exists to stop (环缝闸 2026-10-09)",
+        notShipped.length || badShape.length
+          ? `not shipped: ${notShipped.join(', ') || '—'} · bad shape: ${badShape.map(([k]) => k).join(', ') || '—'}`
+          : Object.entries(MOTION_FRAMES).map(([k, v]) => `${k} → ${v[0]} frames`).join(' · '))
+    }
     const animated = []
     const geometry = []
     for (const key of keys) {
@@ -6658,7 +6791,8 @@ const MOTION_DISK_BUDGET_KB = 71000
         off += 8 + size + (size % 2)
       }
       if (!riff || frames < 2) animated.push(`${key}: riff=${riff} frames=${frames}`)
-      if (`${canvasW}x${canvasH}` !== '720x1280' || frames !== 97 || Math.round(1000 / firstDur) !== 24) {
+      const wantFrames = (MOTION_FRAMES[key] ?? [97])[0]
+      if (`${canvasW}x${canvasH}` !== '720x1280' || frames !== wantFrames || Math.round(1000 / firstDur) !== 24) {
         geometry.push(`${key}: ${canvasW}x${canvasH} / ${frames} frames / ${firstDur}ms`)
       }
     }
@@ -6666,8 +6800,8 @@ const MOTION_DISK_BUDGET_KB = 71000
       'and it is an ANIMATED WebP (RIFF/WEBP with a chain of ANMF frames), not a still',
       animated.length ? animated.join(' | ') : keys.map((k) => `${k}: ${readFileSync(clipPath(k)).toString('latin1').split('ANMF').length - 1} frames`).join(', '))
     check(geometry.length === 0,
-      'and its geometry did not drift — 720x1280, 97 frames, 41ms each (24 fps): quality and keying may change, the frame budget may not (v1.46.4)',
-      geometry.length ? geometry.join(' | ') : keys.map((k) => `${k}: 720x1280 / 97 frames / 41 ms = 24 fps`).join(', '))
+      'and its geometry did not drift — 720x1280, 97 frames (96 where declared), 41ms each (24 fps): quality and keying may change, the frame budget may not (v1.46.4)',
+      geometry.length ? geometry.join(' | ') : keys.map((k) => k + ': 720x1280 / ' + (MOTION_FRAMES[k] ?? [97])[0] + ' frames / 41 ms = 24 fps').join(', '))
 
     /* 谁在播哪一段（v1.47.0 起是**按皮肤**点的；v1.49.0 起**只有这一层**）。
        正向：每个 `<皮肤>:<状态>` 指向的素材必须真的在清单里（打错一个字 = 那个状态
