@@ -2529,16 +2529,33 @@ if (clientSrc !== null) {
       'but she does say which package to install', String(update.hint))
     check(/沙箱|sandbox/.test(String(update.why)), 'and why — in plain words', String(update.why))
 
-    /* 菜单里那一项：说出当前版本，并把包名复制好 */
-    const beforeWrites = uv.clipboardWrites.length
-    const updateResult = uvApi.showUpdate()
-    check(updateResult.version === pkgVersion && updateResult.copied === true,
-      'the update action reports the version and copies the package name', JSON.stringify(updateResult))
-    const lastBubble = uv.all('wisp-say').at(-1)?.textContent
-    check(String(lastBubble).includes(pkgVersion), 'and she says the version out loud', String(lastBubble))
-    check(uv.clipboardWrites.length === beforeWrites + 1 && uv.clipboardWrites[uv.clipboardWrites.length - 1] === 'dsh-wisp',
-      'the clipboard actually received the package name',
-      JSON.stringify(uv.clipboardWrites.slice(-1)))
+    /* 「关于她」里的那一项（v1.49.8）：**只冒短句** —— 第一句是"去看一眼"，查回来用结果覆盖掉。
+       以前第一句是 `'我是 X。' + 整段 WHATS_NEW`，而那段文字与「关于她」弹窗里的「这一版：…」
+       是同一段、这个按钮又本来就在那个弹窗里：用户的原话是"她似乎会把'关于她'的内容说一遍，
+       然后再说结果"。这条断言就是钉住那个观感的。 */
+    {
+      const startsWithPool = (pool, text) => (Array.isArray(pool) ? pool : [])
+        .some((line) => String(text).indexOf(String(line).split('{')[0]) === 0)
+      const beforeWrites = uv.clipboardWrites.length
+      const updateResult = uvApi.showUpdate()
+      check(updateResult.version === pkgVersion && updateResult.copied === true,
+        'the update action reports the version and copies the package name', JSON.stringify(updateResult))
+      const firstBubble = String(uv.all('wisp-say').at(-1)?.textContent ?? '')
+      check(startsWithPool(linesInBundle()?.updateChecking, firstBubble),
+        'the first bubble is the short "checking" line', firstBubble)
+      check(typeof updateResult.note === 'string' && updateResult.note.length > 0
+        && firstBubble.indexOf(String(updateResult.note).slice(0, 24)) < 0,
+      'and the what-is-new note is NOT recited into it — that text belongs to the dialog',
+      'note starts: ' + String(updateResult.note).slice(0, 30))
+      /* 查回来那一句要覆盖掉第一句，并且带上版本号（"我是 X。…"）。 */
+      await new Promise((resolve) => setImmediate(resolve))
+      const lastBubble = String(uv.all('wisp-say').at(-1)?.textContent ?? '')
+      check(lastBubble.includes(pkgVersion) && lastBubble.indexOf(firstBubble) < 0,
+        'and the result replaces it — with the version in it', lastBubble)
+      check(uv.clipboardWrites.length === beforeWrites + 1 && uv.clipboardWrites[uv.clipboardWrites.length - 1] === 'dsh-wisp',
+        'the clipboard actually received the package name',
+        JSON.stringify(uv.clipboardWrites.slice(-1)))
+    }
     uv.win.__wisp.destroy()
     active = keepUv
 
