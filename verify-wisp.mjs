@@ -3530,6 +3530,58 @@ if (clientSrc !== null) {
       .filter((name) => !moCss.includes('@keyframes ' + name + '{'))
     check(missingKeyframes.length === 0, 'every accent has its own keyframes',
       missingKeyframes.length ? 'missing ' + missingKeyframes.join(', ') : '4/4')
+
+    /* v1.49.9：动效必须**丝滑极简**（用户原话："压一下的程序动画做复杂了，看着晕，
+       我希望丝滑极简"）。这条断言直接读 CSS —— 改回"果冻"或加长就红：
+         · 不许两参 `scale(x,y)`（各向异性挤压/拉伸）；
+         · 不许过冲（放大系数里的常数项 > 0.02）；
+         · 每个一次性动作的时长必须 ≤ 0.25 秒。 */
+    {
+      const frameBody = (name) => {
+        const start = moCss.indexOf('@keyframes ' + name + '{')
+        if (start < 0) return null
+        let depth = 0
+        for (let i = moCss.indexOf('{', start); i < moCss.length; i++) {
+          if (moCss[i] === '{') depth++
+          else if (moCss[i] === '}') { depth--; if (depth === 0) return moCss.slice(start, i + 1) }
+        }
+        return null
+      }
+      /* 只看 scale() 的**顶层**参数个数 —— var(--wisp-amp,1) 里那个逗号不算。 */
+      const twoArgScale = (body) => {
+        let i = body.indexOf('scale(')
+        while (i >= 0) {
+          let depth = 0
+          for (let k = i + 6; k < body.length; k++) {
+            const c = body[k]
+            if (c === '(') depth++
+            else if (c === ')') { if (depth === 0) break; depth-- }
+            else if (c === ',' && depth === 0) return true
+          }
+          i = body.indexOf('scale(', i + 6)
+        }
+        return false
+      }
+      const squash = []
+      const overshoot = []
+      for (const name of ['wisp-press', 'wisp-land', 'wisp-pop-a', 'wisp-pop-b']) {
+        const body = frameBody(name) ?? ''
+        if (twoArgScale(body)) squash.push(name)
+        for (const m of body.matchAll(/1\s*\+\s*\.(\d+)/g)) if (Number('0.' + m[1]) > 0.02) overshoot.push(name + ' +.' + m[1])
+      }
+      check(squash.length === 0, 'no accent squashes her: uniform scale only, never scale(x, y)',
+        squash.join(', ') || 'press / land / pop-a / pop-b')
+      check(overshoot.length === 0, 'and none of them overshoots — 极简 means no springy bounce',
+        overshoot.join(', ') || 'no term above 1.02')
+      const slow = []
+      for (const name of ['press', 'land', 'pop-a', 'pop-b']) {
+        const rule = new RegExp('\\[data-accent="' + name + '"\\] \\.wisp-motion\\{animation:[^}]*?([0-9.]+)s').exec(moCss)
+        if (rule === null) slow.push(name + ': no rule')
+        else if (Number(rule[1]) > 0.25) slow.push(name + ': ' + rule[1] + 's')
+      }
+      check(slow.length === 0, 'and every accent is short — a press is a press, not a performance',
+        slow.join(', ') || 'all ≤ 0.25s')
+    }
     const rmAt = moCss.indexOf('@media (prefers-reduced-motion:reduce)')
     const rmBlock = rmAt < 0 ? '' : moCss.slice(rmAt)
     check(rmAt >= 0 && rmBlock.includes('.wisp-motion{animation:none!important}')
@@ -3577,7 +3629,10 @@ if (clientSrc !== null) {
     check(moTilt() === '0deg', 'and the posture goes back to upright on release', moTilt())
     mo.advance(700, 50)
 
-    /* ---- 指针靠近：她朝指针侧身；出圈归零 ---- */
+    /* ---- 指针靠近：她朝指针侧身；出圈归零 ----
+       注意：v1.50.0 起「左右晃动」是四选一，**默认那档（微摆）不读指针** ——
+       这一段测的是「跟着鼠标」那一档，所以先拨过去。 */
+    moApi.configure({ sway: 'pointer' })
     const moC3 = moCentre()
     mo.win.dispatch('pointermove', { clientX: moC3.x + 60, clientY: moC3.y })
     const moNearRight = moTiltNum()
@@ -3620,33 +3675,48 @@ if (clientSrc !== null) {
       'doctor() spells out what the level changes: gesture, lean, and how far/often she strolls',
       JSON.stringify(moFx))
 
-    /* ---- 左右晃动（v1.49.0）：一条钟摆动画 + 一个开关 ---- */
-    /* 左右晃动（v1.49.0）= 跟着鼠标侧倾的那条路，给它一个开关。 */
-    check(moRoot.dataset.sway === 'on',
-      'the pointer-follow sway is on by default — that is how she has always behaved',
-      String(moRoot.dataset.sway))
-    check(moApi.doctor().motion.sway.on === true
-      && Math.abs(moApi.doctor().motion.sway.maxDeg - moApi.doctor().motion.amp * 3.5) < 0.01,
-      'doctor() reports the switch and the most she will lean at this level',
-      JSON.stringify(moApi.doctor().motion.sway))
+    /* ---- 左右晃动（v1.50.0：从一个开关变成四选一）---------------------------
+       以前它是布尔：开 = 跟着鼠标侧倾（±3.5°、绕脚底、0.5 秒带过冲）。用户的原话是
+       "左右晃动的动画感觉不是很舒服，我需要更好的可选方案"。现在四档互斥：
+       off / calm（自主微摆，默认，不读指针）/ drift（横向漂移，不读指针）/ pointer（跟鼠标，收柔）。 */
+    moApi.configure({ sway: 'calm' })
     const moSwayAt = moCentre()
-    moApi.configure({ sway: false })
+    check(moRoot.dataset.sway === 'calm' && moApi.doctor().motion.sway.mode === 'calm',
+      'the default sway is the quiet self-driven one, not the pointer follow',
+      `${moRoot.dataset.sway} / ${JSON.stringify(moApi.doctor().motion.sway)}`)
+    check(moApi.doctor().motion.sway.periodMs === 16000 && moApi.doctor().motion.sway.maxDeg === 0,
+      'and doctor() says what that mode does: its period, and that it never leans',
+      JSON.stringify(moApi.doctor().motion.sway))
     mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
-    check(moRoot.dataset.sway === 'off' && moTilt() === '0deg',
-      'with the switch off the pointer no longer moves her posture at all',
-      `${moRoot.dataset.sway} / ${moTilt()}`)
-    moApi.configure({ sway: true })
+    check(moTilt() === '0deg', 'the self-driven modes never react to the pointer', moTilt())
+    moApi.configure({ sway: 'drift' })
     mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
-    check(moTiltNum() !== 0, 'and switching it back on restores the follow at once', moTilt())
-    /* 关掉的那一刻她可能正歪着 —— 开关必须当场把姿势归零，不能留个半截状态。 */
-    const moSwayMid = moCentre()
-    mo.win.dispatch('pointermove', { clientX: moSwayMid.x + 60, clientY: moSwayMid.y })
+    check(moRoot.dataset.sway === 'drift' && moTilt() === '0deg'
+      && moApi.doctor().motion.sway.periodMs === 12000,
+    'the drift mode is position-only too, on its own slower period',
+    `${moRoot.dataset.sway} / ${moTilt()} / ${moApi.doctor().motion.sway.periodMs}`)
+    moApi.configure({ sway: 'pointer' })
+    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
+    check(moTiltNum() !== 0, 'the pointer-follow mode still leans toward the cursor', moTilt())
+    check(Math.abs(moApi.doctor().motion.sway.maxDeg - moApi.doctor().motion.amp * 1.5) < 0.01,
+      'and it is softer than the behaviour it replaces: 1.5° instead of 3.5°',
+      String(moApi.doctor().motion.sway.maxDeg))
+    /* 切走的那一刻她可能正歪着 —— 任何一档切走都必须当场把姿势归零，不能留半截状态。 */
     const moLeaning = moTilt()
-    moApi.configure({ sway: false })
-    check(moLeaning !== '0deg' && moTilt() === '0deg',
-      'turning the switch off mid-lean resets the posture instead of freezing her crooked',
-      `${moLeaning} -> ${moTilt()}`)
+    moApi.configure({ sway: 'off' })
+    check(moLeaning !== '0deg' && moTilt() === '0deg' && moRoot.dataset.sway === 'off'
+      && moApi.doctor().motion.sway.enabled === false,
+    'switching away from the pointer mode resets the posture instead of freezing her crooked',
+    `${moLeaning} -> ${moTilt()}`)
+    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
+    check(moTilt() === '0deg', 'and "off" really means off — the pointer does nothing', moTilt())
+    /* 老配置（v1.50.0 之前 sway 是布尔）必须还能读：true = 当年那套跟鼠标，false = 关。 */
     moApi.configure({ sway: true })
+    check(moRoot.dataset.sway === 'pointer', 'an old boolean true migrates to the pointer mode',
+      String(moRoot.dataset.sway))
+    moApi.configure({ sway: false })
+    check(moRoot.dataset.sway === 'off', 'and an old false migrates to off', String(moRoot.dataset.sway))
+    moApi.configure({ sway: 'calm' })
 
     const moHome = moApi.position
     moApi.configure({ wander: true, motion: 'subtle' })
@@ -6780,6 +6850,9 @@ if (existsSync(join(here, 'README.md'))) {
   /* 鼠标路过会侧身；手指路过不会（而且会把姿势归零）。
      y 必须取她的**中线**：侧身有"从正上方路过不倾"这一层（level 因子），
      在脚下 700px 处派发事件本来就该是 0 度 —— 那样测的是另一条规则。 */
+  /* v1.50.0：侧身是四档里的「跟着鼠标」那一档，默认那档是自主微摆、不读指针 ——
+     这一段测的就是指针这条路，所以先拨过去。 */
+  api.configure({ sway: 'pointer' })
   const nearX = api.position.x + 280
   const nearY = api.position.y + 420
   h.win.dispatch('pointermove', { clientX: nearX + 24, clientY: nearY, pointerType: 'mouse' })
