@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.49.5`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
+**当前版本 `1.49.6`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -84,7 +84,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **863 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **874 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -721,7 +721,7 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 | **报版本** | 菜单「版本与更新」说一句「我是 1.24.0。<这一版做了什么>」；`__wisp.version` / `__wisp.doctor().update` 也能读 |
 | **更新感知** | 她记住上次见到的版本（localStorage）。**版本变了就说一句「我更新到 … 了」**；第一次安装不吭声（那时她不是更新，是刚来） |
 | **复制包名** | 同一项会把 `dsh-wisp` 复制到剪贴板，方便在 DSH 的插件列表里粘贴安装。**没有剪贴板权限时静默降级**成只说话，不报错 |
-| **直接安装** | 查到新版后「关于她」里出现「安装 vX」→ `remote.pluginManager.installBundle('dsh-wisp@X')`。装的就是**刚才查到的那一版**（数字与装下去的东西一致）；失败按原因说人话（`no-matching-version` = npm 还没这一版） |
+| **直接安装** | 查到新版后「关于她」里出现「安装 vX」→ `remote.pluginManager.installBundle('dsh-wisp@X', { requestId })`。装的就是**刚才查到的那一版**（数字与装下去的东西一致）；失败按**平台给的分类**说人话（见下），回信没回来时如实说「不知道」并拿 `waitForInstall(requestId)` 把结果捞回来 |
 | **能力边界如实上报** | `doctor().update` 里有 `canSelfUpdate: true`、`install`（走哪条通道 + 最后一次装的结果）与 `why`（她自己仍然不碰网络与文件） |
 
 ### 真正更新它的路径
@@ -749,17 +749,78 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 **她仍然不自己碰网络与文件**：检查走客户端 `fetch`，安装走平台的插件管理器 ——
 两件事都不是她做的。她自己既没有 Node（宿主半包在 vm 沙箱里）也没有包管理器；
 `doctor().update.install.via` 会告诉你这次走的是哪条通道（`remote.pluginManager` 或 `null`），
-`install.state` 是最后一次的结果（`installed` / `failed` / `unsupported` / `pending`）。
+`install.state` 是最后一次的结果（`installed` / `failed` / `cancelled` / `pending` / `unknown` / `unsupported`），
+`kind` / `why` / `logPath` / `requestId` 是下一次能追下去的四个字段。
+
+### 装不成时她说什么（v1.49.5）
+
+**失败的判据不在 `error.code` 上**：pnpm 挂了的话平台把它一律写成 `operation-error`，
+真正的分类在 `packageResult.kind`（`dsh-plugin-manager` 的 `classifyInstallFailure`，九个值）。
+v1.48.0 盯着 `error.code === 'no-matching-version'` 找 —— 那个值永远不会出现，
+于是所有失败都落到兜底的那句「没装成。」上，用户没有第二句可以追。
+
+| 平台回来的 | 她说 |
+|---|---|
+| `application: 'applied'` | 装好了 —— 刷新页面就是新版 |
+| `application: 'restart-required'` | 装好了 —— 重启 DSH 后生效 |
+| `application: 'failed'` + `packageResult.kind` | 九种各说各的：npm 没这一版 / 包不存在 / 网络没连上 / 写不进去 / 磁盘满 / 构建脚本被 pnpm 拦下 / 校验没过 / pnpm 没动静 / 找不到 pnpm |
+| `application: 'failed'` + `error.code` | 平台自己那几种拒绝：不兼容 / 不允许在这个壳里改插件 / 不是插件包 / 装的是哪一个说不清 |
+| `application: 'failed'`，分类不出来 | 兜底句**带上诊断的最后一句**（以前整段诊断被丢掉） |
+| `ok: false`（**回信没回来**） | 「装没装完我不知道，我去问问」→ `waitForInstall(requestId)`：捞到了就说捞到的那句，捞不到就说「平台那边也没有记录」。**这不是失败** —— 平台自己的设置页管它叫 `replyLost` |
+| 调用抛了 | 同上：没有回执 ≠ 装失败 |
+
+`installUpdate` 会带一个 `requestId` 过去（捞结果要用同一个 id），这条路上面每一句都有断言盯着（见下面「预检里的守卫」）。
 
 ### 预检里的守卫
 
 `WHATS_NEW` 必须写着**当前版本**，否则预检红 —— 这样"这一版做了什么"不会静默过期。
 另外 `hint` 里必须含包名或仓库地址、`why` 里必须说明沙箱原因、`canSelfUpdate` 必须如实，
-都有断言盯着；安装那条路另有六条断言：装的版本号是否就是提示的那一版、`applied` 与
-`restart-required` 是否说了两句不同的话、`no-matching-version` 是否有自己的句子、
-抛错是否被接住、没有插件管理器时是否明说、以及英文覆盖层齐全且无汉字。
+都有断言盯着；安装那条路另有二十条断言（v1.49.5 起替身按平台**真实**的 `ChangeResult` 喂数据）：
+装的版本号是否就是提示的那一版、`applied` 与 `restart-required` 是否说了两句不同的话、
+`no-matching-version` 是否从 `packageResult.kind` 读出来（而不是从那个永远是 `operation-error`
+的 `error.code`）、网络与权限是否各有各的句子、平台自己的代码拒绝是否有句子、分类不出来时
+诊断是否被带出来、**回信没回来时是否先说「不知道」**（且绝不说「没装成」）、`requestId` 是否
+与捞结果用的是同一个、捞不到时是否停在「不知道」、抛错是否同样算「没回执」、按钮点下去是否
+真的带上了 `requestId`、没有插件管理器时是否明说、以及英文覆盖层齐全且无汉字。
 
 ## 变更
+
+### 1.49.6
+
+**安装失败的原因终于说得出来了 —— 以前所有失败共用一句「没装成」。**
+
+这不是文案问题，是**判据拿错了**。平台 `installBundle` 回来的 `ChangeResult` 里：
+
+- pnpm 失败时 `error.code` **一律**是 `operation-error`（`managementError` 只给得出这一个），
+  真正的分类在 `packageResult.kind` —— `dsh-plugin-manager` 的 `classifyInstallFailure`
+  把 pnpm 的失败分成九种（`no-matching-version` / `not-found` / `network` / `permission` /
+  `disk-full` / `build-blocked` / `integrity` / `timeout` / `pnpm-missing`）；
+- 而 v1.48.0 的实现盯着 `error.code === 'no-matching-version'` 找。**那个值永远不会出现** ——
+  于是「npm 上还没有这一版（GitHub 先更新了）」这句台词一次都没说过，用户看到的永远是
+  兜底的那句「没装成。」。
+
+这个错之所以能活下来，是因为**预检里的替身当初也是照错的形状喂的数据**：
+`{ ok: false, error: { code: 'no-matching-version' } }` —— 平台从不这么回。替身说谎，
+断言就只证明了替身自己。现在替身按平台真实的 `ChangeResult` 喂（`application: 'failed'`
++ `error.code: 'operation-error'` + `packageResult.kind`）。
+
+另一条更坏的路是**回信根本没回来**（`ok: false`）：它被当成了「没装成」。可我们并不知道
+装没装完 —— 平台自己的插件设置页把这一条叫 `replyLost`，做法是拿 `waitForInstall(requestId)`
+把那次安装的结果捞回来。现在 `installUpdate` 会带一个 `requestId` 过去，回信没回来时先说
+「装没装完我不知道，我去问问」，再用同一个 id 去捞：
+
+| 平台回来的 | 她说 |
+|---|---|
+| `application: 'applied'` | 装好了 —— 刷新页面就是新版 |
+| `application: 'restart-required'` | 装好了 —— 重启 DSH 后生效 |
+| `failed` + `packageResult.kind` | 九种分类各说各的（npm 没这一版 / 包不存在 / 网络没连上 / 写不进去 / 磁盘满 / 构建脚本被拦 / 校验没过 / pnpm 没动静 / 找不到 pnpm） |
+| `failed` + `error.code` | 平台自己那几种拒绝：不兼容 / 不允许在这个壳里改插件 / 不是插件包 |
+| `failed`，分类不出来 | 兜底句**带上诊断的最后一句**（以前整段诊断被丢掉） |
+| `ok: false` | 「装没装完我不知道，我去问问」→ 捞到就说捞到的那句，捞不到就说「平台那边也没有记录」 |
+| 调用抛了 | 同上 —— 没有回执 ≠ 装失败 |
+
+`doctor().update.install` 多出 `kind` / `why` / `logPath` / `requestId`，`state` 多了一个
+`unknown`（回信没回来又捞不到时的诚实答案）。预检 863 → 874 项。
 
 ### 1.49.5
 

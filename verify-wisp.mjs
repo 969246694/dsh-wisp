@@ -2594,9 +2594,18 @@ if (clientSrc !== null) {
     }
 
 
-    /* ---- 3d-quindecies-bis. 直接装上最新版（v1.48.0）-------------------------
+    /* ---- 3d-quindecies-bis. 直接装上最新版（v1.48.0；v1.49.5 修了"说不清为什么失败"）--
        客户端半包没有 host 座位，但 installUpdate **不需要它**：平台自己的「插件」设置页
-       走的就是 ctx.remote.pluginManager.installBundle。用假命名空间把几种结果走一遍。 */
+       走的就是 ctx.remote.pluginManager.installBundle。用假命名空间把几种结果走一遍。
+
+       **替身必须照平台真实的 ChangeResult 喂 —— v1.49.5 修的正是这里。** 平台失败时回的是
+       `application: 'failed'`，而 `error.code` 一律是 `operation-error`（pnpm 挂了的话
+       managementError 只给得出这一个），真正的分类在 `packageResult.kind`
+       （dsh-plugin-manager 的 classifyInstallFailure 那九个值）。v1.48.0 的测试喂的是
+       `{ ok: false, error: { code: 'no-matching-version' } }` —— 平台**永远不会**这么回，
+       于是"npm 上还没有这一版"这句话一次都没说过，而这边的测试一直全绿。
+       另一条路是 `ok: false`：那是**回信没回来**（平台自己的设置页管它叫 replyLost，
+       并靠 waitForInstall(requestId) 把结果捞回来），不是失败 —— 不许谎报成"没装成"。 */
     {
       const inPool = (pool, text) => (Array.isArray(pool) ? pool : [])
         .some((line) => String(text).indexOf(String(line).split('{')[0]) === 0)
@@ -2610,12 +2619,22 @@ if (clientSrc !== null) {
         hx.advance(1300, 100)
         const state = await hx.win.__wisp.installUpdate(version)
         await new Promise((resolve) => setImmediate(resolve))
-        const line = String(hx.all('wisp-say').at(-1)?.textContent ?? '')
+        const says = hx.all('wisp-say').map((el) => String(el.textContent ?? ''))
+        const line = says.at(-1) ?? ''
         const doctor = hx.win.__wisp.doctor().update.install
         hx.win.__wisp.destroy()
         active = keep
-        return { state, line, doctor }
+        return { state, line, says, doctor }
       }
+      /* 平台失败时的真实信封：分类在 packageResult.kind 上，error.code 只是 operation-error。 */
+      const failedRun = (spec, kind, diagnostic) => Promise.resolve({
+        ok: true,
+        value: {
+          changed: false, application: 'failed', stage: 'install', target: spec,
+          error: { code: 'operation-error', diagnostic },
+          packageResult: { exitCode: 1, output: diagnostic, truncated: false, logPath: 'C:/x/op/pnpm.log', kind },
+        },
+      })
 
       let asked = null
       const applied = await runInstall({
@@ -2642,22 +2661,109 @@ if (clientSrc !== null) {
       'when the platform says a restart is required she says exactly that, not "done"',
       restart.line)
 
-      const refused = await runInstall({
+      /* ① 真实形状的"npm 上还没有这一版" —— 判据必须是 packageResult.kind。 */
+      const noVersion = await runInstall({
         'remote.pluginManager': {
-          installBundle: () => Promise.resolve({ ok: false, error: { code: 'no-matching-version' } }),
+          installBundle: (spec) => failedRun(spec, 'no-matching-version',
+            'ERR_PNPM_NO_MATCHING_VERSION  No matching version found for dsh-wisp@9.9.9'),
         },
       }, '9.9.9')
-      check(refused.state.state === 'failed' && refused.state.reason === 'no-matching-version'
-        && inPool(linesInBundle()?.installNotPublished, refused.line) && refused.line.includes('9.9.9'),
-      'a registry that does not have that version yet is said in its own words',
-      refused.line)
+      check(noVersion.state.state === 'failed' && noVersion.state.kind === 'no-matching-version'
+        && noVersion.state.reason === 'operation-error'
+        && inPool(linesInBundle()?.installNotPublished, noVersion.line) && noVersion.line.includes('9.9.9'),
+      'a registry without that version gets its own sentence — read off packageResult.kind, not error.code',
+      JSON.stringify(noVersion.state) + ' | ' + noVersion.line)
 
+      /* ② 其余 pnpm 分类各说各的（v1.49.5 之前它们全是同一句"没装成"）。 */
+      const netDown = await runInstall({
+        'remote.pluginManager': { installBundle: (spec) => failedRun(spec, 'network', 'ERR_PNPM_FETCH_ECONNRESET  request to https://registry.npmjs.org/dsh-wisp failed') },
+      }, '9.9.9')
+      check(netDown.state.kind === 'network' && inPool(linesInBundle()?.installNetwork, netDown.line),
+        'a network failure is not said as a generic failure', netDown.line)
+
+      const noPerm = await runInstall({
+        'remote.pluginManager': { installBundle: (spec) => failedRun(spec, 'permission', 'EPERM: operation not permitted, unlink C:/x/node_modules/dsh-wisp') },
+      }, '9.9.9')
+      check(noPerm.state.kind === 'permission' && inPool(linesInBundle()?.installPermission, noPerm.line),
+        'a permission failure says so', noPerm.line)
+
+      /* ③ 平台自己那几种拒绝走 error.code（这类没有 packageResult）。 */
+      const incompatible = await runInstall({
+        'remote.pluginManager': {
+          installBundle: (spec) => Promise.resolve({
+            ok: true,
+            value: { changed: false, application: 'failed', stage: 'install', target: spec, error: { code: 'incompatible-version' } },
+          }),
+        },
+      }, '9.9.9')
+      check(incompatible.state.reason === 'incompatible-version'
+        && inPool(linesInBundle()?.installIncompatible, incompatible.line),
+      'a version the platform refuses as incompatible is its own sentence', incompatible.line)
+
+      /* ④ 分类不出来时**把诊断带出来**，不吞掉。 */
+      const unknownKind = await runInstall({
+        'remote.pluginManager': {
+          installBundle: (spec) => Promise.resolve({
+            ok: true,
+            value: {
+              changed: false, application: 'failed', stage: 'install', target: spec,
+              error: { code: 'operation-error', diagnostic: 'dsh: installation rejected: Cannot validate installed package dsh-wisp: boom' },
+            },
+          }),
+        },
+      }, '9.9.9')
+      check(unknownKind.state.state === 'failed' && inPool(linesInBundle()?.installFailedWhy, unknownKind.line)
+        && unknownKind.line.includes('Cannot validate installed package dsh-wisp'),
+      'an unclassified failure carries the platform diagnostic instead of a bare "did not install"',
+      unknownKind.line)
+
+      /* ⑤ 回信没回来（ok:false）**不是失败**：如实说不知道，再拿 requestId 去把结果捞回来。
+         这条正是用户实际遇到的那一类 —— 以前它被谎报成"没装成"。 */
+      let lostId = null
+      let reconciledId = null
+      const lostThenSettled = await runInstall({
+        'remote.pluginManager': {
+          installBundle: (spec, options) => { lostId = options?.requestId ?? null; return Promise.resolve({ ok: false, error: { code: 'gateway/internal', message: 'client api: pluginManager/installBundle failed: socket closed' } }) },
+          waitForInstall: (requestId) => {
+            reconciledId = requestId
+            return Promise.resolve({ ok: true, value: { changed: true, application: 'applied', stage: 'install', target: 'dsh-wisp@9.9.9' } })
+          },
+        },
+      }, '9.9.9')
+      check(typeof lostId === 'string' && lostId !== '' && reconciledId === lostId,
+        'the install carries a requestId and the recovery asks about that very id',
+      String(lostId) + ' / ' + String(reconciledId))
+      check(lostThenSettled.says.some((s) => inPool(linesInBundle()?.installNoReceipt, s)),
+        'a lost reply is first said out loud as "I do not know", never as "it did not install"',
+      lostThenSettled.says.join(' | '))
+      check(!lostThenSettled.says.some((s) => inPool(linesInBundle()?.installFailed, s)),
+        'and the failing sentence is never used for a lost reply', lostThenSettled.says.join(' | '))
+      check(lostThenSettled.state.state === 'installed' && inPool(linesInBundle()?.installDone, lostThenSettled.line),
+        'the recovered outcome is the one she reports', JSON.stringify(lostThenSettled.state) + ' | ' + lostThenSettled.line)
+
+      const lostForGood = await runInstall({
+        'remote.pluginManager': {
+          installBundle: () => Promise.resolve({ ok: false, error: { code: 'gateway/internal', message: 'no carrier' } }),
+          waitForInstall: () => Promise.resolve({ ok: true, value: null }),
+        },
+      }, '9.9.9')
+      check(lostForGood.state.state === 'unknown' && lostForGood.state.reason === 'gateway/internal'
+        && inPool(linesInBundle()?.installUnknown, lostForGood.line)
+        && !lostForGood.says.some((s) => inPool(linesInBundle()?.installFailed, s)),
+      'when the platform has no record either, she stops at "I do not know" — not at "it failed"',
+      JSON.stringify(lostForGood.state) + ' | ' + lostForGood.line)
+      check(lostForGood.doctor.state === 'unknown' && lostForGood.doctor.detail === 'no carrier',
+        'and doctor() keeps what came back so the next failure can be traced',
+      JSON.stringify(lostForGood.doctor))
+
+      /* ⑥ 调用本身抛了：同样没有回执，照样不许说"没装成"。 */
       const blewUp = await runInstall({
         'remote.pluginManager': { installBundle: () => { throw new Error('boom') } },
       }, '9.9.9')
-      check(blewUp.state.state === 'failed' && blewUp.state.reason === 'call-failed'
-        && blewUp.state.detail === 'boom' && inPool(linesInBundle()?.installFailed, blewUp.line),
-      'a throwing install is caught and reported in plain words', JSON.stringify(blewUp.state))
+      check(blewUp.state.state === 'unknown' && blewUp.state.detail === 'boom'
+        && inPool(linesInBundle()?.installUnknown, blewUp.line),
+      'a throwing install is kept as "no receipt", with the thrown message in doctor()',
+      JSON.stringify(blewUp.state))
 
       const noManager = await runInstall({}, '9.9.9')
       check(noManager.state.state === 'unsupported' && noManager.doctor.via === null
@@ -2668,9 +2774,10 @@ if (clientSrc !== null) {
       /* 弹窗里的那一步：查到新版 → 「安装 vX」按钮 → 点它真的按那一版去装 */
       {
         let clicked = null
+        let clickedOptions = null
         const dlgHx = createHarness({
           timer: true, composerText: '',
-          services: { 'remote.pluginManager': { installBundle: (spec) => { clicked = spec; return Promise.resolve({ ok: true, value: { changed: true, application: 'applied', stage: 'install', target: spec } }) } } },
+          services: { 'remote.pluginManager': { installBundle: (spec, options) => { clicked = spec; clickedOptions = options ?? null; return Promise.resolve({ ok: true, value: { changed: true, application: 'applied', stage: 'install', target: spec } }) } } },
         })
         const keepDlgHx = active
         active = dlgHx
@@ -2694,6 +2801,9 @@ if (clientSrc !== null) {
         await new Promise((resolve) => setImmediate(resolve))
         check(clicked === 'dsh-wisp@9.9.9',
           'and clicking it installs that very version through the plugin manager', String(clicked))
+        check(typeof clickedOptions?.requestId === 'string' && clickedOptions.requestId !== '',
+          'the button leaves a requestId behind, so a lost reply can be reconciled later',
+          JSON.stringify(clickedOptions))
         check(dlgApi2.dialog === null, 'the dialog gets out of the way while it installs', String(dlgApi2.dialog))
         dlgHx.win.__wisp.destroy()
         active = keepDlgHx
@@ -2701,7 +2811,10 @@ if (clientSrc !== null) {
 
       /* 英文覆盖层：安装这几句也要有，而且一个汉字都不许有 */
       const enInstallKeys = ['installChecking', 'installDone', 'installRestart', 'installPending',
-        'installCancelled', 'installNotPublished', 'installFailed', 'installUnsupported']
+        'installCancelled', 'installNotPublished', 'installFailed', 'installUnsupported',
+        'installNoReceipt', 'installUnknown', 'installNotFound', 'installNetwork', 'installPermission',
+        'installDiskFull', 'installBuildBlocked', 'installIntegrity', 'installTimeout', 'installNoPnpm',
+        'installIncompatible', 'installManagement', 'installNotBundle', 'installFailedWhy']
       const enInstallBundle = readFileSync(join(here, 'lib', 'client.js'), 'utf8')
       const enInstallLiteral = enInstallBundle.match(/const LINES_EN = (\{[\s\S]*?\n {4}\})/)
       let enInstallPools = null
