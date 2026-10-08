@@ -3895,16 +3895,22 @@ if (clientSrc !== null) {
       `inline transform=${JSON.stringify(mvIdle?.style.transform)}`)
 
     /* 没有动作素材的皮肤**连元素都不建**（v1.49.0：这是删掉通用兜底之后的核心行为）。
-       这条用的是**真皮肤**而不是"把清单里一行抠掉"：宵蓝礼服（night）一条动图素材都没有，
+       这条用的是**真皮肤**而不是"把清单里一行抠掉"：藏蓝西装（office）一条动图素材都没有，
        她挂上去就该是一个纯静态立绘 —— 没有 <img class="wisp-video">、没有 data-frame、
        doctor() 两个字段都报空。通用兜底还在的时候，这里会建出一个播着**深海女仆**动作的
-       元素（画面上是当场换装），所以这一条正是那一版的墓碑。 */
+       元素（画面上是当场换装），所以这一条正是那一版的墓碑。
+
+       **v1.52.0 换过一次示例皮肤。** 这条原来用的是宵蓝礼服（night）—— 而那一版给 night 做了
+       整套八条帧动画，"没有动作素材的皮肤"这个前提在它身上当场不成立，两条断言一起变红。
+       这不是坏事：它说明**"某套皮肤没有动图"是会被时间作废的样本**，不是恒定属性。
+       下次再给哪套皮肤做动图，就顺手把这两处换到另一套还没做动图的皮肤上（见下面那条
+       "没有动作素材的状态"用的又是另一种构造）。 */
     const ni = createHarness({ timer: true, composerText: '' })
     const keepNi = active
     active = ni
     ni.evaluate(clientSrc)
     ni.module().default.apply(ni.ctx, {
-      skin: 'night', reactions: false, wander: false, celebrate: false, sleepAfterMs: 3600000,
+      skin: 'office', reactions: false, wander: false, celebrate: false, sleepAfterMs: 3600000,
     })
     ni.advance(1200, 100)
     const niApi = ni.win.__wisp
@@ -3916,7 +3922,7 @@ if (clientSrc !== null) {
       const m = ni.all('wisp-video').find((el) => el.removed !== true) ?? null
       if (m !== null && m.style.display !== 'none') niClips.push(`${state}:${String(m.dataset.clip)}`)
     }
-    check(niApi.skin === 'night' && niClips.length === 0
+    check(niApi.skin === 'office' && niClips.length === 0
       && niRoot.querySelectorAll('.wisp-video').length === 0 && niRoot.querySelectorAll('video').length === 0
       && niRoot.dataset.frame === undefined,
       'a skin with NO clips never builds a motion layer in ANY state — with the shared fallback gone, "no clip" means no element, no decode, no data-frame (v1.49.0)',
@@ -4537,7 +4543,7 @@ if (clientSrc !== null) {
           && canonSleepTransform === 'none',
           'canon/sleep → deepsea/sleep re-points the SAME element at a different clip — and with an empty correction table the geometry is identity on both sides (v1.47.0 / v1.49.3)',
           `${canonSleepClip} ${canonSleepTransform} → ${String(cnMotion()?.dataset?.clip)} ${String(cnMotion()?.style?.transform)}`)
-        cnApi.setSkin('night')
+        cnApi.setSkin('office')          // 一套没有动图素材的皮肤（v1.52.0 起不能用 night —— 它有了）
         cn.advance(300, 100)
         check(cnMotion() === null || cnMotion().style.display === 'none',
           'and switching to a skin with no clips at all takes the layer off screen — the element is not left showing a foreign loop (v1.49.0)',
@@ -6300,12 +6306,14 @@ head('4b. the clips ship as FILES — the bundle carries only their names (v1.47
         2693.3 → 2873.3 KB；`deepsea_sleepy` 3318.6 → 2671.8 KB），十八条实测
         **61785.5 KB / 60.3 MB**（最大的仍是 `canon_happy` 3927.1 KB），上界跟着
         提到 **71000 KB / 69.3 MB**（+14.9%，还是那条规矩）。每次素材换代都要有人
-        重新量一遍再改它，而不是让它自己漂。
+        重新量一遍再改它，而不是让它自己漂。**1.52.0** 落盘宵蓝礼服的整套八条
+        （每条 1389.0~2680.5 KB），二十七条实测 **78431.1 KB / 76.6 MB**，上界跟着提到
+        **90000 KB / 87.9 MB**（+14.7%，同一条规矩）。
 
    上界写在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
    一个数写两遍就是下一次漂移的起点。 */
 const MOTION_MANIFEST_BUDGET_BYTES = 2048
-const MOTION_DISK_BUDGET_KB = 71000
+const MOTION_DISK_BUDGET_KB = 90000
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
@@ -6399,6 +6407,14 @@ const MOTION_DISK_BUDGET_KB = 71000
       deepsea_idle: ['assets/deepsea/idle.webp', 'CACF8609605D867F454103EA3CFD2EA9844284D7757ED2DCF8A39ACD83F5E33C'],
       deepsea_happy: ['assets/deepsea/happy.webp', 'EA78CAA40F57B08652D7E4205740B3EABB470495FADE629DAAEC462D023F8A40'],
       deepsea_sleepy: ['assets/deepsea/sleepy.webp', '3C35B8FF143A72E98155180A6D2F160B55A374E02A286B409021657CF1600CB5'],
+      night_idle: ['assets/night/idle.webp', '8BC2EED65B5EE1422A48B6F3C6D5AE6EEF1143327FBC3631AD0DE32679955DD7'],
+      night_attn: ['assets/night/attn.webp', 'C41F98F3C17C2A970E8ACA00CFF62631867C9724DCC75267BC9273C94347960E'],
+      night_happy: ['assets/night/happy.webp', '712862793790473A1AF021CDDE1985A04C1A4FC9EB7963D892B6A37A916E7776'],
+      night_sleepy: ['assets/night/sleepy.webp', 'A763C907E521BE3EEE0B510EA76228471B1A2F120AA68ABDCB3830BAFEFE6FF0'],
+      night_work: ['assets/night/work.webp', '555E758138D67FC4BDFC16C5C0A92304749445A7672EC850D320F67CE0CB1315'],
+      night_proud: ['assets/night/proud.webp', 'D3134D3C6A3A54A7605022E46C3223FA13F2857A8CEE7877CAA1E99A2AB059EF'],
+      night_eat: ['assets/night/eat.webp', '4C2B038BCC81146AA24AE1DC3D0812012B63B1E0ABC97BB9ABB454AB6776D846'],
+      night_poked: ['assets/night/poked.webp', '8056E9D18433A5525AE79B4FCDF4F75F00D246387F58764A97B7E3F7FF1180BC'],
     }
     {
       const undeclared = keys.filter((k) => !MOTION_SOURCES[k])
@@ -6472,6 +6488,8 @@ const MOTION_DISK_BUDGET_KB = 71000
       canon_work: [96, 'last frame dropped: its step was ~2x the clip mean and it inflated the wrap 1.94 → 1.02'],
       swim_work: [96, 'last frame dropped: the wrap fell 1.41 → 0.46'],
       canon_attn: [49, 'the regenerated take contains one genuinely closed 2.04s cycle (its frames 39..87, wrap 0.57x); the full 97-frame take wraps at 1.65x'],
+      night_happy: [49, 'the take contains one genuinely closed 2.04s cycle; the full 97 frames wrap at 1.41x, the cut 49 at 0.41x'],
+      night_eat: [95, 'the take closes on its last 95 frames (0.45x); the full 97 wrap at 1.29x'],
     }
 
     /* [素材字节的 sha256, 量出来的 ratio]。重新编码一条素材 = 这一行作废。 */
@@ -6487,6 +6505,14 @@ const MOTION_DISK_BUDGET_KB = 71000
       deepsea_happy: ['B8D4933255F896DEE3923473D174B1D99F617D6DC6E28026AD3EB00838288E48', 0.38],
       deepsea_idle: ['BD32EC57DEE7299D0A8DDD3AA60A6E1815ACE9ED99BC3B4FDF6AC565223249AE', 0.65],
       deepsea_sleepy: ['868457FD3A61EDA137787B76AD89F6DFB3703065ABF5B7188E2AA5B20F92F811', 0.80],
+      night_attn: ['BE6952553DA2872A50700838C437DA82413C44088AC4DA8AF158B1A5B156B6D3', 0.79],
+      night_eat: ['A79031C253B342C942B20B42C6467AEE99DE24B6E20D6B94EF678C2A844AB0D8', 0.45],
+      night_happy: ['0312155299FCC3CEFF8B658B6117EF9BB7041B2E4508953953F550329284E8FA', 0.41],
+      night_idle: ['0DA1E719523E40101ECAD5E1D4E187CE45FE93B7EB35D00E9A08BA2D10B51CF7', 0.70],
+      night_poked: ['C0D2CB61D87AD90CCAB67314586AA2DF4ABF210C8BEDF582C6EC3DE8E79FA2A9', 0.74],
+      night_proud: ['998B51B08580921A542326BC2542A64ACADF1BC46E4B4F913ED1430A39FF3CFA', 1.00],
+      night_sleepy: ['7C21D780AAB3FCDF97A2089C0D913E7FACD207428DF96725D78A1AA8EF303264', 0.82],
+      night_work: ['71D3B6D2F6166FFD8E4E8655A40969E36487FF5CC06183866707546CCFA3B7C2', 0.76],
       swim_attn: ['6BDFCD86F8AB7849F7B6A9B5B83685A41DAE33767BC2F72F9D7DE7A82F544454', 1.39],
       swim_eat: ['E78AF66FD26DFBAF9557BC5B4F810B6CA6E7D0B2F602BDC100618767A3E28F65', 0.61],
       swim_happy: ['0B5E2E809C89F222A9D0265F6AB48A0EA9929E1E301287EA444B0493DC145E30', 0.55],
