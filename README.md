@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的浮动陪伴插件：**DeepSeek娘** 桌宠。
 
-**当前版本 `1.49.6`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
+**当前版本 `1.49.7`** · 零依赖 · 单文件客户端半包（精灵图内嵌为 data URI；帧动画素材自 1.47.0 起由宿主半包按 URL 发，客户端里只留一张文件名清单）
 
 > 非官方插件，与 DeepSeek（深度求索）官方无关。角色形象与图片许可见 [NOTICE.md](NOTICE.md)。
 
@@ -84,7 +84,7 @@ node verify-wisp.mjs  # 预检；exit 0 = 两半包都符合契约
 4. 产物**不得调用被陷阱的全局**（`setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` / `fetch` / `require`）；
 5. `const VERSION` 必须与 `package.json` 的 `version` 一致（防止版本漂移）。
 
-`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **874 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
+`verify-wisp.mjs` 在真实契约下执行浏览器半包：六个被陷阱的全局以**抛异常**的形式注入，虚拟时钟同时驱动两条调度路径，假 DOM / Blob / localStorage（含"抛异常的存储"这一档）齐全。当前 **883 项全 PASS，exit 0**（**这一行由预检自己核对** —— 数字对不上就红；顶部的版本号同样由它核对）。
 
 ---
 
@@ -679,8 +679,12 @@ node tools/audit-log.mjs --confirm <manifest>     # 生成后：并入代理登�
 
 ### 先说结论
 
-- **检查更新：能。** 客户端半包自己用 `window.fetch` 读 npm / GitHub 两个源，取版本更高的那个
-  （宿主半包那条 `ctx.web.fetch` 的路仍在，动态插件形态下才有座位）。
+- **检查更新：能，而且有两条路（v1.49.7 起）。** ① 宿主半包的同源端点
+  `GET /wisp-motion/__update`：宿主用平台给的 `ctx.web.fetch` 读 npm / GitHub（拿不到 `web`
+  就退回问插件管理器），页面只读结果 —— 这条路**不经过页面那一侧的系统代理**；
+  ② 端点不在时，页面自己用 `window.fetch` 读那两个源（1.48.x 起的老路）。
+  两条读的是同一份判据，`doctor().update.lastCheck.via` 说明这次是谁问出来的
+  （`host-route` / `page-fetch` / `host-seat`）。
 - **安装更新：能（v1.48.0 起）。** 平台把**插件管理器本身**做成了客户端可用的 Remote 命名空间：
   `ctx.remote.pluginManager.installBundle(spec)` —— 平台自己的「插件」设置页走的就是它。
   查到新版之后，「关于她」弹窗里会出现 **「安装 vX」**，点一下就装；装完该刷新还是该重启由平台的
@@ -752,6 +756,23 @@ registry 只要在 patch 行里指过去就行。国内常见配置：
 `install.state` 是最后一次的结果（`installed` / `failed` / `cancelled` / `pending` / `unknown` / `unsupported`），
 `kind` / `why` / `logPath` / `requestId` 是下一次能追下去的四个字段。
 
+### 检查更新走哪条路（v1.49.7）
+
+**为什么第一条是宿主那条**：这台机器上系统代理开着（`127.0.0.1:7897`），**经它访问
+`registry.npmjs.org` 连 TLS 都建不起来**（实测：带 `-Proxy` 直接 SSL 失败，`-NoProxy` 200），
+而宿主是 Node、直连 —— 于是页面里那句 `window.fetch` 永远是 `fetch-failed`：窗口标题里
+一度写着 `wisp-diag failed fetch-failed via=- how=- why=- mgr=-`。页面直连这条路**没有错**，
+它只是依赖页面这一侧的网络；宿主那条不依赖。
+
+| 通道 | 谁在问 | 依赖 |
+|---|---|---|
+| `host-route`（首选） | 宿主半包：`ctx.web.fetch`（拿不到 `web` 就退回问插件管理器） | 宿主的网络出口；页面只做一次同源 GET，不涉及 CORS |
+| `page-fetch`（兜底） | 客户端半包：`window.fetch` | 页面这一侧的网络（系统代理、CSP 都在这条路上） |
+| `host-seat` | 动态插件形态下的 `host.call('checkUpdate')` | 只有动态半包有座位，bundle 插件没有 |
+
+两条都失败时 `lastCheck.diag` 写清是哪一条断的、为什么：`via` / `how` / `why` / `sources`
+（每个源各自的 `reason` 与 `detail`）。预检里六条断言盯着这件事：同源端点答了就**不许**再发外部请求、
+端点不在时必须回落到两个源、两条都断时失败里必须留下宿主那条没答的原因。
 ### 装不成时她说什么（v1.49.5）
 
 **失败的判据不在 `error.code` 上**：pnpm 挂了的话平台把它一律写成 `operation-error`，
@@ -784,6 +805,28 @@ v1.48.0 盯着 `error.code === 'no-matching-version'` 找 —— 那个值永远
 真的带上了 `requestId`、没有插件管理器时是否明说、以及英文覆盖层齐全且无汉字。
 
 ## 变更
+
+### 1.49.7
+
+**检查更新不再被页面这一侧的网络卡住 —— 宿主半包多了一条同源端点。**
+
+起因是一次实测，不是推测：这台机器系统代理开着（`127.0.0.1:7897`），**经它访问
+`registry.npmjs.org` 连 TLS 都建不起来**（带 `-Proxy` SSL 失败、`-NoProxy` 200），而宿主是
+Node、直连是通的。于是「检查更新」在页面上永远只会是 `fetch-failed` —— 窗口标题里那句
+`wisp-diag failed fetch-failed via=- how=- why=- mgr=-` 就是它留下的现场。
+
+现在页面按顺序试两条：
+
+1. **宿主半包的同源端点** `GET /wisp-motion/__update`：宿主用自己的 `web` 服务读两个源
+   （拿不到 `web` 就退回问插件管理器「这个包现在是什么版本」），页面只做一次同源 GET ——
+   不经过页面那一侧的系统代理，也不涉及 CORS；
+2. 端点不在（旧宿主半包 / 路由没注册）时，页面照旧自己 `window.fetch` 两个源。
+
+两条通道共用同一份判据（`settleCheck`）与同一份宿主实现（`readPublishedForPage` —— 宿主座位的
+`checkUpdate` 与这条端点读的是同一个函数），所以答案不可能互相矛盾。
+`doctor().update.lastCheck.via` 会告诉你这次是谁问出来的（`host-route` / `page-fetch` /
+`host-seat`）；两条都不通时 `diag.why` 写清宿主那条为什么没答。预检 874 → 883 项。
+
 
 ### 1.49.6
 

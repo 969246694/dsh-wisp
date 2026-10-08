@@ -2925,6 +2925,89 @@ if (clientSrc !== null) {
     noSeat.win.__wisp.destroy()
     active = keepNoSeat
 
+    /* ---- v1.49.7：客户端侧的第一条通道是**宿主半包的同源端点** ------------------
+       页面自己不做任何外部请求，宿主用它自己的 web 服务（拿不到就退回问插件管理器）
+       把两个源问出来。起因是一次实测：这台机器系统代理开着时，页面直连 registry 连 TLS
+       都建不起来（窗口标题里那句 wisp-diag ... fetch-failed 就是它），而宿主直连是通的。 */
+    {
+      const routeCalls = []
+      const viaRoute = createHarness({ timer: true, composerText: '' })
+      const keepRoute = active
+      active = viaRoute
+      viaRoute.win.fetch = (url) => {
+        routeCalls.push(String(url))
+        if (String(url).indexOf('wisp-motion/__update') >= 0) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({
+            ok: true, latest: '99.0.0', from: 'npm', via: 'host-route',
+            sources: { npm: { ok: true, version: '99.0.0' }, github: { ok: false, reason: 'fetch-failed' } },
+            diag: { via: 'web', how: 'ctx.get', why: 'ctx.get("web")->object' },
+          }) })
+        }
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) })
+      }
+      viaRoute.evaluate(clientSrc)
+      viaRoute.module().default.apply(viaRoute.ctx, { reactions: false, wander: false, celebrate: false })
+      viaRoute.advance(1300, 100)
+      const routeRes = await viaRoute.win.__wisp.checkForUpdate()
+      check(routeRes.state === 'available' && routeRes.latest === '99.0.0' && routeRes.via === 'host-route',
+        'the host half answers the check over its own same-origin endpoint',
+        JSON.stringify(routeRes))
+      check(routeCalls.length === 1 && routeCalls[0].indexOf('wisp-motion/__update') >= 0,
+        'and the page made exactly one request: the same-origin one, never an external one',
+        routeCalls.join(' | '))
+      check(viaRoute.win.__wisp.doctor().update.lastCheck.via === 'host-route',
+        'doctor() records which channel answered',
+        String(viaRoute.win.__wisp.doctor().update.lastCheck.via))
+      viaRoute.win.__wisp.destroy()
+      active = keepRoute
+    }
+
+    /* 同源端点不在（旧宿主半包 / 路由没注册）时，页面直连两个源照旧可用 ——
+       加了新通道不等于把老通道拆掉。 */
+    {
+      const fallbackCalls = []
+      const fallbackHx = createHarness({ timer: true, composerText: '' })
+      const keepFallback = active
+      active = fallbackHx
+      fallbackHx.win.fetch = (url) => {
+        fallbackCalls.push(String(url))
+        if (String(url).indexOf('wisp-motion/__update') >= 0) return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) })
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ version: '99.0.0' }) })
+      }
+      fallbackHx.evaluate(clientSrc)
+      fallbackHx.module().default.apply(fallbackHx.ctx, { reactions: false, wander: false, celebrate: false })
+      fallbackHx.advance(1300, 100)
+      const fallbackRes = await fallbackHx.win.__wisp.checkForUpdate()
+      check(fallbackRes.state === 'available' && fallbackRes.latest === '99.0.0' && fallbackRes.via === 'page-fetch',
+        'without the host endpoint the page still fetches both sources itself',
+        JSON.stringify(fallbackRes))
+      check(fallbackCalls.length === 3
+        && fallbackCalls.some((u) => u.indexOf('registry.npmjs.org') >= 0)
+        && fallbackCalls.some((u) => u.indexOf('raw.githubusercontent.com') >= 0),
+      'the fallback really is the two external sources, after the same-origin attempt',
+      fallbackCalls.join(' | '))
+      fallbackHx.win.__wisp.destroy()
+      active = keepFallback
+    }
+
+    /* 两条都不通：失败里必须留下"宿主那条为什么没答" —— 否则下次还是只有一句"没查到"。 */
+    {
+      const deadHx = createHarness({ timer: true, composerText: '' })
+      const keepDead = active
+      active = deadHx
+      deadHx.win.fetch = () => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) })
+      deadHx.evaluate(clientSrc)
+      deadHx.module().default.apply(deadHx.ctx, { reactions: false, wander: false, celebrate: false })
+      deadHx.advance(1300, 100)
+      const deadRes = await deadHx.win.__wisp.checkForUpdate()
+      check(deadRes.state === 'failed' && deadRes.reason === 'fetch-failed' && deadRes.via === 'page-fetch'
+        && deadRes.diag && String(deadRes.diag.why).indexOf('宿主') >= 0,
+      'both channels dead keeps why the same-origin one did not answer',
+      JSON.stringify(deadRes))
+      deadHx.win.__wisp.destroy()
+      active = keepDead
+    }
+
     /* 宿主调用抛错：不能变成未处理的 rejection */
     const thrower = mkChecker('boom')
     const keepThrower = active
@@ -6353,6 +6436,46 @@ const MOTION_DISK_BUDGET_KB = 71000
     check(refused.length === 0,
       'and it stays a closed list — traversal, nested paths, other extensions and writes are all refused',
       refused.length ? refused.join(' | ') : 'traversal/nested/non-webp/prefix → 404, POST → 405')
+
+    /* v1.49.7：页面的第一条通道是**宿主半包的同源端点** —— 这里把它自己跑一遍。
+       三件事必须成立：没注入 reader 时如实回 no-update-reader（不许假装成功）、
+       注入后把 verdict 原样带出（并盖上 host-route 与 no-store）、reader 抛错时变成 JSON
+       而不是 500 或未处理的 rejection。 */
+    {
+      const ask = async (options) => {
+        const response = { status: 0, headers: null, body: null }
+        await hostMod.motionHandler(hostMod.defaultReadBytes, options)({ method: 'GET', url: `${hostMod.MOTION_PATH}${hostMod.MOTION_UPDATE_NAME}` }, {
+          writeHead(status, headers) { response.status = status; response.headers = headers },
+          end(chunk) { response.body = chunk ?? null },
+          destroy() {},
+        })
+        let json = null
+        try { json = response.body ? JSON.parse(String(response.body)) : null } catch (error) { json = null }
+        return {
+          status: response.status,
+          headers: response.headers ?? {},
+          type: String((response.headers ?? {})['content-type'] ?? ''),
+          json,
+        }
+      }
+      const noReader = await ask({})
+      check(noReader.status === 200 && noReader.json && noReader.json.reason === 'no-update-reader'
+        && noReader.headers['x-wisp-motion'] === 'hit',
+      'the update endpoint answers honestly when no reader was injected, and still carries the route header',
+      JSON.stringify(noReader.json))
+      const verdict = { ok: true, latest: '99.0.0', from: 'npm', sources: { npm: { ok: true, version: '99.0.0' } }, diag: { via: 'web' } }
+      const withReader = await ask({ readPublished: async () => verdict })
+      check(withReader.status === 200 && /application\/json/.test(withReader.type)
+        && withReader.json && withReader.json.latest === '99.0.0' && withReader.json.via === 'host-route'
+        && typeof withReader.json.checkedAt === 'string' && withReader.headers['cache-control'] === 'no-store',
+      'and with a reader it hands the verdict back as JSON, stamped with the channel, uncached',
+      JSON.stringify({ type: withReader.type, json: withReader.json, cache: withReader.headers['cache-control'] }))
+      const boom = await ask({ readPublished: async () => { throw new Error('web exploded') } })
+      check(boom.status === 200 && boom.json && boom.json.ok === false && boom.json.reason === 'reader-threw'
+        && String(boom.json.detail).indexOf('web exploded') >= 0,
+      'a reader that throws becomes JSON, never a 500 and never an unhandled rejection',
+      JSON.stringify(boom.json))
+    }
 
     /* ---- 404 的歧义必须能被消掉（v1.48.1）--------------------------------------
        一个 404 有两个来源：**路由没注册**（请求根本没到我们的 handler，平台自己的
