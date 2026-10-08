@@ -3102,3 +3102,27 @@ v1.31.0 · 深海女仆
 ### 0.1.0
 
 - 初版（纯 DOM 注入版）
+
+## 目录布局
+
+本仓库是**独立项目**，位置 `F:\dsh-wisp`（文件夹名与 package.json / GitHub / npm 上的
+`dsh-wisp` 一致）。旁边没有第二个 wisp 目录 —— 画素材用的绿幕母版归档在仓库**内部**：
+
+```
+dsh-wisp/
+├─ lib/  assets/  tools/  audit/     ← 项目本体（全部进版本库）
+└─ sprite-masters/                   ← 绿幕母版归档（233 MB，**被 .gitignore 忽略**）
+```
+
+`sprite-masters/` 里是改形象时的**源材料**：70 张纯绿底 PNG + 两份代理登记表，
+配套 `tools/CHARACTER-PROMPT.md`（形象的唯一权威来源）。用法：
+
+```bash
+node tools/assets.mjs --from sprite-masters --out assets/<皮肤名>
+```
+
+> **⚠️ 不要对它执行 `git clean -xdf`** —— 被忽略 ≠ 被保护，那条命令会把 233 MB 母版一起删掉。
+> 母版重新生成很贵（每张 4K 出图数分钟且要人工挑图）。清理工作区前先把它移出仓库。
+
+**为什么放在仓库里而不是外面**：只有一个 wisp 文件夹，源材料跟着项目走，不会在搬项目时被落下。
+代价就是上面那条注意事项。

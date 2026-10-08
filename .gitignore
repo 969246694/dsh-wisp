@@ -20,3 +20,7 @@ desktop.ini
 # A DSH plugin has to work straight after install_bundle, without the user
 # running a build step first. CI verifies that the committed file matches what
 # the template produces.
+
+# 绿幕母版归档（233 MB）：改形象时的源材料，不进版本库。
+# 注意：git clean -xdf 会连它一起删掉 —— 母版很贵，清理前先备份。
+sprite-masters/
