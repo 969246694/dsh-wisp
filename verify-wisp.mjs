@@ -3632,7 +3632,7 @@ if (clientSrc !== null) {
     /* ---- 指针靠近：她朝指针侧身；出圈归零 ----
        注意：v1.50.0 起「左右晃动」是四选一，**默认那档（微摆）不读指针** ——
        这一段测的是「跟着鼠标」那一档，所以先拨过去。 */
-    moApi.configure({ sway: 'pointer' })
+    moApi.configure({ sway: true })
     const moC3 = moCentre()
     mo.win.dispatch('pointermove', { clientX: moC3.x + 60, clientY: moC3.y })
     const moNearRight = moTiltNum()
@@ -3675,49 +3675,42 @@ if (clientSrc !== null) {
       'doctor() spells out what the level changes: gesture, lean, and how far/often she strolls',
       JSON.stringify(moFx))
 
-    /* ---- 左右晃动（v1.50.0：从一个开关变成四选一）---------------------------
-       以前它是布尔：开 = 跟着鼠标侧倾（±3.5°、绕脚底、0.5 秒带过冲）。用户的原话是
-       "左右晃动的动画感觉不是很舒服，我需要更好的可选方案"。现在四档互斥：
-       off / calm（自主微摆，默认，不读指针）/ drift（横向漂移，不读指针）/ pointer（跟鼠标，收柔）。 */
-    moApi.configure({ sway: 'calm' })
+    /* ---- 左右晃动（v1.50.1：只做跟随指针）-------------------------------------
+       v1.50.0 曾把它拆成四档（关 / 微摆 / 漂移 / 跟着鼠标）—— 那是把用户那句
+       "我需要更好的可选方案"读成了"加个四档菜单"，其实他是在**要方案**（由他挑），
+       而他挑的就是这一条。四档撤掉、回到一个开关；留下 1.50.0 里真正有用的手感：
+       最大角 3.5° → 1.5°、过渡 0.5s 带过冲 → 0.45s 平滑。 */
     const moSwayAt = moCentre()
-    check(moRoot.dataset.sway === 'calm' && moApi.doctor().motion.sway.mode === 'calm',
-      'the default sway is the quiet self-driven one, not the pointer follow',
-      `${moRoot.dataset.sway} / ${JSON.stringify(moApi.doctor().motion.sway)}`)
-    check(moApi.doctor().motion.sway.periodMs === 16000 && moApi.doctor().motion.sway.maxDeg === 0,
-      'and doctor() says what that mode does: its period, and that it never leans',
-      JSON.stringify(moApi.doctor().motion.sway))
-    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
-    check(moTilt() === '0deg', 'the self-driven modes never react to the pointer', moTilt())
-    moApi.configure({ sway: 'drift' })
-    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
-    check(moRoot.dataset.sway === 'drift' && moTilt() === '0deg'
-      && moApi.doctor().motion.sway.periodMs === 12000,
-    'the drift mode is position-only too, on its own slower period',
-    `${moRoot.dataset.sway} / ${moTilt()} / ${moApi.doctor().motion.sway.periodMs}`)
-    moApi.configure({ sway: 'pointer' })
-    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
-    check(moTiltNum() !== 0, 'the pointer-follow mode still leans toward the cursor', moTilt())
+    check(moRoot.dataset.sway === 'on' && moApi.doctor().motion.sway.enabled === true,
+      'the pointer-follow sway is on by default', String(moRoot.dataset.sway))
     check(Math.abs(moApi.doctor().motion.sway.maxDeg - moApi.doctor().motion.amp * 1.5) < 0.01,
       'and it is softer than the behaviour it replaces: 1.5° instead of 3.5°',
       String(moApi.doctor().motion.sway.maxDeg))
-    /* 切走的那一刻她可能正歪着 —— 任何一档切走都必须当场把姿势归零，不能留半截状态。 */
+    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
+    check(moTiltNum() !== 0, 'a pointer moving past her leans her toward it', moTilt())
+    /* 关掉的那一刻她可能正歪着 —— 开关必须当场把姿势归零，不能留个半截状态。 */
     const moLeaning = moTilt()
-    moApi.configure({ sway: 'off' })
+    moApi.configure({ sway: false })
+    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
     check(moLeaning !== '0deg' && moTilt() === '0deg' && moRoot.dataset.sway === 'off'
       && moApi.doctor().motion.sway.enabled === false,
-    'switching away from the pointer mode resets the posture instead of freezing her crooked',
+    'switching it off mid-lean resets the posture instead of freezing her crooked',
     `${moLeaning} -> ${moTilt()}`)
-    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
-    check(moTilt() === '0deg', 'and "off" really means off — the pointer does nothing', moTilt())
-    /* 老配置（v1.50.0 之前 sway 是布尔）必须还能读：true = 当年那套跟鼠标，false = 关。 */
     moApi.configure({ sway: true })
-    check(moRoot.dataset.sway === 'pointer', 'an old boolean true migrates to the pointer mode',
-      String(moRoot.dataset.sway))
-    moApi.configure({ sway: false })
-    check(moRoot.dataset.sway === 'off', 'and an old false migrates to off', String(moRoot.dataset.sway))
+    mo.win.dispatch('pointermove', { clientX: moSwayAt.x + 60, clientY: moSwayAt.y })
+    check(moTiltNum() !== 0, 'and switching it back on restores the follow at once', moTilt())
+    /* 1.50.0 短暂地写出去过字符串（off / calm / drift / pointer）：不能被卡住。 */
+    moApi.configure({ sway: 'off' })
+    check(moRoot.dataset.sway === 'off', "a 1.50.0 'off' still reads as off", String(moRoot.dataset.sway))
     moApi.configure({ sway: 'calm' })
-
+    check(moRoot.dataset.sway === 'on', "and a 1.50.0 'calm' reads as on — the follow is back",
+      String(moRoot.dataset.sway))
+    moApi.configure({ sway: true })
+    /* 丝滑：没有过冲、没有自主动画偷偷回来（四档撤掉了，关键帧也必须一起走）。 */
+    check(moCss.includes('transition:transform .45s cubic-bezier(.22,.61,.36,1)')
+      && !moCss.includes('wisp-sway-calm') && !moCss.includes('wisp-sway-drift'),
+    'the hover lean is a smooth ease-out with no overshoot, and no self-driven sway keyframes remain',
+    moCss.includes('wisp-sway-calm') ? 'self-driven keyframes are still in the CSS' : 'lean only')
     const moHome = moApi.position
     moApi.configure({ wander: true, motion: 'subtle' })
     mo.advance(46000, 500)
@@ -6986,7 +6979,7 @@ if (existsSync(join(here, 'README.md'))) {
      在脚下 700px 处派发事件本来就该是 0 度 —— 那样测的是另一条规则。 */
   /* v1.50.0：侧身是四档里的「跟着鼠标」那一档，默认那档是自主微摆、不读指针 ——
      这一段测的就是指针这条路，所以先拨过去。 */
-  api.configure({ sway: 'pointer' })
+  api.configure({ sway: true })
   const nearX = api.position.x + 280
   const nearY = api.position.y + 420
   h.win.dispatch('pointermove', { clientX: nearX + 24, clientY: nearY, pointerType: 'mouse' })
