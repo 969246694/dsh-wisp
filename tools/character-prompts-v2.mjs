@@ -390,6 +390,36 @@ export function buildWalkPrompt(skin) {
   return parts.join('\n\n')
 }
 
+
+/* ------------------------------------------------- 汇报（report，第 10 个姿态） */
+/* 这个姿态**早就在产品里跑了**四个场景（今日小结 / 专注结束 / 值班汇报 / 安装更新），
+   但一直没有素材 —— SPRITE_FALLBACK.report = 'idle'，所以她念小结时是站着不动的。
+   SPRITE_OF / POPPY_MOODS / 台词池全都是现成的，这一版只补图。 */
+const REPORT_POSE = `【姿态】双手在胸腹前抱着一本**深蓝色硬壳记录本**，本子**合着**、封面朝外、微微向上倾斜；
+站姿端正、双脚并拢、身体正对镜头。
+**记录本只允许挡住腹部正中：领口、两侧肩线、腰带、蝴蝶结、裙摆必须从本子两侧清楚露出**；
+鲸尾不能被本子或身体挡住。`
+const REPORT_EXPR = `【表情】认真汇报：眼睛**完全睁开、直视镜头**；眉毛自然、略向上扬（正在说话）；
+嘴巴**微微张开、像正在报数**；**没有腮红**；下巴微微抬起。`
+const REPORT_CHECK = [
+  '㉒ 手里那本**深蓝色硬壳记录本**必须清楚可见：**合着、封面朝外、有硬壳的厚度** —— 不能被省略，不能变成一叠纸、一块板或一本书摊开的样子；',
+  '㉓ 记录本不能挡住领口、腰带与裙摆；鲸尾仍须可见。',
+].join('\n')
+
+export function buildReportPrompt(skin) {
+  const costume = COSTUMES[skin] ?? COSTUMES_LEGACY[skin]
+  if (!costume) throw new Error('汇报：未知皮肤 ' + skin)
+  let identity = IDENTITY
+  if (skin === 'canon') for (const [from, to] of IDENTITY_CANON_FIX) identity = identity.split(from).join(to)
+  const body = BODIES[skin] ?? BODIES_LEGACY[skin] ?? BODIES.default
+  const base = skin === 'canon'
+    ? CHECKLIST.replace('__BODY_CHECK__', BODY_CHECK_LEGACY.canon)
+    : checklistFor(skin, 'walk')
+  const check = base.split('\n').filter((l) => !l.startsWith('⑧ ') && !l.startsWith('⑲ ')).join('\n')
+    + '\n' + REPORT_CHECK
+  return [GREEN, identity, costume, body, STYLE, REPORT_POSE, REPORT_EXPR, check, COMPOSITION].join('\n\n')
+}
+
 /* ------------------------------------------------------------------ 组装 */
 export function buildPrompt(skin, mood) {
   const costume = COSTUMES[skin]
@@ -427,11 +457,21 @@ export function buildManifest(skin) {
 const args = process.argv.slice(2)
 const valueOf = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null }
 
-if (args.includes('--print-walk')) {
+if (args.includes('--print-report')) {
+  console.log(buildReportPrompt(args[args.indexOf('--print-report') + 1]))
+} else if (args.includes('--print-walk')) {
   console.log(buildWalkPrompt(args[args.indexOf('--print-walk') + 1]))
 } else if (args.includes('--print')) {
   const i = args.indexOf('--print')
   console.log(buildPrompt(args[i + 1], args[i + 2]))
+} else if (args.includes('--manifest-report')) {
+  const dir = resolve(here, valueOf('--manifest-report') || '.out')
+  mkdirSync(dir, { recursive: true })
+  const items = SKINS_WALK.map((skin) => ({
+    name: skin + '_report', prompt: buildReportPrompt(skin), skin, mood: 'report', params: PARAMS,
+  }))
+  writeFileSync(join(dir, 'manifest-report.json'), JSON.stringify(items, null, 1), 'utf8')
+  console.log('汇报 manifest：' + items.length + ' 条 -> ' + join(dir, 'manifest-report.json'))
 } else if (args.includes('--manifest-walk')) {
   /* 走路：每套一张。manifest 里 mood 写 'walk' —— audit-log 的 confirm 就是按
      assets/<skin>/<mood>.webp 找产物的，所以这一份能直接进哈希链。 */

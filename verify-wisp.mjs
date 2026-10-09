@@ -7342,9 +7342,9 @@ if (clientSrc !== null) {
       const skins = Object.keys(value)
       const missing = []
       for (const skin of skins) {
-        /* 九个姿态：加了 eat（干饭）之后这里要跟上，加了 walk（走路）之后同样要跟上 ——
+        /* 十个姿态：加了 eat（干饭）要跟上，加了 walk（走路）要跟上，加了 report（汇报）同样要跟上 ——
            漏一个就会让"每套皮肤都齐"变成假绿。 */
-        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'walk']) {
+        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'walk', 'report']) {
           const uri = value[skin]?.[mood]
           if (typeof uri !== 'string' || uri.indexOf('data:image/') !== 0) missing.push(`${skin}/${mood}`)
         }
@@ -7355,8 +7355,8 @@ if (clientSrc !== null) {
       skinReport = `table does not evaluate: ${error.message}`
     }
   }
-  if (skinsOk) ok('every skin carries all nine poses as data URIs (eight moods + walk)', skinReport)
-  else bad('every skin carries all nine poses as data URIs (eight moods + walk)', skinReport)
+  if (skinsOk) ok('every skin carries all ten poses as data URIs (eight moods + walk + report)', skinReport)
+  else bad('every skin carries all ten poses as data URIs (eight moods + walk + report)', skinReport)
 
   if (clientSrc.includes('__SPRITES__')) bad('no leftover build placeholder', 'run `node build.mjs`')
   else ok('no leftover build placeholder')

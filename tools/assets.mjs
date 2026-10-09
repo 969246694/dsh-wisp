@@ -45,7 +45,9 @@ const flag = (name, fallback) => {
   const at = argv.indexOf(name)
   return at >= 0 && argv[at + 1] !== undefined ? argv[at + 1] : fallback
 }
-const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat']
+/* report = 抱记录本汇报（v1.57.0 起有素材）。走路（walk）不在这张表里 ——
+   它是 720x1280、要跟帧动画同画布，走另一条流水线，不进 assets.mjs。 */
+const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'report']
 const srcDir = resolve(here, flag('--from', 'masters'))
 /* 皮肤 = assets/ 下的一个子目录。--skin 决定输出到哪一套。
    注意 build.mjs 会把每个子目录当成一套皮肤打进包里，所以皮肤越多包越大。 */
