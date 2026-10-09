@@ -115,7 +115,19 @@ const BODY_CHECK = {
   default: '⑱ 体型必须与上面【体型】段**完全一致** —— 约 6.5–7 头身，头不要画小、四肢不要拉长；',
   chibi: '⑱ **Q 版两头身，这是硬指标，画完用画面高度自检**：头顶（不含呆毛）到下巴的高度必须占**整个角色高度的一半**，下巴到脚底也只占**一半**。**如果头只占全身的三分之一、看起来像三头身，就是画错了 —— 必须重画成头占一半的比例。**',
 }
-const checklistFor = (skin) => CHECKLIST.replace('__BODY_CHECK__', BODY_CHECK[skin] ?? BODY_CHECK.default)
+/* 走路那一张的额外两条（逐字来自 docs/walk-action-prep.md 第 5.1 节，编号改成 ⑳㉑）。
+   它是**单张**素材，所以把只对"八张一套"成立的两条去掉（⑧ 八张表情互不相同、⑲ 八张同一个体型）——
+   清单里留着对自己不适用的条目，正是这个项目吃过亏的地方。 */
+const WALK_CHECK = [
+  '⑳ 走路的**侧面**姿态必须是纯侧影：两只眼睛只能看到一只，鼻尖朝画面右侧，双脚一前一后都完整可见；',
+  '㉑ 双脚、膝盖、髋部都不能被裙摆、外套下摆、鲸尾、长袖或飘带挡住 —— 行走的步态必须看得清。',
+].join('\n')
+const checklistFor = (skin, mood) => {
+  const base = CHECKLIST.replace('__BODY_CHECK__', BODY_CHECK[skin] ?? BODY_CHECK.default)
+  if (mood !== 'walk') return base
+  const lines = base.split('\n').filter((l) => !l.startsWith('⑧ ') && !l.startsWith('⑲ '))
+  return lines.join('\n') + '\n' + WALK_CHECK
+}
 
 /* ------------------------------------------------------------ 姿态（八选一） */
 /* 每条都带"遮挡条款"：v1 只写动作、没写这个动作会遮住什么，
@@ -129,6 +141,18 @@ export const POSES = {
   poked: `【姿态】身体明显往后一缩、双肩微微耸起，一只手抬到胸前摆出「等一下」的姿势（掌心朝前）。**那只手不得遮住领口、腰带与蝴蝶结**。`,
   proud: `【姿态】双手抱在胸前、站得很稳。**双臂抱胸只允许挡住胸口正中：领口、两侧肩线、腰带、蝴蝶结、裙摆必须清楚露出**。`,
   eat: `【姿态】双手捧着一碗盛得冒尖的白米饭，捧在胸腹前。**饭碗只允许挡住腹部正中：领口、两侧肩线、腰带、蝴蝶结、裙摆必须从饭碗两侧清楚露出**。`,
+
+  /* v1.55.0：第 9 个姿态 —— 走路。逐字来自 docs/walk-action-prep.md 第 5.1 节。
+     契约（那份文档第 3、4 节）：素材一律**纯侧面、朝画面右侧**，全片不转身；
+     静态图画的是**接触相位**（双脚一前一后都在地上），因为它同时是帧动画的首帧与末帧。 */
+  walk: `【姿态：走路（侧面）】她正在**向画面右侧行走**的**纯侧面**姿态：身体与视线都朝向画面右侧，
+头部与肩、髋、膝、踝全部呈**侧影**，不要正面、不要四分之三侧、不要回头看观众。
+① 双脚都在地面上、一前一后：前脚整只脚掌落地、后脚脚跟微微抬起，两脚之间大约一个半脚长；
+② 重心略前移，上半身自然直立、微微前倾 5° 以内，不要弯腰、不要后仰；
+③ 手臂自然前后摆动（与腿相反），手臂不要抬平、不要甩开；
+④ 裙摆 / 浴衣下摆 / 长外套下摆被行走带起一点，**但不能挡住任何一只脚**；
+⑤ 鲸尾在身后自然下垂、随步伐略向后摆，**不能挡住双腿**；
+⑥ 长袖、飘带、挂饰都不能遮住脚、膝、髋的轮廓。`,
 }
 
 /* ------------------------------------------------------------ 表情（八选一） */
@@ -145,6 +169,9 @@ export const EXPRESSIONS = {
   poked: `【表情】惊讶：眼睛**睁到最大**（瞳孔四周露出更多眼白）；眉毛**高高挑起**；嘴巴**张成一个小小的圆"O"形**；脸颊**一点点红**；头**微微向后仰**。`,
   proud: `【表情】得意：**眼睛半闭、上眼睑压低**（有点斜眼看人）；眉毛**一高一低**；嘴巴**一边嘴角上扬的笑**；**没有腮红**；下巴**微微抬起**。`,
   eat: `【表情】满足：**眼睛闭成两条向下弯的月牙（⌒ ⌒）**；眉毛放松；嘴巴**闭着、满足地微笑**（不露齿）；脸颊**明显的粉红腮红**；头**微微低下**。`,
+
+  /* 走路：侧面，所以"看向行进方向"而不是看镜头。 */
+  walk: `【表情】走路时平静自然的表情：**眼睛完全睁开、看向行进方向（画面右侧）**，不看向镜头；眉毛自然平放；嘴巴**闭着、嘴角平**；**没有腮红**；头自然朝前、不歪不低。`,
 }
 
 /* --------------------------------------------------- 服装规格（本套唯一变量） */
@@ -290,6 +317,79 @@ export const COSTUMES = {
 ⑦ 脚穿**深蓝色圆头玛丽珍鞋**（脚背一条搭扣带）。`,
 }
 
+
+/* ---------------------------------------------------------------- 走路（第 9 个姿态） */
+/* 走路是**新姿态**，三套老皮肤（canon / deepsea / swim）也要有 —— 它们那八张静态图是冻结的，
+   但 walk 是新增的，不动那八张。它们的形象来自各自的旧提示词，所以这里按各自规格补：
+     deepsea / swim —— 身份就是母版那一段（两者都写明"与母版逐字相同"），只需各自的服装段；
+     canon          —— 社区规范版：发箍上是**右侧蓝色小蝴蝶结**（不是鲸鱼发夹）、约 4 头身、
+                       长袖全套女仆装 + 白袜 + 深蓝圆头皮鞋。 */
+export const SKINS_WALK = [
+  'canon', 'deepsea', 'swim',
+  ...SKINS_V2,
+]
+
+const IDENTITY_CANON_FIX = [
+  ['发箍上别着一个**蓝色鲸鱼造型发夹**', '发箍**右侧**别着一个**蓝色小蝴蝶结**'],
+]
+
+const COSTUMES_LEGACY = {
+  canon: `【服装规格】
+① **深蓝色长袖女仆连衣裙**，**立领**；
+② 胸前正中一竖排**白色荷叶边饰边**，领口系一个**深蓝色蝴蝶结**，并别一枚**蓝宝石胸针**；
+③ **袖口一圈金色纹样镶边**；
+④ 腰间系一条**白色半身围裙**，围裙带荷叶边；
+⑤ 裙摆**及膝**、**多层荷叶边**，裙摆边缘有**金色细纹样**；
+⑥ 腿上穿**白色长袜**；
+⑦ 脚穿**深蓝色圆头皮鞋**，带**金色小搭扣**。`,
+  deepsea: `【服装规格】
+① **深蓝色一字肩细吊带连衣短裙**，**单层**，低领口露出锁骨与肩线；
+② 裙摆**极短**、**单层**、自然垂落，露出一整条腿；
+③ 身前罩一件**单层白色半身围裙**，围裙的荷叶边是**深蓝色**，围裙带在**腰后**系成一个**深蓝色蝴蝶结**；
+④ **不穿长袜**，直接露出双腿；
+⑤ 脚穿**白色细带高跟凉鞋**。`,
+  swim: `【服装规格】
+① **深蓝色三角比基尼**上衣，细系带绕过颈后与后背；
+② 下身**同色系带式泳裤**，两侧腰际**各系一个深蓝色小蝴蝶结**；
+③ 外面披一件**极薄的白色薄纱罩衫**：前襟敞开、**长度到大腿中部**、随身体自然垂落；
+④ **不穿长袜**；脚穿**白色细带高跟凉鞋**；
+⑤ 手腕戴一圈**细蓝色腕饰**。`,
+}
+
+const BODIES_LEGACY = {
+  canon: `【体型】少女体型：比例舒展、四肢自然修长、身形纤细，头身比约 **4 头身**。`,
+}
+
+const BODY_CHECK_LEGACY = {
+  canon: '⑱ 体型必须与上面【体型】段**完全一致** —— 约 4 头身，身形纤细、四肢修长；',
+}
+
+/* 个别皮肤在走路姿态下会"横向撑开"，把包围盒撑得比画布还宽 —— 缩放因此被宽度卡住，
+   整个人在屏幕上会矮一截（实测 hanfu：1143/1280 → 比站着矮 9.5%，78px）。
+   姿势段已经写了"手臂不要甩开"，但对大袖 + 及踝长发的这套不够，所以单独补一条宽度预算。 */
+const WALK_EXTRA = {
+  hanfu: `【本套补充】走路时**头发贴身垂落、不要向身后飘开**；宽大的袖子**贴身自然下垂、不要向两侧张开** ——
+整个人物（含头发、袖子、飘带）的**宽度不要超过身高的 0.5 倍**。`,
+}
+
+export function buildWalkPrompt(skin) {
+  const costume = COSTUMES[skin] ?? COSTUMES_LEGACY[skin]
+  if (!costume) throw new Error('走路：未知皮肤 ' + skin)
+  let identity = IDENTITY
+  if (skin === 'canon') for (const [from, to] of IDENTITY_CANON_FIX) identity = identity.split(from).join(to)
+  const body = BODIES[skin] ?? BODIES_LEGACY[skin] ?? BODIES.default
+  const check = skin === 'canon'
+    ? CHECKLIST.replace('__BODY_CHECK__', BODY_CHECK_LEGACY.canon)
+    : checklistFor(skin, 'walk')
+  const walkCheck = check.split('\n').filter((l) => !l.startsWith('⑧ ') && !l.startsWith('⑲ ')).join('\n')
+    + '\n' + WALK_CHECK
+  const extra = WALK_EXTRA[skin]
+  const parts = [GREEN, identity, costume, body, STYLE, POSES.walk, EXPRESSIONS.walk]
+  if (extra) parts.push(extra)
+  parts.push(walkCheck, COMPOSITION)
+  return parts.join('\n\n')
+}
+
 /* ------------------------------------------------------------------ 组装 */
 export function buildPrompt(skin, mood) {
   const costume = COSTUMES[skin]
@@ -299,7 +399,7 @@ export function buildPrompt(skin, mood) {
   const expression = EXPRESSIONS[mood]
   if (!expression) throw new Error('未知情绪的表情：' + mood)
   const body = BODIES[skin] ?? BODIES.default
-  return [GREEN, IDENTITY, costume, body, STYLE, pose, expression, checklistFor(skin), COMPOSITION].join('\n\n')
+  return [GREEN, IDENTITY, costume, body, STYLE, pose, expression, checklistFor(skin, mood), COMPOSITION].join('\n\n')
 }
 
 export const PARAMS = {
@@ -327,9 +427,21 @@ export function buildManifest(skin) {
 const args = process.argv.slice(2)
 const valueOf = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null }
 
-if (args.includes('--print')) {
+if (args.includes('--print-walk')) {
+  console.log(buildWalkPrompt(args[args.indexOf('--print-walk') + 1]))
+} else if (args.includes('--print')) {
   const i = args.indexOf('--print')
   console.log(buildPrompt(args[i + 1], args[i + 2]))
+} else if (args.includes('--manifest-walk')) {
+  /* 走路：每套一张。manifest 里 mood 写 'walk' —— audit-log 的 confirm 就是按
+     assets/<skin>/<mood>.webp 找产物的，所以这一份能直接进哈希链。 */
+  const dir = resolve(here, valueOf('--manifest-walk') || '.out')
+  mkdirSync(dir, { recursive: true })
+  const items = SKINS_WALK.map((skin) => ({
+    name: skin + '_walk', prompt: buildWalkPrompt(skin), skin, mood: 'walk', params: PARAMS,
+  }))
+  writeFileSync(join(dir, 'manifest-walk.json'), JSON.stringify(items, null, 1), 'utf8')
+  console.log('走路 manifest：' + items.length + ' 条 -> ' + join(dir, 'manifest-walk.json'))
 } else if (args.includes('--manifest')) {
   const dir = resolve(here, valueOf('--manifest') || '.out')
   mkdirSync(dir, { recursive: true })
@@ -369,7 +481,18 @@ if (args.includes('--print')) {
       console.log('✗ ' + skin + ' 八张的表情段只有 ' + seen.size + ' 种，必须八种都不同'); bad++
     }
   }
-  console.log('皮肤 ' + SKINS_V2.length + ' 套 × 情绪 ' + MOODS.length + ' 张 = ' + SKINS_V2.length * MOODS.length + ' 张')
+  /* 走路（第 9 个姿态）：每套一张，必须带 ⑳㉑，且不带只对"八张一套"成立的那两条 */
+  for (const skin of SKINS_V2) {
+    const w = buildPrompt(skin, 'walk')
+    if (!/【姿态：走路（侧面）】/.test(w) || !/⑳ /.test(w) || !/㉑ /.test(w)) {
+      console.log('✗ ' + skin + ' 的走路提示词缺姿态段或 ⑳㉑'); bad++
+    }
+    if (/⑧ \*\*八张图的表情必须互不相同\*\*/.test(w) || /⑲ 这一套的八张图/.test(w)) {
+      console.log('✗ ' + skin + ' 的走路提示词里留着只对八张成立的条目'); bad++
+    }
+    if (!/⑩ 服装必须与上面【服装规格】/.test(w)) { console.log('✗ ' + skin + ' 走路缺少服装条目'); bad++ }
+  }
+  console.log('皮肤 ' + SKINS_V2.length + ' 套 × 情绪 ' + MOODS.length + ' 张 = ' + SKINS_V2.length * MOODS.length + ' 张，另加走路 ' + SKINS_V2.length + ' 张')
   console.log('正文字数（lab/idle）：' + buildPrompt('lab', 'idle').length)
   console.log(bad === 0
     ? '自检通过：除【姿态】与【表情】外八张逐字相同；服装在规格段与末尾清单里；八张表情互不相同。'
