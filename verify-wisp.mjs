@@ -3629,6 +3629,71 @@ if (clientSrc !== null) {
     check(moTilt() === '0deg', 'and the posture goes back to upright on release', moTilt())
     mo.advance(700, 50)
 
+    /* ---- 拖动时的抖（v1.53.1）--------------------------------------------------
+       用户报的："拖动她时会抖"。两个来源，一个是几何、一个是信号：
+         ① facingOf() 是纯函数，拖动时每个指针事件都重算 —— 指针停在中线附近时它会
+            来回翻，而每翻一次都要镜像精灵、并把 --wisp-tilt 的符号一起翻；
+         ② 侧倾直接取单次事件的位移，指针流里逐事件的噪声被原样画出来。
+       这里用一串**带噪声的指针流**复现：中线抖动不许翻面，右拖的噪声不许让角度变号。 */
+    const moVw = mo.win.innerWidth
+    const moBoxW = 140 * 4
+    moApi.move(Math.round(moVw / 2 - moBoxW / 2), 300)      // 让她正中间压在中线上
+    const midPoint = moCentre()
+    moPress(midPoint.x, midPoint.y)
+    const midFacing = []
+    let midAt = 0
+    for (const d of [3, -3, 2, -2, 3, -1, 2, -3, 1]) {
+      midAt += d                                        // 指针位置要累加，不能把增量当坐标
+      mo.win.dispatch('pointermove', { clientX: midPoint.x + midAt, clientY: midPoint.y })
+      const box = boxAt(moRoot.style.transform)
+      midFacing.push(box === null ? 0 : box.facing)
+    }
+    const midFlips = midFacing.filter((f, i) => i > 0 && f !== midFacing[i - 1]).length
+    check(midFlips === 0,
+      'jittering the pointer across the screen midline never flips her facing back and forth',
+      `${midFlips} flip(s): ${midFacing.join(',')}`)
+    mo.win.dispatch('pointerup', {})
+    mo.advance(700, 50)
+
+    /* 右拖 + 逐事件噪声：角度必须一直是**同一个方向**（她朝运动反方向倒），
+       而且相邻两次的差值不能大 —— 大了就是噪声被画到画面上。
+       注意要**离开中线**做这一条：--wisp-tilt 写出去的是乘过镜像的值，
+       站在中线上时镜像本身还在跳，那测的是另一件事（上面那条）。 */
+    moApi.move(200, 300)
+    const noisePoint = moCentre()
+    moPress(noisePoint.x, noisePoint.y)
+    const noiseTilt = []
+    let noiseAt = 0
+    for (const d of [8, -1, 9, 1, -2, 8, 1, -1, 7]) {   // 每次事件的位移 = d
+      noiseAt += d
+      mo.win.dispatch('pointermove', { clientX: noisePoint.x + noiseAt, clientY: noisePoint.y })
+      noiseTilt.push(moTiltNum())
+    }
+    const noiseSign = noiseTilt.filter((v) => v !== 0).map((v) => Math.sign(v))
+    check(noiseSign.length > 0 && noiseSign.every((s) => s === noiseSign[0]),
+      'a noisy rightward drag leans her one way — the per-event jitter is smoothed out',
+      noiseTilt.map((v) => v.toFixed(2)).join(', '))
+    const noiseJump = Math.max(...noiseTilt.map((v, i) => (i === 0 ? 0 : Math.abs(v - noiseTilt[i - 1]))))
+    check(noiseJump <= 2,
+      'and no single event swings her more than two degrees — that swing was the shaking',
+      'max step ' + noiseJump.toFixed(2) + '°')
+    check(Math.max(...noiseTilt.map((v) => Math.abs(v))) <= 6,
+      'and the drag lean stays inside its own limit',
+      'max ' + Math.max(...noiseTilt.map((v) => Math.abs(v))).toFixed(2) + '°')
+    /* 手停下来：不会再有点事件来把角度收回去，必须自己回正。 */
+    mo.advance(300, 50)
+    check(moTilt() === '0deg', 'and it eases back to upright when the pointer stops moving', moTilt())
+    mo.win.dispatch('pointerup', {})
+    mo.advance(700, 50)
+
+    /* 契约：这两个常数是上面两条行为的一半（另一半在 CSS 里）。 */
+    /* 把位置交还给下面的测试：它们假设她站**右半边**（镜像 +1）。 */
+    moApi.move(mo.win.innerWidth - 700, 300)
+    check(/const TILT_DRAG_EMA = [0-9.]+/.test(String(clientSrc))
+      && /const TILT_DRAG_SETTLE_MS = \d+/.test(String(clientSrc))
+      && /\[data-dragging="true"\] \.wisp-lean\{transition:transform \.\d+s/.test(String(clientSrc)),
+      'the drag lean is smoothed by an EMA, settles on its own, and keeps a short transition while dragging')
+
     /* ---- 指针靠近：她朝指针侧身；出圈归零 ----
        注意：v1.50.0 起「左右晃动」是四选一，**默认那档（微摆）不读指针** ——
        这一段测的是「跟着鼠标」那一档，所以先拨过去。 */
