@@ -6416,12 +6416,14 @@ head('4b. the clips ship as FILES — the bundle carries only their names (v1.47
         提到 **71000 KB / 69.3 MB**（+14.9%，还是那条规矩）。每次素材换代都要有人
         重新量一遍再改它，而不是让它自己漂。**1.52.0** 落盘宵蓝礼服的整套八条
         （每条 1389.0~2680.5 KB），二十七条实测 **78431.1 KB / 76.6 MB**，上界跟着提到
-        **90000 KB / 87.9 MB**（+14.7%，同一条规矩）。
+        **90000 KB / 87.9 MB**（+14.7%，同一条规矩）。**1.54.0** 落盘海洋研究员的整套八条
+        （每条 2436.1~3143.0 KB），三十五条实测 **100144.1 KB / 97.8 MB**，上界跟着提到
+        **115000 KB / 112.3 MB**（+14.8%，同一条规矩）。
 
    上界写在这里而不是 build.mjs 里：构建负责**报**体积，预检负责**判**体积，
    一个数写两遍就是下一次漂移的起点。 */
 const MOTION_MANIFEST_BUDGET_BYTES = 2048
-const MOTION_DISK_BUDGET_KB = 90000
+const MOTION_DISK_BUDGET_KB = 115000
 {
   const kb = (n) => (n / 1024).toFixed(1)
   if (clientSrc === null) {
@@ -6515,6 +6517,14 @@ const MOTION_DISK_BUDGET_KB = 90000
       deepsea_idle: ['assets/deepsea/idle.webp', 'CACF8609605D867F454103EA3CFD2EA9844284D7757ED2DCF8A39ACD83F5E33C'],
       deepsea_happy: ['assets/deepsea/happy.webp', 'EA78CAA40F57B08652D7E4205740B3EABB470495FADE629DAAEC462D023F8A40'],
       deepsea_sleepy: ['assets/deepsea/sleepy.webp', '3C35B8FF143A72E98155180A6D2F160B55A374E02A286B409021657CF1600CB5'],
+      lab_idle: ['assets/lab/idle.webp', '7E7B3EEE239AF156021A4FFA641F8656508F9EBB709EAFA568AB0D12B6FFE4AA'],
+      lab_attn: ['assets/lab/attn.webp', '6DFFE4B6DEE9D821794E58727F02A9846A6D02E0571B101F3537319C3062BB29'],
+      lab_happy: ['assets/lab/happy.webp', '96C3B9EDC4E6A43073FA970DCA0BA57C352F70A1AB52DC85B745156100BD923D'],
+      lab_sleepy: ['assets/lab/sleepy.webp', '1D5C74154341C4E606AE13B57F4F231ED6DA3E6C01A8553D2290874C90E46751'],
+      lab_work: ['assets/lab/work.webp', '8331A0E662C7BD14A9D6E2AF99B3EA48634ACEB57F65FE86A5059EA9C381F0F9'],
+      lab_proud: ['assets/lab/proud.webp', 'DBF16A9D8F7A00E98E9AA97615A346DBABF1370AD3C7D883C95EB1DDC9795E18'],
+      lab_eat: ['assets/lab/eat.webp', '7CABC23632B709178C06C37580380F880FCC296146E3AD2F3570F81A022985EC'],
+      lab_poked: ['assets/lab/poked.webp', '084ADB61823F2B5E3C61A4DDCFFDB951107D96D34611F65D563FAFDE65EF77A8'],
       night_idle: ['assets/night/idle.webp', '8BC2EED65B5EE1422A48B6F3C6D5AE6EEF1143327FBC3631AD0DE32679955DD7'],
       night_attn: ['assets/night/attn.webp', 'C41F98F3C17C2A970E8ACA00CFF62631867C9724DCC75267BC9273C94347960E'],
       night_happy: ['assets/night/happy.webp', '712862793790473A1AF021CDDE1985A04C1A4FC9EB7963D892B6A37A916E7776'],
@@ -6598,6 +6608,9 @@ const MOTION_DISK_BUDGET_KB = 90000
       canon_attn: [49, 'the regenerated take contains one genuinely closed 2.04s cycle (its frames 39..87, wrap 0.57x); the full 97-frame take wraps at 1.65x'],
       night_happy: [49, 'the take contains one genuinely closed 2.04s cycle; the full 97 frames wrap at 1.41x, the cut 49 at 0.41x'],
       night_eat: [95, 'the take closes on its last 95 frames (0.45x); the full 97 wrap at 1.29x'],
+      lab_idle: [92, 'closes on frames 2..93 (0.45x); the full 97 wrap at 1.56x'],
+      lab_attn: [95, 'closes on frames 0..94 (1.04x); the full 97 wrap at 2.07x'],
+      lab_poked: [88, 'closes on frames 8..95 (0.81x); the full 97 wrap at 1.34x'],
     }
 
     /* [素材字节的 sha256, 量出来的 ratio]。重新编码一条素材 = 这一行作废。 */
@@ -6613,6 +6626,14 @@ const MOTION_DISK_BUDGET_KB = 90000
       deepsea_happy: ['B8D4933255F896DEE3923473D174B1D99F617D6DC6E28026AD3EB00838288E48', 0.38],
       deepsea_idle: ['BD32EC57DEE7299D0A8DDD3AA60A6E1815ACE9ED99BC3B4FDF6AC565223249AE', 0.65],
       deepsea_sleepy: ['868457FD3A61EDA137787B76AD89F6DFB3703065ABF5B7188E2AA5B20F92F811', 0.80],
+      lab_attn: ['CDBED6EE1241442A4D9CB84721E0C2B1DED01A4F09A72117983C077E46C21EBC', 1.04],
+      lab_eat: ['BA8D192C1BD36DE8B08132280FC8CEAC48E4825FC6DCE3678B286D8F7039E464', 1.05],
+      lab_happy: ['8507B18A86452CE99C4DA5C7C15E9D8682A9F78886F81F5D3C8349F07D97C03C', 0.37],
+      lab_idle: ['73E6DF3E1AE5EC40A227B2626AB921EE4D94AB2B3A802F2168B19961664B5394', 0.45],
+      lab_poked: ['F8BE3D90332E5505A1D0EBF80C8F5CB6630564DBD104827AF9BF66CBC19A1F48', 0.81],
+      lab_proud: ['FAD54515282F0DFCAF3A4401C93FD07893215404E1F4D8383ADF384C31FDF57B', 0.57],
+      lab_sleepy: ['6D305935B0BDAC6C71F9FED115724DEDAC1BFCCD338ED2DFEFF6CF711298EFBD', 0.89],
+      lab_work: ['FEBADAB3CD8E93DFCB2DAABCC5E36615ACEB07C3304E4B4E1E7EAEB93BC85BFB', 0.96],
       night_attn: ['BE6952553DA2872A50700838C437DA82413C44088AC4DA8AF158B1A5B156B6D3', 0.79],
       night_eat: ['A79031C253B342C942B20B42C6467AEE99DE24B6E20D6B94EF678C2A844AB0D8', 0.45],
       night_happy: ['0312155299FCC3CEFF8B658B6117EF9BB7041B2E4508953953F550329284E8FA', 0.41],
