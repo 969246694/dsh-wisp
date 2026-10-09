@@ -3694,6 +3694,25 @@ if (clientSrc !== null) {
       && /\[data-dragging="true"\] \.wisp-lean\{transition:transform \.\d+s/.test(String(clientSrc)),
       'the drag lean is smoothed by an EMA, settles on its own, and keeps a short transition while dragging')
 
+    /* ---- 浮层透明度（v1.53.2）：四块浮层共用一个数 ------------------------------
+       气泡 / 菜单 / 子面板 / 弹窗的底色以前各写各的（都是不透明的界面令牌）。
+       现在走一个 --wisp-glass：调浓淡只改一处。断言盯两件事 —— 四块都读它、
+       而且每块**先写一遍不透明的兜底**（不支持 color-mix 的浏览器不能变成全透明）。 */
+    {
+      const glassCss = String(clientSrc)
+      const knob = /--wisp-glass:(\d+)%/.exec(glassCss)
+      check(knob !== null && Number(knob[1]) > 50 && Number(knob[1]) < 100,
+        'the floating surfaces share one translucency knob, and it is actually translucent',
+        knob === null ? 'no --wisp-glass' : knob[0])
+      const uses = (glassCss.match(/var\(--wisp-glass\)/g) ?? []).length
+      check(uses === 4, 'and all four surfaces read it: bubble, menu, submenu, dialog', uses + ' use(s)')
+      const mixes = (glassCss.match(/background:color-mix\(in srgb,/g) ?? []).length
+      const solid = (glassCss.match(/background:var\(--(dsw-alias-bg-overlay|wisp-surface)/g) ?? []).length
+      check(mixes === 4 && solid >= 4,
+        'each one keeps an opaque background first, so a browser without color-mix still gets a solid surface',
+        `color-mix ${mixes} / solid fallback ${solid}`)
+    }
+
     /* ---- 指针靠近：她朝指针侧身；出圈归零 ----
        注意：v1.50.0 起「左右晃动」是四选一，**默认那档（微摆）不读指针** ——
        这一段测的是「跟着鼠标」那一档，所以先拨过去。 */
