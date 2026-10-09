@@ -38,7 +38,13 @@
 
 | 名字 | 谁读它 | 今天的行为 |
 |---|---|---|
-| `walk`（姿态名） | `build.mjs` 扫 `assets/<skin>/*.webp` 自动发现（`assets/motion/`、`assets/audio/` 是保留目录） | 没有 `walk.webp` 就没有这个姿态 |
+| `walk`（姿态名） | **写死在 `build.mjs` 的 `MOODS` 表里**（v1.56.0 已加） | 没有 `walk.webp` 就没有这个姿态 |
+
+> **更正（v1.56.0 实测）**：这一格原来写的是"`build.mjs` 扫 `assets/<skin>/*.webp` 自动发现"——
+> **那是错的**。`build.mjs` 的姿态表是**写死的** `MOODS` 常量，加一个姿态必须同时改它；
+> 素材放进 `assets/<skin>/walk.webp` 而没改表，构建**不会报错**，只是那张图永远不进包 ——
+> 表现是"她走路时用的是站姿"。这一版把 `walk` 加进 `MOODS`（必填，不是 `OPTIONAL_MOODS`）后，
+> 入包素材从 144 张变成 **162 张（18 套 × 9 张）**，预检那句也相应改成"all nine poses"。
 | `assets/<skin>/walk.webp` | 客户端：内联成 data URI，塞进 `lib/client.js`（现在 23.4 MB） | —— |
 | `assets/motion/<skin>_walk.webp` | 宿主半包 `/wisp-motion/` 路由发到页面；客户端只拿文件名清单（`MOTION` 表） | 单条上限 **12 MB**（`MOTION_MAX_BYTES`） |
 

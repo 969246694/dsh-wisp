@@ -60,7 +60,12 @@ const outPath = join(here, 'lib', 'client.js')
 
 /* report = 抱着记录本汇报（值班汇报 / 今日小结 / 专注结束）。它和其它格子一样，
    但**允许缺素材**：缺了就跳过，客户端由 SPRITE_FALLBACK 退回 idle。 */
-const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'report']
+/* walk 是第 9 个姿态（v1.56.0 接入）。它和 report 不一样：**必填**。
+   理由见 docs/walk-action-prep.md 第 7 节 —— 要么九张全有、要么九张全无，
+   不许出现"17 套能走、2 套站着不动"的半成品：那种状态在画面上只有她走路时才发现得了。
+   注意这份表是**写死的**：build.mjs 并不"扫目录自动发现"新姿态，
+   加一个姿态必须同时改这里（那份文档里"自动发现"的说法是错的，已按实测更正）。 */
+const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'walk', 'report']
 const OPTIONAL_MOODS = ['report']
 
 /* 皮肤 = assets/ 下的一个子目录，里面是这套皮肤的 <mood>[_tier].webp。

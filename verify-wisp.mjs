@@ -5760,8 +5760,13 @@ if (clientSrc !== null) {
        **v1.47.0 起动图不再走 Blob**（它是宿主路由下的文件 URL），所以这个数只数立绘。
        **v1.48.2 再 +1 = 15**：默认皮肤从 deepsea 换成 canon，而这一轮 soak 只在
        classic / deepsea 之间来回切 —— 挂载时多出来的 canon 那一张是**新的第三套**，
-       所以上界跟着 +1（仍然与切换次数无关，120 次切换一个都不多）。 */
-    check(soak.urLs.length <= 15,
+       所以上界跟着 +1（仍然与切换次数无关，120 次切换一个都不多）。
+       **v1.56.0 +2 = 17**：走路姿态（walk）进包了。这一轮 soak 推进的虚拟时间
+       （120 × 1.5 s = 180 s > 溜达间隔 45 s）足够让"自己溜达"触发，她于是真的进入 walk
+       并加载走路立绘 —— 这一轮里参与切换的两个皮肤各一张，所以 +2。
+       这一条因此从"没多出来"变成了"**真的走了**"的证据：walk 没进包时它会退回 idle
+       （那张早就在缓存里），数字反而不动。仍然与切换次数无关。 */
+    check(soak.urLs.length <= 17,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
     /* 反过来钉"没有被内联回来"：只要有一份 MB 级的 image/webp blob，就说明构建又把
@@ -7305,8 +7310,9 @@ if (clientSrc !== null) {
       const skins = Object.keys(value)
       const missing = []
       for (const skin of skins) {
-        /* 八个情绪：加了 eat（干饭）之后这里也要跟上 —— 漏一个就会让"每套皮肤都齐"变成假绿。 */
-        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat']) {
+        /* 九个姿态：加了 eat（干饭）之后这里要跟上，加了 walk（走路）之后同样要跟上 ——
+           漏一个就会让"每套皮肤都齐"变成假绿。 */
+        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'walk']) {
           const uri = value[skin]?.[mood]
           if (typeof uri !== 'string' || uri.indexOf('data:image/') !== 0) missing.push(`${skin}/${mood}`)
         }
@@ -7317,8 +7323,8 @@ if (clientSrc !== null) {
       skinReport = `table does not evaluate: ${error.message}`
     }
   }
-  if (skinsOk) ok('every skin carries all eight moods as data URIs', skinReport)
-  else bad('every skin carries all eight moods as data URIs', skinReport)
+  if (skinsOk) ok('every skin carries all nine poses as data URIs (eight moods + walk)', skinReport)
+  else bad('every skin carries all nine poses as data URIs (eight moods + walk)', skinReport)
 
   if (clientSrc.includes('__SPRITES__')) bad('no leftover build placeholder', 'run `node build.mjs`')
   else ok('no leftover build placeholder')
