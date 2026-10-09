@@ -4555,7 +4555,8 @@ if (clientSrc !== null) {
         ['sleep', 'canon_sleepy'], ['alert', 'canon_work'], ['proud', 'canon_proud'],
         ['eat', 'canon_eat'], ['poked', 'canon_poked'],
       ]
-      if (SHIPPED_CANON.length === 8) {
+      /* 8 个状态之外，v1.55.0 起 canon 还有一条走路（canon_walk.webp）—— 所以判据是「至少那 8 条到齐」。 */
+    if (SHIPPED_CANON.length >= 8) {
         const wrongClip = []
         const wrongSrc = []
         const wrongFit = []
@@ -4758,9 +4759,12 @@ if (clientSrc !== null) {
     check(fifth.element.dataset.gliding === 'true', 'the stroll is a glide, not a teleport')
     const glideWritten = String(fifth.element.style.getPropertyValue('--wisp-glide-ms'))
     const glideMs = Number(glideWritten.replace('ms', ''))
-    check(Number.isFinite(glideMs) && glideMs > 0 && glideMs % 850 === 0,
+    /* 周期长度**不写死**：它是素材量出来的（v1.55.0 起 791ms）。写死 850 的话，
+       改素材的人会把这条测试改成"跟着改数字"，而那正是它要防的事。 */
+    const glideCycle = Number((/const WALK_CYCLE_MS = (\d+)/.exec(String(clientSrc)) ?? [])[1])
+    check(Number.isFinite(glideMs) && glideMs > 0 && glideCycle > 0 && glideMs % glideCycle === 0,
       'and its length is a whole number of walk cycles — she can never stop mid-stride',
-      glideWritten)
+      glideWritten + ' (cycle ' + String(glideCycle) + 'ms)')
     h.advance(2000, 200)
     check(fifth.element.dataset.gliding === undefined, 'the glide class is cleared afterwards')
     check(JSON.parse(h.win.localStorage.getItem('dsh-wisp:position:v1') || '{}').x !== strolled.x,
@@ -4774,8 +4778,8 @@ if (clientSrc !== null) {
     const walkCycleMs = Number((/const WALK_CYCLE_MS = (\d+)/.exec(walkSrc) ?? [])[1])
     const walkFrames = Number((/const WALK_FRAMES_PER_CYCLE = (\d+)/.exec(walkSrc) ?? [])[1])
     const walkPerCyclePx = Number((/const WALK_PER_CYCLE_PX = (\d+)/.exec(walkSrc) ?? [])[1])
-    check(walkCycleMs === 850 && walkFrames === 25 && walkPerCyclePx === 130,
-      'the walk contract lives in one place: 850ms per cycle, 25 frames, 130px of travel',
+    check(walkCycleMs === 791 && walkFrames === 19 && walkPerCyclePx === 130,
+      'the walk contract lives in one place: 791ms per cycle and 19 frames (both measured off canon_walk.webp), 130px of travel',
       `${walkCycleMs}ms / ${walkFrames} frames / ${walkPerCyclePx}px`)
     check(/\[data-gliding="true"\]\{transition:transform var\(--wisp-glide-ms/.test(walkSrc),
       'and the CSS transition reads that same variable, so the two can never disagree')
@@ -6528,6 +6532,7 @@ const MOTION_DISK_BUDGET_KB = 115000
       /* 这一条是 1.49.2 的落点：立绘换了新的一张（`45E5D3F1…`），素材跟着重做。 */
       canon_eat: ['assets/canon/eat.webp', '45E5D3F11E4E707BD8BD17572BDA851C191F8CCEF3C503A2F7228C69F0CEC8D0'],
       canon_poked: ['assets/canon/poked.webp', '7738A9E3090B91EA89CB2E78F6C8BC5C37C684570C81568AE05E739B5EFCEFC8'],
+      canon_walk: ['assets/canon/walk.webp', 'C58B921EABA57D552D438F841C61EDEE90A4874892D760F199C1E78643DD150F'],
       swim_idle: ['assets/swim/idle.webp', '34B966C92B1E30119C96BEA5AE558C4F9B1244550A3DFB10EC819AE2F5B8EE26'],
       swim_attn: ['assets/swim/attn.webp', '723B3DA12C98028C03E80C1D1E810D04ABF779AFABBD8E36D1D42B6D72C606BC'],
       swim_happy: ['assets/swim/happy.webp', '311FE375CF1726E8F40AA80D34D6E340D41C550CB4971FCC0435E510B72DD282'],
@@ -6642,6 +6647,7 @@ const MOTION_DISK_BUDGET_KB = 115000
       lab_attn: [95, 'cut to take frames 0..94 (ratio 1.04)'],
       lab_poked: [88, 'cut to take frames 8..95 (ratio 0.81)'],
       lab_proud: [93, 'cut to take frames 2..94 (ratio 0.99)'],
+      canon_walk: [38, 'TWO walk cycles, not the 50 the contract assumed: the take natural cadence is 19 frames (791ms) per cycle, so 2 cycles = 38 frames at NATIVE timing — forcing 25 frames/850ms would need a 7% slowdown or duplicated frames'],
     }
 
     /* [素材字节的 sha256, 量出来的 ratio]。重新编码一条素材 = 这一行作废。 */
@@ -6651,6 +6657,7 @@ const MOTION_DISK_BUDGET_KB = 115000
       canon_happy: ['DD50A332E3A155C7CA7EA69A0C7C619F300D6ABDD3C1680B70CBCDAEDFF3F557', 0.55],
       canon_idle: ['D769CEBDC9E7630C9C19403B3AE17C239D61B252C41E5FF3DA9AB8B3A079E070', 0.60],
       canon_poked: ['433D3CE7E60ACAD2B1E70281629E1CB42CE697F275280896628108B296398327', 1.06],
+      canon_walk: ['754C303BB4FE1CBCB8511A03A6BA3B0FFD915A2CC9301F92A84527F9D9B3D784', 0.92],
       canon_proud: ['F26BD78422983805D5376C8ECB782B37F0803F1F800C81DA9B9DEFFD1D32FEEA', 0.94],
       canon_sleepy: ['A5A19C607C4BE054C68486FF0F0A6EA41ED0E0CBA83F8516C77E1B76E549FC13', 1.41],
       canon_work: ['8FC81BE1A44DCEA8A8733A31E1DF7D3A74C94DAFE2E9C9696BE801BB1997C169', 1.02],
@@ -7052,16 +7059,18 @@ const MOTION_DISK_BUDGET_KB = 115000
       && typeof motionValue?.[wired[k]] !== 'string')
     const canonUnwired = SHIPPED_CANON.map((f) => f.slice(0, -'.webp'.length))
       .filter((c) => !Object.values(wired ?? {}).includes(c))
-    check(SHIPPED_CANON.length === 0 || SHIPPED_CANON.length === 8,
-      'the eight original-maid clips ship as a SET — never half of them (the default skin is canon, so a half set means some states simply never move)',
+    /* 计数跟着接线走，不写死：canon 那套是 8 个状态 + （接线了就有）走路。 */
+    const canonExpected = (wired ?? {})['canon:walk'] === undefined ? 8 : 9
+    check(SHIPPED_CANON.length === 0 || SHIPPED_CANON.length === canonExpected,
+      'the original-maid clips ship as a SET — never half of them (the default skin is canon, so a half set means some states simply never move)',
       SHIPPED_CANON.length
         ? `${SHIPPED_CANON.length} clip(s): ${SHIPPED_CANON.join(', ')}`
         : '0/8 generated yet — the original-maid states stay on the static sprite, silently by design')
-    check(canonKeys.length === 8 && new Set(canonKeys).size === 8
-      && (SHIPPED_CANON.length === 0 || new Set(canonClips).size === 8)
+    check(canonKeys.length === canonExpected && new Set(canonKeys).size === canonExpected
+      && (SHIPPED_CANON.length === 0 || new Set(canonClips).size === canonExpected)
       && canonMissing.length === 0 && canonUnwired.length === 0,
       'all eight original-maid states are wired, each to its OWN clip — and every clip that ships has a state to play it (v1.49.0)',
-      `wired ${canonKeys.length}/8 · shipped ${SHIPPED_CANON.length}/8`
+      `wired ${canonKeys.length}/${canonExpected} · shipped ${SHIPPED_CANON.length}/${canonExpected}`
         + (canonUnwired.length ? ` · 没人播：${canonUnwired.join(', ')}` : '')
         + (canonMissing.length ? ` · 查不到：${canonMissing.join(', ')}` : ''))
 
