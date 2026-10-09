@@ -14,8 +14,11 @@
      seam     = 第 n-1 帧 → 第 0 帧（就是循环接回去的那一步）的 |ΔRGB| 全画布均值
      meanStep = 相邻两帧同一个量的平均（"这条素材平时一帧动多少"）
 
-   ratio ≈ 1 表示接头和平时一帧的变化一样大（看不出接缝）；
-   ratio > 1.2 表示接回去那一下比平时任何一步都猛 —— 眼睛会看到"跳"。
+   **两边都有错法**：
+     ratio ≈ 1   接回去正好是普通的一步 —— 对；
+     ratio → 0   最后一帧和第一帧几乎一样，接回去**同一张画停两帧** —— 看到的是"顿一下"；
+     ratio > 1.25 接回去那一下比平时都猛 —— 看到的是"跳"。
+   所以判定是一条**带**（0.75~1.25），不是一个上限。
 
    只量 **RGB**，不量 alpha：alpha 是无损编码的，实测同参数重编码逐位相同；
    而透明像素下面的 RGB 编码器有权改（改了你也不知道），把它算进来只会污染指标。
@@ -159,7 +162,7 @@ if (argv.includes('--json')) {
   console.log(`${pad('clip', 18)}${'frames'.padStart(7)}${'meanStep'.padStart(10)}${'seam'.padStart(9)}${'ratio'.padStart(8)}  verdict`)
   for (const r of rows) {
     if (r.error) { console.log(`${pad(r.clip, 18)}  ERROR ${r.error}`); continue }
-    const verdict = r.ratio > 1.2 ? 'VISIBLE SEAM' : r.ratio > 1.0 ? 'borderline' : 'smooth'
+    const verdict = r.ratio > 1.25 ? 'JUMP' : r.ratio < 0.75 ? 'PAUSE (loop holds)' : 'smooth'
     console.log(`${pad(r.clip, 18)}${String(r.frames).padStart(7)}${r.meanStep.toFixed(3).padStart(10)}${r.seam.toFixed(3).padStart(9)}${r.ratio.toFixed(2).padStart(8)}  ${verdict}`)
   }
   const bad = rows.filter((r) => !r.error && r.ratio > 1.2)

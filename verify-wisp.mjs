@@ -6581,7 +6581,7 @@ const MOTION_DISK_BUDGET_KB = 115000
        三件事一起钉，缺一不可：
          ① **sha256 钉在素材字节上** —— 换一个字节就红，必须重新量
             （和上面 MOTION_SOURCES 同一个道理：声明表的价值就在于它不会自己漂）；
-         ② **目标线** MOTION_SEAM_MAX，超了就是超了；
+         ② **目标带** MOTION_SEAM_LO ~ MOTION_SEAM_HI：**太小是「停一下」，太大是「跳」**，两边都算错；
          ③ **欠账表** MOTION_SEAM_KNOWN：还没重做的几条**必须**登记在案，而且
             **只许变好** —— 登记值就是它被接受时的上界。修好一条就得把名字删掉
             （下面有反向断言：欠账表里不许留"其实已经不欠"的名字）。
@@ -6592,30 +6592,37 @@ const MOTION_DISK_BUDGET_KB = 115000
        所以画质一个字节没动，见 tools/motion-trim.mjs。
        剩下五条要重做素材才能修（canon_attn 遍历全部切点都回不到起点，
        生成端才能解决），先登记、不许变坏。 */
-    const MOTION_SEAM_MAX = 1.2
+    /* ratio = 缝 / 平均帧步，**两边都有错法**：
+         ≈ 1    → 接回去正好是普通的一步（对）
+         → 0    → 最后一帧和第一帧几乎一样 —— 接回去**同一张画停两帧**，看着就是"顿一下"
+         > 1.25 → 接回去那一下比平时都猛 —— 看着就是"跳"
 
-    /* 每个素材的**帧预算**：默认 97（720p / 24fps / 4.04s）。例外必须点名、写清帧数与理由 ——
-       "帧预算不许动"那条规矩防的是"抽帧省体积"，不是防这个；但正因为是例外，
-       它就得写在一个能被复查的地方，而不是把 97 悄悄改成别的数字。
+       **这一条是 1.54.1 补的，代价是一次真实的翻车。** 原先这里只有一个上限，
+       于是"几乎重复"那一档一路绿灯：我按"缝最小"去挑裁切窗口，挑出来的恰恰是
+       **把慢区接了两遍**的那种切口 —— 宵蓝研究员的待机就那么带着"停一下"上线了，
+       是用户看出来的。**指标只盯一边，就会把反方向推到底。** */
+    const MOTION_SEAM_LO = 0.75
+    const MOTION_SEAM_HI = 1.25
 
-         canon_work / swim_work（96 帧）：末帧是离群帧，砍掉它环缝 1.94→1.02 / 1.41→0.46。
-         canon_attn（49 帧）：重做的那条素材里**整段就是一个 2.04 秒的闭环**（生成结果的第 39~87 帧）。
-                     那 97 帧的完整素材本身环缝 1.65x，而按真正闭合的那一段切出来是 **0.57x** ——
-                     少掉的 48 帧是冗余，不是内容（模型套了两圈，只有一圈是闭合的）。 */
+    /* 每个素材的**帧预算**：默认 97（720p / 24fps / 4.04s）。例外必须点名、写清帧数与理由。
+       **判据从 1.54.1 起变了**：切窗口不再挑"缝最小"，而是挑**缝等于普通一步**的那一段
+       （缝最小 = 把素材里的慢区接了两遍 = 接回去停一下，正是 1.54.1 修的那个 bug）。 */
     const MOTION_FRAMES = {
       canon_work: [96, 'last frame dropped: its step was ~2x the clip mean and it inflated the wrap 1.94 → 1.02'],
       swim_work: [96, 'last frame dropped: the wrap fell 1.41 → 0.46'],
-      canon_attn: [49, 'the regenerated take contains one genuinely closed 2.04s cycle (its frames 39..87, wrap 0.57x); the full 97-frame take wraps at 1.65x'],
-      night_happy: [49, 'the take contains one genuinely closed 2.04s cycle; the full 97 frames wrap at 1.41x, the cut 49 at 0.41x'],
-      night_eat: [95, 'the take closes on its last 95 frames (0.45x); the full 97 wrap at 1.29x'],
-      lab_idle: [92, 'closes on frames 2..93 (0.45x); the full 97 wrap at 1.56x'],
-      lab_attn: [95, 'closes on frames 0..94 (1.04x); the full 97 wrap at 2.07x'],
-      lab_poked: [88, 'closes on frames 8..95 (0.81x); the full 97 wrap at 1.34x'],
+      canon_attn: [50, 'cut to take frames 10..59 — chosen because the wrap lands on an ORDINARY step (1.06), not because it is smallest'],
+      night_happy: [52, 'cut to take frames 21..72 (ratio 1.01)'],
+      night_eat: [90, 'cut to take frames 5..94 (ratio 1.05)'],
+      lab_idle: [84, 'cut to take frames 3..86 (ratio 1.04) — same rule: the wrap must be an ordinary step'],
+      lab_happy: [93, 'cut to take frames 4..96 (ratio 0.91)'],
+      lab_attn: [95, 'cut to take frames 0..94 (ratio 1.04)'],
+      lab_poked: [88, 'cut to take frames 8..95 (ratio 0.81)'],
+      lab_proud: [93, 'cut to take frames 2..94 (ratio 0.99)'],
     }
 
     /* [素材字节的 sha256, 量出来的 ratio]。重新编码一条素材 = 这一行作废。 */
     const MOTION_SEAM = {
-      canon_attn: ['D1F96A2E5AC8B02CBC6920107D18E307D731BAC495444BF9ADB367BCCD05E902', 0.57],
+      canon_attn: ['7C624B93366605DE018B808A98783CA56469BC0F49FABAD57797EC771BA530C6', 1.06],
       canon_eat: ['36ECC6BBE18816225D66DC3090306378713293A181A09FD8FFACC0E5F3E464C1', 1.32],
       canon_happy: ['DD50A332E3A155C7CA7EA69A0C7C619F300D6ABDD3C1680B70CBCDAEDFF3F557', 0.55],
       canon_idle: ['D769CEBDC9E7630C9C19403B3AE17C239D61B252C41E5FF3DA9AB8B3A079E070', 0.60],
@@ -6628,15 +6635,15 @@ const MOTION_DISK_BUDGET_KB = 115000
       deepsea_sleepy: ['868457FD3A61EDA137787B76AD89F6DFB3703065ABF5B7188E2AA5B20F92F811', 0.80],
       lab_attn: ['CDBED6EE1241442A4D9CB84721E0C2B1DED01A4F09A72117983C077E46C21EBC', 1.04],
       lab_eat: ['BA8D192C1BD36DE8B08132280FC8CEAC48E4825FC6DCE3678B286D8F7039E464', 1.05],
-      lab_happy: ['8507B18A86452CE99C4DA5C7C15E9D8682A9F78886F81F5D3C8349F07D97C03C', 0.37],
-      lab_idle: ['73E6DF3E1AE5EC40A227B2626AB921EE4D94AB2B3A802F2168B19961664B5394', 0.45],
+      lab_happy: ['1E0F91AE99DBC04466FB7FC091DD5C2C75D4720B204FF5FAF202BDBB26B65A75', 0.91],
+      lab_idle: ['DBDD32F1241774DC0FB9D84A4831193752AA2AE385B5D564F1A4CE688E232A52', 1.04],
       lab_poked: ['F8BE3D90332E5505A1D0EBF80C8F5CB6630564DBD104827AF9BF66CBC19A1F48', 0.81],
-      lab_proud: ['FAD54515282F0DFCAF3A4401C93FD07893215404E1F4D8383ADF384C31FDF57B', 0.57],
+      lab_proud: ['30140CCC949A4E590F8749205DAFDBEB2A8EC88CFE1F8225D3B9F09E22E7CEF6', 0.99],
       lab_sleepy: ['6D305935B0BDAC6C71F9FED115724DEDAC1BFCCD338ED2DFEFF6CF711298EFBD', 0.89],
       lab_work: ['FEBADAB3CD8E93DFCB2DAABCC5E36615ACEB07C3304E4B4E1E7EAEB93BC85BFB', 0.96],
       night_attn: ['BE6952553DA2872A50700838C437DA82413C44088AC4DA8AF158B1A5B156B6D3', 0.79],
-      night_eat: ['A79031C253B342C942B20B42C6467AEE99DE24B6E20D6B94EF678C2A844AB0D8', 0.45],
-      night_happy: ['0312155299FCC3CEFF8B658B6117EF9BB7041B2E4508953953F550329284E8FA', 0.41],
+      night_eat: ['B52C811123D987B6AFC5A9C32DDC7BE805A5EBFE8C3397BA34F86076EAF900F9', 1.05],
+      night_happy: ['5C74F9FDA4BE1F5C85C87E815DBB622C4E6F6E697C87E2EF6D6F8F88E9CA760E', 1.01],
       night_idle: ['0DA1E719523E40101ECAD5E1D4E187CE45FE93B7EB35D00E9A08BA2D10B51CF7', 0.70],
       night_poked: ['C0D2CB61D87AD90CCAB67314586AA2DF4ABF210C8BEDF582C6EC3DE8E79FA2A9', 0.74],
       night_proud: ['998B51B08580921A542326BC2542A64ACADF1BC46E4B4F913ED1430A39FF3CFA', 1.00],
@@ -6652,12 +6659,26 @@ const MOTION_DISK_BUDGET_KB = 115000
       swim_work: ['09990AB4FB0AEA42BBEE8FF5EAD28769E82F7BE5C422113FE0B0FCCF781B3B90', 0.46],
     }
 
-    /* 还没重做、且**已知**超线的几条。值是它被接受时的上界 —— 只许变小。 */
+    /* 已知出带、还没重切/重做的：[方向, 接受时的值]。
+       'pause' = 值只能**往上**（变大才靠近 1.0）；'jump' = 值只能**往下**。
+       方向变了也算翻车 —— 一条 pause 变成 jump 不是"变好了"。
+       这批都是没有源素材、只能靠改容器相位或重做才能修的（见 README 的 1.54.1 一节）。 */
     const MOTION_SEAM_KNOWN = {
-      canon_eat: 1.32,
-      canon_sleepy: 1.41,
-      swim_attn: 1.39,
-      swim_poked: 1.34,
+      canon_happy: ['pause', 0.55],
+      canon_idle: ['pause', 0.60],
+      deepsea_happy: ['pause', 0.38],
+      deepsea_idle: ['pause', 0.65],
+      night_idle: ['pause', 0.70],
+      night_poked: ['pause', 0.74],
+      swim_eat: ['pause', 0.61],
+      swim_happy: ['pause', 0.55],
+      swim_proud: ['pause', 0.59],
+      swim_sleepy: ['pause', 0.67],
+      swim_work: ['pause', 0.46],
+      canon_eat: ['jump', 1.32],
+      canon_sleepy: ['jump', 1.41],
+      swim_attn: ['jump', 1.39],
+      swim_poked: ['jump', 1.34],
     }
     {
       const undeclared = keys.filter((k) => MOTION_SEAM[k] === undefined)
@@ -6669,13 +6690,14 @@ const MOTION_DISK_BUDGET_KB = 115000
           : keys.length + ' clips measured · worst ' + Math.max(...Object.values(MOTION_SEAM).map(([, r]) => r)).toFixed(2) + 'x')
 
       const stale = []
-      const above = []
+      const off = []
       for (const [clip, [want, ratio]] of Object.entries(MOTION_SEAM)) {
         const p = clipPath(clip)
         if (p === null || !existsSync(p)) { stale.push(clip + ': missing'); continue }
         const got = createHash('sha256').update(readFileSync(p)).digest('hex').toUpperCase()
         if (got !== want) stale.push(clip + ': ' + got.slice(0, 12) + '… ≠ ' + want.slice(0, 12) + '…')
-        if (ratio > MOTION_SEAM_MAX) above.push([clip, ratio])
+        if (ratio < MOTION_SEAM_LO) off.push([clip, ratio, 'pause'])
+        else if (ratio > MOTION_SEAM_HI) off.push([clip, ratio, 'jump'])
       }
       check(stale.length === 0,
         'and each ratio is pinned to the BYTES it was measured from — re-encode a clip and the number is void until someone runs tools/motion-seam.mjs again (环缝闸 2026-10-09)',
@@ -6683,25 +6705,30 @@ const MOTION_DISK_BUDGET_KB = 115000
           ? stale.join(' | ') + ' —— 量一遍：node tools/motion-seam.mjs --table'
           : Object.entries(MOTION_SEAM).map(([k, [h]]) => k + '=' + h.slice(0, 8) + '…').join(' · '))
 
-      const unlisted = above.filter(([k]) => MOTION_SEAM_KNOWN[k] === undefined)
+      const unlisted = off.filter(([k]) => MOTION_SEAM_KNOWN[k] === undefined)
       check(unlisted.length === 0,
-        'and every clip still above the ' + MOTION_SEAM_MAX + ' line is on the KNOWN list — a new offender cannot slip in unannounced',
+        'and every clip outside the ' + MOTION_SEAM_LO + '–' + MOTION_SEAM_HI + ' band is on the KNOWN list — a pause or a jump cannot ship unannounced',
         unlisted.length
-          ? unlisted.map(([k, r]) => k + ' ' + r.toFixed(2)).join(', ') + ' —— 要么重做这条素材，要么把它登记进 MOTION_SEAM_KNOWN'
-          : above.length + ' clip(s) above the line, all declared')
+          ? unlisted.map(([k, r, why]) => k + ' ' + r.toFixed(2) + ' (' + why + ')').join(', ') + ' —— 要么重切/重做这条素材，要么把它登记进 MOTION_SEAM_KNOWN'
+          : off.length + ' clip(s) outside the band, all declared')
 
-      const regressed = above.filter(([k, r]) => MOTION_SEAM_KNOWN[k] !== undefined && r > MOTION_SEAM_KNOWN[k] + 1e-9)
-      check(regressed.length === 0,
-        'and a clip on the KNOWN list may only get BETTER — the recorded value is the ceiling it was accepted at',
-        regressed.length
-          ? regressed.map(([k, r]) => k + ': ' + r.toFixed(2) + ' > 接受时的 ' + MOTION_SEAM_KNOWN[k].toFixed(2)).join(' | ')
-          : Object.entries(MOTION_SEAM_KNOWN).map(([k, v]) => k + '≤' + v.toFixed(2)).join(' · '))
+      const mislabelled = off.filter(([k, , why]) => MOTION_SEAM_KNOWN[k] !== undefined && MOTION_SEAM_KNOWN[k][0] !== why)
+      const regressed = off.filter(([k, r, why]) => {
+        const known = MOTION_SEAM_KNOWN[k]
+        if (known === undefined || known[0] !== why) return false
+        return why === 'pause' ? r < known[1] - 1e-9 : r > known[1] + 1e-9
+      })
+      check(mislabelled.length === 0 && regressed.length === 0,
+        'and a clip on the KNOWN list may only move TOWARD the band — the recorded value is the worst it was accepted at',
+        mislabelled.length || regressed.length
+          ? mislabelled.map(([k, , why]) => k + ': 方向变了（现在 ' + why + '）').join(' | ')
+          : Object.entries(MOTION_SEAM_KNOWN).map(([k, v]) => k + (v[0] === 'pause' ? ' ≥' : ' ≤') + v[1].toFixed(2)).join(' · '))
 
       const pardoned = Object.keys(MOTION_SEAM_KNOWN)
-        .filter((k) => MOTION_SEAM[k] !== undefined && MOTION_SEAM[k][1] <= MOTION_SEAM_MAX)
+        .filter((k) => MOTION_SEAM[k] !== undefined && MOTION_SEAM[k][1] >= MOTION_SEAM_LO && MOTION_SEAM[k][1] <= MOTION_SEAM_HI)
       check(pardoned.length === 0,
         'and the KNOWN list holds no stale pardons — fix a clip and its name must leave the list',
-        pardoned.length ? pardoned.join(', ') + ' 已经在线内了，请从 MOTION_SEAM_KNOWN 删掉' : 'no stale pardon')
+        pardoned.length ? pardoned.join(', ') + ' 已经进带了，请从 MOTION_SEAM_KNOWN 删掉' : 'no stale pardon')
     }
 
     /* ---- 边缘平滑度不是"看起来"的事，是**编码参数**的事（v1.46.4）----
