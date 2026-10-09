@@ -3368,6 +3368,10 @@ if (clientSrc !== null) {
       return ev
     }
 
+    /* 溜达必须关掉再量位置：v1.55.1 起她一次溜达真的走一个**步幅**（547px），
+       随机那一下落进这段测试里，before/after 的差就不止拖拽的那 300px —— 实测三次里挂一次。
+       这条测试量的是拖拽，不该被自主动作扰动。 */
+    api.configure({ wander: false })
     const before = api.position
     const start = centre()
     check(press(start.x, start.y).defaultPrevented, 'a press on her body takes the pointer', `${start.x},${start.y}`)
@@ -3755,7 +3759,7 @@ if (clientSrc !== null) {
        而"她走得少了、也走得更近了"过一会儿一定看得出来。 */
     const moFx = moApi.doctor().motion.effects
     check(moFx.gesture === 0.5 && moFx.lean === 0.5
-      && moFx.wanderRange === Math.round(260 * 0.4) && moFx.wanderEvery === Math.round(45000 * 2.5),
+      && moFx.wanderRange === Math.round(600 * 1) && moFx.wanderEvery === Math.round(45000 * 2.5),
       'doctor() spells out what the level changes: gesture, lean, and how far/often she strolls',
       JSON.stringify(moFx))
 
@@ -3803,9 +3807,9 @@ if (clientSrc !== null) {
       `${moApi.position.x},${moApi.position.y}`)
     mo.advance(70000, 500)          // 累计 116s > 45s × 2.5 = 112.5s
     const moStroll = Math.hypot(moApi.position.x - moHome.x, moApi.position.y - moHome.y)
-    check(moStroll > 0 && moStroll <= Math.round(260 * 0.4) + 1,
-      'but she does stroll once her longer interval is up — and never past the halved range',
-      `${Math.round(moStroll)}px in one stroll, halved range would be 104px`)
+    check(moStroll > 0 && moStroll <= Math.round(600 * 1) + 1,
+      'but she does stroll once her longer interval is up — and never past the configured range (the restrained level changes how OFTEN she strolls, not how far: one step is one stride and cannot be shortened)',
+      `${Math.round(moStroll)}px in one stroll, range 600px`)
     /* 把她放回原处、并恢复全幅：后面几节共用这个 harness，不该被这段挪走的位置污染。 */
     moApi.move(moHome.x, moHome.y)
     moApi.configure({ motion: 'full', wander: false })
@@ -4740,7 +4744,7 @@ if (clientSrc !== null) {
     /* ------------------------------------------- 3i-bis. 自己踱步 + 右键归位 */
     head('3i-bis. idle wander and the right-click trip home')
 
-    plugin.apply(h.ctx, { reactions: false, wander: true, wanderMs: 5000, wanderRange: 200 })
+    plugin.apply(h.ctx, { reactions: false, wander: true, wanderMs: 5000, wanderRange: 1200 })
     const fifth = h.win.__wisp
     const body5 = fifth.element.querySelector('.wisp-body')
     const BOX_W5 = 140 * 4
@@ -4754,7 +4758,7 @@ if (clientSrc !== null) {
     const strolled = fifth.position
     check(strolled.x !== 200 || strolled.y !== 200, 'she strolls on her own while idle',
       `200,200 -> ${strolled.x},${strolled.y}`)
-    check(Math.abs(strolled.x - 200) <= 200 && Math.abs(strolled.y - 200) <= 200,
+    check(Math.abs(strolled.x - 200) <= 1200 && Math.abs(strolled.y - 200) <= 1200,
       'a stroll stays inside the configured range', `${strolled.x},${strolled.y}`)
     check(fifth.element.dataset.gliding === 'true', 'the stroll is a glide, not a teleport')
     const glideWritten = String(fifth.element.style.getPropertyValue('--wisp-glide-ms'))
@@ -4778,8 +4782,8 @@ if (clientSrc !== null) {
     const walkCycleMs = Number((/const WALK_CYCLE_MS = (\d+)/.exec(walkSrc) ?? [])[1])
     const walkFrames = Number((/const WALK_FRAMES_PER_CYCLE = (\d+)/.exec(walkSrc) ?? [])[1])
     const walkPerCyclePx = Number((/const WALK_PER_CYCLE_PX = (\d+)/.exec(walkSrc) ?? [])[1])
-    check(walkCycleMs === 791 && walkFrames === 19 && walkPerCyclePx === 130,
-      'the walk contract lives in one place: 791ms per cycle and 19 frames (both measured off canon_walk.webp), 130px of travel',
+    check(walkCycleMs === 791 && walkFrames === 19 && walkPerCyclePx === 547,
+      'the walk contract lives in one place: 791ms per cycle, 19 frames, 547px of travel — all three MEASURED off canon_walk.webp (the old 130px/850ms/25 were guesses and made her skate)',
       `${walkCycleMs}ms / ${walkFrames} frames / ${walkPerCyclePx}px`)
     check(/\[data-gliding="true"\]\{transition:transform var\(--wisp-glide-ms/.test(walkSrc),
       'and the CSS transition reads that same variable, so the two can never disagree')
@@ -7223,7 +7227,7 @@ if (existsSync(join(here, 'README.md'))) {
   h.win.dispatch('pointerup', {})
 
   /* 静止档也要停住 JS 溜达 —— CSS 关不掉坐标写入 */
-  api.configure({ motion: 'off', wander: true, wanderMs: 150, wanderRange: 200 })
+  api.configure({ motion: 'off', wander: true, wanderMs: 150, wanderRange: 600 })
   const still = { x: api.position.x, y: api.position.y }
   h.advance(4000, 100)
   check(api.position.x === still.x && api.position.y === still.y,
