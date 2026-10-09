@@ -4790,8 +4790,12 @@ if (clientSrc !== null) {
     check(/const SPRITE_FALLBACK = \{[^}]*walk: 'idle'/.test(walkSrc)
       && /const SPRITE_OF = \{[^}]*walk: 'walk'/.test(walkSrc),
       'and a skin without the walk sprite degrades to idle instead of showing an empty box')
-    check(/\|\| mood === 'walk'\) return/.test(walkSrc),
+    /* 顺序无关：这张"稳态轮询不许覆盖"的名单会继续变长（v1.57.1 就在 walk 后面加了 report），
+       原来那条正则把 walk 当成名单里的**最后一个**，加一个心情就会误红。 */
+    check(/\|\| mood === 'walk'[\s\S]{0,160}?\) return/.test(walkSrc),
       'while she is walking the steady poll does not yank the mood back mid-stride')
+    check(/\|\| mood === 'report'[\s\S]{0,160}?\) return/.test(walkSrc),
+      'and the same holds for a report — it must outlive a poll tick too (v1.57.1)')
     check(/\{ key: 'walk', mood: 'walk'/.test(walkSrc), 'and the action preview can try it on its own')
 
     /* 真跑一次：溜达期间应当同时是「滑行中 / walk / 按行进方向镜像」。 */
@@ -5876,7 +5880,8 @@ head('3y. dialogs: about her, and the action preview')
   dlgApi.openActions()
   check(dlgApi.dialog === 'actions', 'the action preview opens', String(dlgApi.dialog))
   const cells = dlg.all('wisp-cell').filter((el) => el.removed !== true)
-  check(cells.length === 9, 'and lists one action per mood — nine of them', `${cells.length} 格`)
+  /* 十格 = 八个情绪 + 走路（v1.53.0）+ 汇报（v1.57.1）。每加一个姿态这里都要跟着改。 */
+  check(cells.length === 10, 'and lists one action per pose — ten of them (8 moods + walk + report)', `${cells.length} 格`)
   check(cells.every((c) => typeof c.dataset.mood === 'string' && c.dataset.mood !== ''),
     'each cell names its mood', cells.map((c) => c.dataset.mood).join(','))
   check(cells.every((c) => c.querySelector('img') !== null), 'each cell carries a sprite')
@@ -5899,6 +5904,26 @@ head('3y. dialogs: about her, and the action preview')
     'dialog=' + String(dlgApi.dialog) + ' mood=' + String(dlgApi.currentMood))
   dlg.advance(9000, 500)
   check(dlgApi.currentMood !== 'happy', 'and the preview does not stick forever', String(dlgApi.currentMood))
+
+  /* 汇报（v1.57.1）。这一格以前**根本不存在**：report 在产品里跑了四个场景
+     （今日小结 / 专注结束 / 值班汇报 / 安装更新），动作一览里却没有它的格子，
+     所以"她汇报时是什么样"既试不到也看不到。而且它还坏得更深一层 ——
+     四个调用点后面各跟一个**同步**执行的 flashHappy/flashProud，把心情立刻改掉，
+     另外两处又会被 1.2 秒一次的稳态轮询算回 idle：素材做好了，一帧都没显示过。 */
+  const reportCell = cells.find((c) => c.dataset.mood === 'report')
+  check(reportCell !== undefined,
+    'the action list offers 汇报 — it runs in four places, so it must be try-able here',
+    cells.map((c) => c.dataset.mood).join(','))
+  if (reportCell) {
+    reportCell.dispatch('click', { preventDefault() {}, stopPropagation() {} })
+    check(dlgApi.currentMood === 'report', 'and picking it really puts her in the reporting pose', String(dlgApi.currentMood))
+    dlg.advance(1500, 100)
+    check(dlgApi.currentMood === 'report',
+      'the steady poll does not yank the report back mid-sentence', String(dlgApi.currentMood))
+    /* 让它自己到期再往下走 —— 留着一个非 idle 的心情会污染后面那些断言
+       （走路那条就是这么红过一次的）。 */
+    dlg.advance(4000, 200)
+  }
 
   /* 关窗仍有三条路，先验右上角那个 ×（窗还开着，不用重开） */
   const x = dlg.find('wisp-dialog-x')
