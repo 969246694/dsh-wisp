@@ -4663,17 +4663,60 @@ if (clientSrc !== null) {
     const centreOf = () => ({ x: fifth.position.x + BOX_W5 / 2, y: fifth.position.y + BOX_H5 / 2 })
 
     fifth.move(200, 200)                       // away from the corners, so any bearing can move
-    h.advance(6000, 200)
+    /* v1.53.0：滑行时长不再是 1700ms 常数，而是**整数个步态周期** —— 所以不能
+       推进 6 秒再问她在不在滑行（那时候早走完了）。5200ms 落在 5000ms 那一拍之后。 */
+    h.advance(5200, 200)
     const strolled = fifth.position
     check(strolled.x !== 200 || strolled.y !== 200, 'she strolls on her own while idle',
       `200,200 -> ${strolled.x},${strolled.y}`)
     check(Math.abs(strolled.x - 200) <= 200 && Math.abs(strolled.y - 200) <= 200,
       'a stroll stays inside the configured range', `${strolled.x},${strolled.y}`)
     check(fifth.element.dataset.gliding === 'true', 'the stroll is a glide, not a teleport')
+    const glideWritten = String(fifth.element.style.getPropertyValue('--wisp-glide-ms'))
+    const glideMs = Number(glideWritten.replace('ms', ''))
+    check(Number.isFinite(glideMs) && glideMs > 0 && glideMs % 850 === 0,
+      'and its length is a whole number of walk cycles — she can never stop mid-stride',
+      glideWritten)
     h.advance(2000, 200)
     check(fifth.element.dataset.gliding === undefined, 'the glide class is cleared afterwards')
     check(JSON.parse(h.win.localStorage.getItem('dsh-wisp:position:v1') || '{}').x !== strolled.x,
       'a stroll does not overwrite the position the user chose', h.win.localStorage.getItem('dsh-wisp:position:v1'))
+
+    /* ---- 走路接线（v1.53.0）：素材还没生成，契约先立住 -------------------------
+       素材契约在 docs/walk-action-prep.md。这一节钉的是「素材到位那天必须已经成立」的
+       四件事：时序（整数个周期）、朝向（按行进方向）、心情（walk）、静默降级（退回 idle）。
+       素材不存在时它们照样全部可测 —— 这正是「接线先就位」的意义。 */
+    const walkSrc = String(clientSrc)
+    const walkCycleMs = Number((/const WALK_CYCLE_MS = (\d+)/.exec(walkSrc) ?? [])[1])
+    const walkFrames = Number((/const WALK_FRAMES_PER_CYCLE = (\d+)/.exec(walkSrc) ?? [])[1])
+    const walkPerCyclePx = Number((/const WALK_PER_CYCLE_PX = (\d+)/.exec(walkSrc) ?? [])[1])
+    check(walkCycleMs === 850 && walkFrames === 25 && walkPerCyclePx === 130,
+      'the walk contract lives in one place: 850ms per cycle, 25 frames, 130px of travel',
+      `${walkCycleMs}ms / ${walkFrames} frames / ${walkPerCyclePx}px`)
+    check(/\[data-gliding="true"\]\{transition:transform var\(--wisp-glide-ms/.test(walkSrc),
+      'and the CSS transition reads that same variable, so the two can never disagree')
+    check(/const SPRITE_FALLBACK = \{[^}]*walk: 'idle'/.test(walkSrc)
+      && /const SPRITE_OF = \{[^}]*walk: 'walk'/.test(walkSrc),
+      'and a skin without the walk sprite degrades to idle instead of showing an empty box')
+    check(/\|\| mood === 'walk'\) return/.test(walkSrc),
+      'while she is walking the steady poll does not yank the mood back mid-stride')
+    check(/\{ key: 'walk', mood: 'walk'/.test(walkSrc), 'and the action preview can try it on its own')
+
+    /* 真跑一次：溜达期间应当同时是「滑行中 / walk / 按行进方向镜像」。 */
+    const walkFrom = { x: fifth.position.x, y: fifth.position.y }
+    h.advance(2900, 100)                       // 越过 wanderMs=5000 那一拍，落在滑行窗口里
+    const walkDx = fifth.position.x - walkFrom.x
+    check(fifth.element.dataset.mood === 'walk' && fifth.element.dataset.gliding === 'true',
+      'a stroll puts her in the walk state for exactly as long as it lasts',
+      `mood=${String(fifth.element.dataset.mood)} gliding=${String(fifth.element.dataset.gliding)}`)
+    const walkFacing = boxAt(fifth.element.style.transform)
+    check(walkDx === 0 || (walkFacing !== null && walkFacing.facing === (walkDx < 0 ? -1 : 1)),
+      'and she faces the way she is travelling — otherwise the mirrored sprite walks backwards',
+      `dx=${Math.round(walkDx)} facing=${String(walkFacing?.facing)}`)
+    h.advance(1600, 200)
+    check(fifth.element.dataset.gliding === undefined && fifth.element.dataset.mood === 'idle',
+      'when the stroll ends the glide clears and the mood goes back to idle at once',
+      `mood=${String(fifth.element.dataset.mood)} gliding=${String(fifth.element.dataset.gliding)}`)
 
     // 右键：弹出菜单（归位只是其中一项）
     const ctxEvent = (x, y) => ({
@@ -5736,7 +5779,7 @@ head('3y. dialogs: about her, and the action preview')
   dlgApi.openActions()
   check(dlgApi.dialog === 'actions', 'the action preview opens', String(dlgApi.dialog))
   const cells = dlg.all('wisp-cell').filter((el) => el.removed !== true)
-  check(cells.length === 8, 'and lists eight actions — one per mood', `${cells.length} 格`)
+  check(cells.length === 9, 'and lists one action per mood — nine of them', `${cells.length} 格`)
   check(cells.every((c) => typeof c.dataset.mood === 'string' && c.dataset.mood !== ''),
     'each cell names its mood', cells.map((c) => c.dataset.mood).join(','))
   check(cells.every((c) => c.querySelector('img') !== null), 'each cell carries a sprite')
@@ -6811,7 +6854,10 @@ const MOTION_DISK_BUDGET_KB = 90000
       }
       if (!riff || frames < 2) animated.push(`${key}: riff=${riff} frames=${frames}`)
       const wantFrames = (MOTION_FRAMES[key] ?? [97])[0]
-      if (`${canvasW}x${canvasH}` !== '720x1280' || frames !== wantFrames || Math.round(1000 / firstDur) !== 24) {
+      /* 帧率也可以按素材声明（v1.53.0）：走路那条是 34ms/帧（≈29fps）—— 24fps 下
+         一个步态周期凑不出整数帧。默认仍然是 24fps。 */
+      const wantFps = (MOTION_FRAMES[key] ?? [97, '', 24])[2] ?? 24
+      if (`${canvasW}x${canvasH}` !== '720x1280' || frames !== wantFrames || Math.round(1000 / firstDur) !== wantFps) {
         geometry.push(`${key}: ${canvasW}x${canvasH} / ${frames} frames / ${firstDur}ms`)
       }
     }

@@ -176,7 +176,7 @@
 
 ---
 
-## 6. 代码接线清单（素材到位前做、之后做都行）
+## 6. 代码接线清单 —— **已接线（v1.53.0），素材仍未生成**
 
 | 文件 : 行 | 现在 | 要改成 | 为什么 |
 |---|---|---|---|
@@ -185,6 +185,7 @@
 | `lib/client.template.js:3032` `glideTo()` | 写死 1700 ms | 时长 = `ceil(距离 / 每周期距离) × WALK_CYCLE_MS`；开始 `setMood('walk')`、结束归还 | 整周期对齐 + 只有走路时才播走路 |
 | `lib/client.template.js:1708 / 1851` `facingOf()` / `paint()` | 按「哪半边」决定镜像 | 滑行期间按 `sign(dx)` 取朝向 | 不修就是 moonwalk |
 | `lib/client.template.js` `ACTION_ROWS` | 8 个动作 | 加第 9 行（`key: walk` / `mood: walk` / `label: 走路`） | 动作一览里能单独试 |
+| `lib/client.template.js` `MOTION_OF` | 没有 walk 的行 | 素材到位后加 `<皮肤>:walk → <皮肤>_walk`（已写好注释） | 那一行没加 = 那个皮肤走路时只有静态立绘 |
 | `build.mjs` | 自动扫 `assets/<skin>/*.webp` | **不用改**（确认 `walk.webp` 不撞保留目录） | —— |
 | `lib/index.js` `/wisp-motion/` | 收 `*.webp`、单条 ≤ 12 MB | **不用改** | 走路素材约 1 MB |
 | `package.json` `files[]` | 已含 `assets` | **不用改** | —— |
@@ -235,7 +236,8 @@
 - [ ] `first_last_frame` 生成 4 秒走路动画 → 抠像 → 切到 50 帧 / 34 ms → `assets/motion/canon_walk.webp`
 - [ ] 给 `tools/motion-trim.mjs` 加改帧时长的开关（第 5.3 节）
 - [ ] 量环缝、记审计
-- [ ] 接线（第 6 节）→ 加断言（第 7 节）→ `node build.mjs && node verify-wisp.mjs`
+- [x] 接线（第 6 节）+ 断言（第 7 节）—— **v1.53.0 已完成**：`walk` 状态、按行进方向镜像、
+      整数周期滑行、静默降级、动作一览第 9 格，全部已在预检里
 - [ ] 页面上实测两处：**停下那一帧**、**往左走**
 
 **阶段 2**：其余 18 套静态图（每套 1 次调用，照阶段 1 的参数与姿态段，服装段用各自的 v2 规格）
