@@ -420,6 +420,61 @@ export function buildReportPrompt(skin) {
   return [GREEN, identity, costume, body, STYLE, REPORT_POSE, REPORT_EXPR, check, COMPOSITION].join('\n\n')
 }
 
+
+/* ---------------------------------------- 不安（worried）/ 关切（care），第 11、12 个姿态 */
+/* 这两个和 report 是同一类问题：**触发与台词池早就有，画面却借的是别人的图**。
+     worried -> sleepy（出错时她顶着一张睡脸）、care -> attn（久坐提醒借"招你过来"）。
+   补上各自的立绘之后，SPRITE_OF 才能指向它们自己。 */
+const WORRIED_POSE = `【姿态】双手在身前**轻轻绞在一起**、肩膀微微内收，身体微微前倾、头稍稍低；
+站得比平时拘谨，重心略偏一侧。
+**交握的双手只允许挡住腹部正中：领口、两侧肩线、腰带、蝴蝶结、裙摆必须从两侧清楚露出**；
+鲸尾不能被身体挡住。`
+const WORRIED_EXPR = `【表情】不安：眉毛**八字形下垂**（眉头内侧向上挑、眉尾向下垂）；眼睛**睁大**、瞳孔略微缩小；
+嘴巴**抿成一条略微向下的弧线**；**没有腮红**；头微微低，但视线仍对着镜头。`
+const WORRIED_CHECK = [
+  '㉔ 两只手必须**在身前绞在一起**（十指交扣或互相握住），不能省略、不能垂在身体两侧；',
+  '㉕ 眉毛必须是**八字下垂**的不安形状，不是平眉、不是上挑；眼睛比平时睁得更大。',
+].join('\n')
+
+const CARE_POSE = `【姿态】**一手叉腰，另一只手抬到胸前、伸出食指指向画面外侧**（像在指门口、示意你起身走两步）；
+身体微微侧倾、一只脚轻轻点地。
+**抬起的那只手不得遮住领口、腰带与蝴蝶结**；服装全部元素完整可见。`
+const CARE_EXPR = `【表情】关切里带一点催促：眉毛**一高一低**；眼睛睁开、直视镜头；
+嘴巴**一边嘴角上扬的浅笑**（半开玩笑的口气）；**没有腮红**；下巴微微抬起。`
+const CARE_CHECK = [
+  '㉖ 抬起的那只手必须是**伸出食指指着画面外侧**的样子 —— 不是招手、不是握拳、不是摆手；',
+  '㉗ 一手叉腰、一手前指，**两条手臂的姿势都不能省**。',
+].join('\n')
+
+/* 走路 / 汇报 / 不安 / 关切 共用同一套组装逻辑：各自的姿态段、表情段、清单附加条，
+   外加个别皮肤要补的约束（走路给 hanfu 补过宽度预算）。 */
+function assemblePose(skin, { pose, expr, check, extra }) {
+  const costume = COSTUMES[skin] ?? COSTUMES_LEGACY[skin]
+  if (!costume) throw new Error('未知皮肤 ' + skin)
+  let identity = IDENTITY
+  if (skin === 'canon') for (const [from, to] of IDENTITY_CANON_FIX) identity = identity.split(from).join(to)
+  const body = BODIES[skin] ?? BODIES_LEGACY[skin] ?? BODIES.default
+  let base = skin === 'canon'
+    ? CHECKLIST.replace('__BODY_CHECK__', BODY_CHECK_LEGACY.canon)
+    : checklistFor(skin, 'walk')
+  if (check) {
+    base = base.split('\n').filter((l) => !l.startsWith('⑧ ') && !l.startsWith('⑲ ')).join('\n') + '\n' + check
+  }
+  const parts = [GREEN, identity, costume, body, STYLE, pose, expr]
+  if (extra) parts.push(extra)
+  parts.push(base, COMPOSITION)
+  return parts.join('\n\n')
+}
+
+export const EXTRA_POSES = {
+  report: { pose: REPORT_POSE, expr: REPORT_EXPR, check: REPORT_CHECK, label: '汇报' },
+  worried: { pose: WORRIED_POSE, expr: WORRIED_EXPR, check: WORRIED_CHECK, label: '不安' },
+  care: { pose: CARE_POSE, expr: CARE_EXPR, check: CARE_CHECK, label: '关切' },
+}
+
+export const buildWorriedPrompt = (skin) => assemblePose(skin, EXTRA_POSES.worried)
+export const buildCarePrompt = (skin) => assemblePose(skin, EXTRA_POSES.care)
+
 /* ------------------------------------------------------------------ 组装 */
 export function buildPrompt(skin, mood) {
   const costume = COSTUMES[skin]
@@ -457,7 +512,26 @@ export function buildManifest(skin) {
 const args = process.argv.slice(2)
 const valueOf = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null }
 
-if (args.includes('--print-report')) {
+/* 通用入口：report / worried / care 这三个"补的姿态"都走它 —— 每套一张，姿态各一。 */
+const EXTRA_BUILDERS = { report: buildReportPrompt, worried: buildWorriedPrompt, care: buildCarePrompt }
+if (args.includes('--print-extra')) {
+  const i = args.indexOf('--print-extra')
+  const fn = EXTRA_BUILDERS[args[i + 2]]
+  if (!fn) { console.error('未知姿态：' + args[i + 2] + '（可选 ' + Object.keys(EXTRA_BUILDERS).join(' / ') + '）'); process.exit(1) }
+  console.log(fn(args[i + 1]))
+} else if (args.includes('--manifest-extra')) {
+  const i = args.indexOf('--manifest-extra')
+  const mood = args[i + 1]
+  const fn = EXTRA_BUILDERS[mood]
+  if (!fn) { console.error('未知姿态：' + mood); process.exit(1) }
+  const dir = resolve(here, args[i + 2] || '.out')
+  mkdirSync(dir, { recursive: true })
+  const items = SKINS_WALK.map((skin) => ({
+    name: skin + '_' + mood, prompt: fn(skin), skin, mood, params: PARAMS,
+  }))
+  writeFileSync(join(dir, 'manifest-' + mood + '.json'), JSON.stringify(items, null, 1), 'utf8')
+  console.log(mood + ' manifest：' + items.length + ' 条')
+} else if (args.includes('--print-report')) {
   console.log(buildReportPrompt(args[args.indexOf('--print-report') + 1]))
 } else if (args.includes('--print-walk')) {
   console.log(buildWalkPrompt(args[args.indexOf('--print-walk') + 1]))

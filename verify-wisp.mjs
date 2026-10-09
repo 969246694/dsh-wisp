@@ -5796,8 +5796,10 @@ if (clientSrc !== null) {
        （120 × 1.5 s = 180 s > 溜达间隔 45 s）足够让"自己溜达"触发，她于是真的进入 walk
        并加载走路立绘 —— 这一轮里参与切换的两个皮肤各一张，所以 +2。
        这一条因此从"没多出来"变成了"**真的走了**"的证据：walk 没进包时它会退回 idle
-       （那张早就在缓存里），数字反而不动。仍然与切换次数无关。 */
-    check(soak.urLs.length <= 17,
+       （那张早就在缓存里），数字反而不动。仍然与切换次数无关。
+       **v1.57.2 +2 = 19**：worried 与 care 也有自己的立绘了 —— 以前它们分别**借** sleepy 与 attn，
+       那两张早就在缓存里，所以只是"多认识了两张图"；现在各自解出一次。 */
+    check(soak.urLs.length <= 19,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
     /* 反过来钉"没有被内联回来"：只要有一份 MB 级的 image/webp blob，就说明构建又把
@@ -5881,7 +5883,7 @@ head('3y. dialogs: about her, and the action preview')
   check(dlgApi.dialog === 'actions', 'the action preview opens', String(dlgApi.dialog))
   const cells = dlg.all('wisp-cell').filter((el) => el.removed !== true)
   /* 十格 = 八个情绪 + 走路（v1.53.0）+ 汇报（v1.57.1）。每加一个姿态这里都要跟着改。 */
-  check(cells.length === 10, 'and lists one action per pose — ten of them (8 moods + walk + report)', `${cells.length} 格`)
+  check(cells.length === 12, 'and lists one action per pose — twelve of them (8 moods + walk + report + worried + care)', `${cells.length} 格`)
   check(cells.every((c) => typeof c.dataset.mood === 'string' && c.dataset.mood !== ''),
     'each cell names its mood', cells.map((c) => c.dataset.mood).join(','))
   check(cells.every((c) => c.querySelector('img') !== null), 'each cell carries a sprite')
@@ -7369,7 +7371,8 @@ if (clientSrc !== null) {
       for (const skin of skins) {
         /* 十个姿态：加了 eat（干饭）要跟上，加了 walk（走路）要跟上，加了 report（汇报）同样要跟上 ——
            漏一个就会让"每套皮肤都齐"变成假绿。 */
-        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'walk', 'report']) {
+        for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat',
+          'walk', 'report', 'worried', 'care']) {
           const uri = value[skin]?.[mood]
           if (typeof uri !== 'string' || uri.indexOf('data:image/') !== 0) missing.push(`${skin}/${mood}`)
         }
@@ -7380,8 +7383,8 @@ if (clientSrc !== null) {
       skinReport = `table does not evaluate: ${error.message}`
     }
   }
-  if (skinsOk) ok('every skin carries all ten poses as data URIs (eight moods + walk + report)', skinReport)
-  else bad('every skin carries all ten poses as data URIs (eight moods + walk + report)', skinReport)
+  if (skinsOk) ok('every skin carries all twelve poses as data URIs (8 moods + walk + report + worried + care)', skinReport)
+  else bad('every skin carries all twelve poses as data URIs (8 moods + walk + report + worried + care)', skinReport)
 
   if (clientSrc.includes('__SPRITES__')) bad('no leftover build placeholder', 'run `node build.mjs`')
   else ok('no leftover build placeholder')

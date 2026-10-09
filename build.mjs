@@ -65,7 +65,7 @@ const outPath = join(here, 'lib', 'client.js')
    不许出现"17 套能走、2 套站着不动"的半成品：那种状态在画面上只有她走路时才发现得了。
    注意这份表是**写死的**：build.mjs 并不"扫目录自动发现"新姿态，
    加一个姿态必须同时改这里（那份文档里"自动发现"的说法是错的，已按实测更正）。 */
-const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'walk', 'report']
+const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat', 'walk', 'report', 'worried', 'care']
 /* v1.57.0：report 也有素材了，于是它也变成必填 —— 和 walk 同一条理由：
    要么十张全有、要么十张全无，不许"17 套会汇报、1 套站着念稿"。
    空表是有意的：这张表留着，为了下次真有可选姿态时不必改结构。 */
