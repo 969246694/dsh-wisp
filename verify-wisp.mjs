@@ -6567,6 +6567,7 @@ const MOTION_DISK_BUDGET_KB = 115000
       /* 这一条是 1.49.2 的落点：立绘换了新的一张（`45E5D3F1…`），素材跟着重做。 */
       canon_eat: ['assets/canon/eat.webp', '45E5D3F11E4E707BD8BD17572BDA851C191F8CCEF3C503A2F7228C69F0CEC8D0'],
       canon_poked: ['assets/canon/poked.webp', '7738A9E3090B91EA89CB2E78F6C8BC5C37C684570C81568AE05E739B5EFCEFC8'],
+      canon_punch: ['assets/canon/punch.webp', '9A5EB8EBB7DF422006C6ECE86A6A2C68CF87DAC89142DE85536F28779F0C524B'],
       canon_walk: ['assets/canon/walk.webp', 'C58B921EABA57D552D438F841C61EDEE90A4874892D760F199C1E78643DD150F'],
       swim_idle: ['assets/swim/idle.webp', '34B966C92B1E30119C96BEA5AE558C4F9B1244550A3DFB10EC819AE2F5B8EE26'],
       swim_attn: ['assets/swim/attn.webp', '723B3DA12C98028C03E80C1D1E810D04ABF779AFABBD8E36D1D42B6D72C606BC'],
@@ -6692,6 +6693,7 @@ const MOTION_DISK_BUDGET_KB = 115000
       canon_happy: ['DD50A332E3A155C7CA7EA69A0C7C619F300D6ABDD3C1680B70CBCDAEDFF3F557', 0.55],
       canon_idle: ['D769CEBDC9E7630C9C19403B3AE17C239D61B252C41E5FF3DA9AB8B3A079E070', 0.60],
       canon_poked: ['433D3CE7E60ACAD2B1E70281629E1CB42CE697F275280896628108B296398327', 1.06],
+      canon_punch: ['B9CCB6F53D9ACB572BE0CD2E2B9CA20B5A88C50C4756F815D5072C285505415D', 0.46],
       canon_walk: ['754C303BB4FE1CBCB8511A03A6BA3B0FFD915A2CC9301F92A84527F9D9B3D784', 0.92],
       canon_proud: ['F26BD78422983805D5376C8ECB782B37F0803F1F800C81DA9B9DEFFD1D32FEEA', 0.94],
       canon_sleepy: ['A5A19C607C4BE054C68486FF0F0A6EA41ED0E0CBA83F8516C77E1B76E549FC13', 1.41],
@@ -6746,6 +6748,16 @@ const MOTION_DISK_BUDGET_KB = 115000
       swim_attn: ['jump', 1.39],
       swim_poked: ['jump', 1.34],
     }
+
+    /* **一次性动作**（不是循环）：挥拳这类打完要**收回起始姿势**的，接回开头那一下
+       "几乎没变"才是**对的** —— 所以环缝闸的两边判据对它们是**反着用**的：
+       要求比值**小**（说明它真的收回去了），而不是落在带内。
+
+       这一格不是免检：一次性动作如果缝很大，说明它收尾没收回去，
+       播第二遍就是**啪地跳一下**。值是该条被接受时的**上界**，只许变小。 */
+    const MOTION_ONESHOT = {
+      canon_punch: 0.60,
+    }
     {
       const undeclared = keys.filter((k) => MOTION_SEAM[k] === undefined)
       const invented = Object.keys(MOTION_SEAM).filter((k) => !keys.includes(k))
@@ -6762,6 +6774,8 @@ const MOTION_DISK_BUDGET_KB = 115000
         if (p === null || !existsSync(p)) { stale.push(clip + ': missing'); continue }
         const got = createHash('sha256').update(readFileSync(p)).digest('hex').toUpperCase()
         if (got !== want) stale.push(clip + ': ' + got.slice(0, 12) + '… ≠ ' + want.slice(0, 12) + '…')
+        /* 一次性动作不参与"带内"判据 —— 它们的缝本来就该接近 0（见 MOTION_ONESHOT）。 */
+        if (MOTION_ONESHOT[clip] !== undefined) continue
         if (ratio < MOTION_SEAM_LO) off.push([clip, ratio, 'pause'])
         else if (ratio > MOTION_SEAM_HI) off.push([clip, ratio, 'jump'])
       }
@@ -6795,6 +6809,14 @@ const MOTION_DISK_BUDGET_KB = 115000
       check(pardoned.length === 0,
         'and the KNOWN list holds no stale pardons — fix a clip and its name must leave the list',
         pardoned.length ? pardoned.join(', ') + ' 已经进带了，请从 MOTION_SEAM_KNOWN 删掉' : 'no stale pardon')
+
+      const snaps = Object.entries(MOTION_ONESHOT)
+        .filter(([k, bound]) => MOTION_SEAM[k] === undefined || MOTION_SEAM[k][1] > bound + 1e-9)
+      check(snaps.length === 0,
+        'and a ONE-SHOT action ends back where it started — its wrap is small on purpose, and a big one means it snaps when the clip plays again',
+        snaps.length
+          ? snaps.map(([k, b]) => k + ': ' + (MOTION_SEAM[k] ? MOTION_SEAM[k][1].toFixed(2) : 'undeclared') + ' > ' + b.toFixed(2)).join(' | ')
+          : Object.entries(MOTION_ONESHOT).map(([k, b]) => k + ' ≤ ' + b.toFixed(2)).join(' · '))
     }
 
     /* ---- 边缘平滑度不是"看起来"的事，是**编码参数**的事（v1.46.4）----
@@ -7094,10 +7116,15 @@ const MOTION_DISK_BUDGET_KB = 115000
       && typeof motionValue?.[wired[k]] !== 'string')
     const canonUnwired = SHIPPED_CANON.map((f) => f.slice(0, -'.webp'.length))
       .filter((c) => !Object.values(wired ?? {}).includes(c))
-    /* 计数跟着接线走，不写死：canon 那套是 8 个状态 + （接线了就有）走路。 */
-    const canonExpected = (wired ?? {})['canon:walk'] === undefined ? 8 : 9
-    check(SHIPPED_CANON.length === 0 || SHIPPED_CANON.length === canonExpected,
-      'the original-maid clips ship as a SET — never half of them (the default skin is canon, so a half set means some states simply never move)',
+    /* canon 那套 = **8 个情绪状态** + 若干"额外动作"（walk、punch…）。
+       "成套"判的是那 8 个：不许只发 5 个。额外动作有几个算几个 ——
+       它们不是情绪，缺了只是"这个动作没得看"，不是"她的表情不动了"。
+       接线数则要求与**实际发布的条数**一一对应（由下面的 canonMissing / canonUnwired 保证是双射）。 */
+    const CANON_EXTRAS = ['canon_walk.webp', 'canon_punch.webp']
+    const canonBase = SHIPPED_CANON.filter((f) => !CANON_EXTRAS.includes(f))
+    const canonExpected = SHIPPED_CANON.length === 0 ? 8 : SHIPPED_CANON.length
+    check(canonBase.length === 0 || canonBase.length === 8,
+      'the eight original-maid STATES ship as a SET — never half of them (the default skin is canon, so a half set means some states simply never move)',
       SHIPPED_CANON.length
         ? `${SHIPPED_CANON.length} clip(s): ${SHIPPED_CANON.join(', ')}`
         : '0/8 generated yet — the original-maid states stay on the static sprite, silently by design')
