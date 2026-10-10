@@ -472,6 +472,24 @@ export const EXTRA_POSES = {
   care: { pose: CARE_POSE, expr: CARE_EXPR, check: CARE_CHECK, label: '关切' },
 }
 
+
+/* ---------------- 挥拳（punch），第 13 个姿态（v1.58.0） ----------------
+   它是**只在动作一览里试得到**的姿态：产品里没有触发它的事件，
+   所以 SPRITE_OF 里给它一条，稳态轮询的保持名单**不用**加 —— 预览自己有 previewUntil 与
+   6200ms 的收尾定时器，到期就把画面交还 idle。 */
+const PUNCH_POSE = `【姿态】她正在**挥拳**：一条手臂（右手）**向前直拳击出、手臂完全伸展、拳头握紧**，
+拳心朝下、拳面朝向画面右前方；另一条手臂（左手）**收回胸前护住下颌**、手肘贴住肋侧；
+身体重心前压、后脚蹬地、前脚踏实，腰胯随出拳方向转动约 30°；肩膀放松、不要耸肩；
+身体呈**四分之三侧**，出拳方向朝画面右前方。
+**出拳的那条手臂不得遮住脸**；服装全部元素完整可见，被手臂挡住的地方必须从两侧清楚露出。`
+const PUNCH_EXPR = `【表情】发力：眼睛**睁大、盯着出拳方向**；眉毛**下压**；嘴巴**闭紧、牙关咬住**（嘴角平或略微向下）；
+**没有腮红**；下巴微收。`
+const PUNCH_CHECK = [
+  '㉒ 出拳的那只手必须是**握紧的拳头**（四指蜷起、拇指扣在食指外侧）—— 不是张开的手掌，不是摊开的手；',
+  '㉓ 只有一条手臂出拳、另一条**收在胸前护住下颌**：两条手臂的姿势都不能省，出拳的手臂不能挡住脸。',
+].join('\n')
+
+export const buildPunchPrompt = (skin) => assemblePose(skin, { pose: PUNCH_POSE, expr: PUNCH_EXPR, check: PUNCH_CHECK })
 export const buildWorriedPrompt = (skin) => assemblePose(skin, EXTRA_POSES.worried)
 export const buildCarePrompt = (skin) => assemblePose(skin, EXTRA_POSES.care)
 
@@ -509,11 +527,17 @@ export function buildManifest(skin) {
 }
 
 /* -------------------------------------------------------------------- CLI */
+/* 只有**直接运行这个文件**时才跑 CLI。以前没有这道闸：import 它会连带打印一行"用法：…"，
+   于是任何 import 它的脚本，stdout 第一行就被污染了 —— 实测把这一行当成了提示词的**第一段**
+   发给模型，而"绿幕必须写在第一段"正是这个项目踩过坑的规矩。 */
+const invokedDirectly = (process.argv[1] || '').replace(/\\/g, '/').endsWith('tools/character-prompts-v2.mjs')
+if (!invokedDirectly) { /* 被 import：什么也别做 */ }
+else {
 const args = process.argv.slice(2)
 const valueOf = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null }
 
 /* 通用入口：report / worried / care 这三个"补的姿态"都走它 —— 每套一张，姿态各一。 */
-const EXTRA_BUILDERS = { report: buildReportPrompt, worried: buildWorriedPrompt, care: buildCarePrompt }
+const EXTRA_BUILDERS = { report: buildReportPrompt, worried: buildWorriedPrompt, care: buildCarePrompt, punch: buildPunchPrompt }
 if (args.includes('--print-extra')) {
   const i = args.indexOf('--print-extra')
   const fn = EXTRA_BUILDERS[args[i + 2]]
@@ -614,4 +638,5 @@ if (args.includes('--print-extra')) {
   process.exit(bad === 0 ? 0 : 1)
 } else {
   console.log('用法：--manifest <dir> | --print <skin> <mood> | --stats')
+}
 }

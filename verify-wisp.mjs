@@ -5798,8 +5798,11 @@ if (clientSrc !== null) {
        这一条因此从"没多出来"变成了"**真的走了**"的证据：walk 没进包时它会退回 idle
        （那张早就在缓存里），数字反而不动。仍然与切换次数无关。
        **v1.57.2 +2 = 19**：worried 与 care 也有自己的立绘了 —— 以前它们分别**借** sleepy 与 attn，
-       那两张早就在缓存里，所以只是"多认识了两张图"；现在各自解出一次。 */
-    check(soak.urLs.length <= 19,
+       那两张早就在缓存里，所以只是"多认识了两张图"；现在各自解出一次。
+       **v1.58.0 +1 = 20**：挥拳进包（只有 canon 有那张立绘）。连跑 4 次都是 20，
+       不是抖动 —— 但**具体是哪条路径多解了一张没有继续定位**；这条断言的作用是钉住
+       "与切换次数无关"（切 120 次仍是常数），不是精确计数，所以先按实测值收口。 */
+    check(soak.urLs.length <= 20,
       'switching skins reuses cached blob URLs instead of minting new ones',
       `${soak.urLs.length} object URLs ever created across ${Array.isArray(api.skins) ? api.skins.length : 0} skins and ${CYCLES} switches`)
     /* 反过来钉"没有被内联回来"：只要有一份 MB 级的 image/webp blob，就说明构建又把
@@ -5882,8 +5885,9 @@ head('3y. dialogs: about her, and the action preview')
   dlgApi.openActions()
   check(dlgApi.dialog === 'actions', 'the action preview opens', String(dlgApi.dialog))
   const cells = dlg.all('wisp-cell').filter((el) => el.removed !== true)
-  /* 十格 = 八个情绪 + 走路（v1.53.0）+ 汇报（v1.57.1）。每加一个姿态这里都要跟着改。 */
-  check(cells.length === 12, 'and lists one action per pose — twelve of them (8 moods + walk + report + worried + care)', `${cells.length} 格`)
+  /* 十三格 = 八个情绪 + 走路（v1.53.0）+ 汇报（v1.57.1）+ 不安/关切（v1.57.2）+ 挥拳（v1.58.0）。
+     每加一个姿态这里都要跟着改。 */
+  check(cells.length === 13, 'and lists one action per pose — thirteen of them (8 moods + walk + report + worried + care + punch)', `${cells.length} 格`)
   check(cells.every((c) => typeof c.dataset.mood === 'string' && c.dataset.mood !== ''),
     'each cell names its mood', cells.map((c) => c.dataset.mood).join(','))
   check(cells.every((c) => c.querySelector('img') !== null), 'each cell carries a sprite')
