@@ -234,9 +234,13 @@ if (motionPlaceholderCount !== 1) {
   process.exit(1)
 }
 
+/* 只写**真的有的**姿态（v1.58.0 修）。可选姿态（punch）缺素材时上面会 continue，键是 undefined；
+   照旧插值就写出字符串 "undefined" —— 那不是"缺键"：客户端 spriteOf() 一看 typeof === 'string'
+   就把它当有效值返回，SPRITE_FALLBACK 因此永远轮不到，她去加载一个叫 undefined 的 URL，画面是坏图。
+   实测：canon 之外的 17 套 punch 全是这个值。 */
 const literal = '{\n' + skins.map((skin) => (
   `      ${JSON.stringify(skin)}: {\n`
-  + MOODS.map((m) => `        ${m}: '${sprites[skin][m]}',`).join('\n')
+  + MOODS.filter((m) => sprites[skin][m]).map((m) => `        ${m}: '${sprites[skin][m]}',`).join('\n')
   + '\n      },'
 )).join('\n') + '\n    }'
 /* 空表也要是**合法的空对象**：没有 motion 素材的包照样能构建（客户端会连 <img> 都不建）。 */
@@ -294,6 +298,13 @@ const table = out.match(/const SPRITES = \{([\s\S]*?)\n {4}\}/)
 const requiredMoods = MOODS.filter((m) => !OPTIONAL_MOODS.includes(m))
 if (!table || requiredMoods.some((m) => !new RegExp(`\\b${m}:\\s*'data:image/`).test(table[1]))) {
   console.error('build: the injected SPRITES table is missing sprites; aborting')
+  process.exit(1)
+}
+/* v1.58.0 的第六道防线：可选姿态缺素材时，**不许在表里写成字符串 "undefined"**。
+   那看起来像"有这一项"，客户端 spriteOf() 因此直接返回它、回退表永远轮不到，
+   结果是加载一个叫 undefined 的 URL（画面坏图）。缺就整条键不写。 */
+if (/:s*'undefined'/.test(table[1])) {
+  console.error('build: the injected SPRITES table carries the literal string "undefined"; aborting')
   process.exit(1)
 }
 try {
