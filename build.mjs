@@ -69,9 +69,9 @@ const MOODS = ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat
 /* v1.57.0：report 也有素材了，于是它也变成必填 —— 和 walk 同一条理由：
    要么十张全有、要么十张全无，不许"17 套会汇报、1 套站着念稿"。
    空表是有意的：这张表留着，为了下次真有可选姿态时不必改结构。 */
-/* punch = 挥拳（v1.58.0）：**只有 canon 有这张立绘**（要求就是只接原版），所以它一直是可选的 ——
-   其余皮肤由 SPRITE_FALLBACK 退回 idle。这是唯一一个"不必每套都有"的姿态。 */
-const OPTIONAL_MOODS = ['punch']
+/* v1.59.0：punch 也补齐了（18 套齐），于是它不再是可选姿态 —— 这条表又空了。
+   空表是有意的：留着结构，下次真有可选姿态时不必改代码。 */
+const OPTIONAL_MOODS = []
 
 /* 皮肤 = assets/ 下的一个子目录，里面是这套皮肤的 <mood>[_tier].webp。
    如果没有子目录含精灵图，就把 assets/ 本身当作一个名为 default 的皮肤 ——

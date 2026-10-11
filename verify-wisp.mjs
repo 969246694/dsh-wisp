@@ -7403,7 +7403,7 @@ if (clientSrc !== null) {
         /* 十个姿态：加了 eat（干饭）要跟上，加了 walk（走路）要跟上，加了 report（汇报）同样要跟上 ——
            漏一个就会让"每套皮肤都齐"变成假绿。 */
         for (const mood of ['idle', 'happy', 'sleepy', 'work', 'attn', 'poked', 'proud', 'eat',
-          'walk', 'report', 'worried', 'care']) {
+          'walk', 'report', 'worried', 'care', 'punch']) {
           const uri = value[skin]?.[mood]
           if (typeof uri !== 'string' || uri.indexOf('data:image/') !== 0) missing.push(`${skin}/${mood}`)
         }
@@ -7414,8 +7414,8 @@ if (clientSrc !== null) {
       skinReport = `table does not evaluate: ${error.message}`
     }
   }
-  if (skinsOk) ok('every skin carries all twelve poses as data URIs (8 moods + walk + report + worried + care)', skinReport)
-  else bad('every skin carries all twelve poses as data URIs (8 moods + walk + report + worried + care)', skinReport)
+  if (skinsOk) ok('every skin carries all thirteen poses as data URIs (8 moods + walk + report + worried + care + punch)', skinReport)
+  else bad('every skin carries all thirteen poses as data URIs (8 moods + walk + report + worried + care + punch)', skinReport)
 
   if (clientSrc.includes('__SPRITES__')) bad('no leftover build placeholder', 'run `node build.mjs`')
   else ok('no leftover build placeholder')
