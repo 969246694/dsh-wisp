@@ -4885,9 +4885,11 @@ if (clientSrc !== null) {
     }
     check(expand('外观'), 'clicking a group expands it in place',
       `row=${JSON.stringify(groupRow('外观') ? groupRow('外观').dataset : null)} 项=${itemsOf().length}`)
-    check(liveMenuItems().length > 8 && liveMenuItems().length >= skinCount,
-      'opening the group adds its entries (大小不再是条目，改成了滑块)',
-      `展开后 ${liveMenuItems().length} 项（收起时 8）`)
+    /* v1.63.0：外观组**不再平铺皮肤**（44 套）—— 菜单不会随皮肤数变长。
+       皮肤列表搬进了弹窗，见下面「外观弹窗」那一节。 */
+    check(liveMenuItems().length === 10,
+      'opening the appearance group adds two entries, not one per skin',
+      `展开后 ${liveMenuItems().length} 项（收起时 8，皮肤共 ${skinCount} 套）`)
     check(collapse('外观'), 'clicking it again collapses it')
     check(liveMenuItems().length === 8, 'and the menu is back to its top level', String(liveMenuItems().length))
     const byText = (t) => itemsOf().filter((i) => i.textContent.includes(t))
@@ -4898,15 +4900,43 @@ if (clientSrc !== null) {
     /* 从 API 派生，**不写死皮肤名**。写死过「初版女仆」，改名成「素绘女仆」之后
        三条断言当场全炸，其中一条 undefined.dispatch 还把整个套件截断了。 */
     /* 既有 API 的形状是**有序数组** [{id,label}]，不是 id→label 的对象。 */
-    const skinNames = api.skinLabels.map((s) => s.label)
-    const plainSkinLabel = (el) => el.textContent.replace(/^[✓　]\s*/, '')
-    const skinItems = itemsOf().filter((i) => skinNames.includes(plainSkinLabel(i)))
-    check(skinItems.length === skinCount,
-      'every shipped skin is offered',
-      `${skinItems.length} 项 / ${skinCount} 套；名字表=${JSON.stringify(skinNames)}`)
-    check(skinItems.filter((i) => i.textContent.startsWith('✓')).length === 1,
-      'exactly one skin is ticked as current',
-      skinItems.map((i) => i.textContent).join(' / '))
+    /* ---- 外观弹窗（v1.63.0）--------------------------------------------------
+       44 套平铺在级联菜单里已经不能用了：那是一列文字，要滚半天，而且**看不出哪套长什么样**。
+       现在菜单只留「更换外观…」与「换下一个」，真列表在弹窗里 ——
+       网格 + 每套自己的缩略图 + 分组 + 当前打勾（复用的就是动作一览那套 .wisp-grid）。 */
+    const dlgOf = () => menuHost().querySelector('.wisp-dialog')
+    const openSkins = () => {
+      /* 必须用 liveMenuItems()：itemsOf() 连**已移除的旧菜单**一起返回，
+         拿它 find 会点到一个失效元素上（这条在下面的换皮肤测试里真踩过）。 */
+      const row = liveMenuItems().find((i) => i.textContent.indexOf('更换外观') >= 0)
+      if (!row) return false
+      row.dispatch('click', itemEvent())
+      return dlgOf() !== null
+    }
+    check(openSkins(), 'the appearance entry opens a list instead of expanding 44 rows inline',
+      String(dlgOf() !== null))
+    const skinCells = dlgOf() ? dlgOf().querySelectorAll('.wisp-cell') : []
+    check(skinCells.length === skinCount, 'and every shipped skin has a cell in it',
+      `${skinCells.length} 格 / ${skinCount} 套`)
+    const currentCells = skinCells.filter((c) => c.dataset && c.dataset.current === 'true')
+    check(currentCells.length === 1 && currentCells[0].dataset.skin === fifth.skin,
+      'exactly one cell is marked as the one she is wearing',
+      currentCells.map((c) => c.dataset.skin).join(',') + ' / 当前 ' + fifth.skin)
+    check(skinCells.every((c) => c.querySelector && c.querySelector('img') !== null),
+      'every cell carries its own thumbnail — otherwise 44 boxes look identical')
+    const groupHeads = dlgOf() ? dlgOf().querySelectorAll('.wisp-group') : []
+    check(groupHeads.length >= 4, 'the list is broken into labelled groups, not one flat run',
+      groupHeads.map((g) => String(g.textContent)).join(' | '))
+    const listedSkins = new Set(skinCells.map((c) => c.dataset.skin))
+    check(api.skins.every((id) => listedSkins.has(id)),
+      'and no skin fell out of the grouping table',
+      api.skins.filter((id) => !listedSkins.has(id)).join(',') || '每套都在')
+    dlgOf().querySelector('.wisp-dialog-x').dispatch('click', itemEvent())
+    check(dlgOf() === null, 'the close button shuts the list')
+    /* openDialog 的第一件事就是 closeMenu() —— 弹窗开过的这一节结束时菜单已经没了，
+       而下一节假设它还开着。这里重新打开，别把状态带歪。 */
+    body5.dispatch('contextmenu', rightClickOnHer().ev)
+    check(menuOf() !== null, 'and the menu can be brought back afterwards')
     check(body5.querySelectorAll('.wisp-menu').length === 0,
       'the menu lives beside her body, not inside it', 'inside it would be mirrored and scale with her')
 
@@ -4943,7 +4973,8 @@ if (clientSrc !== null) {
       'the position row says where she is', String(summaryOf('位置')))
 
     /* ---- 开关：真开关控件，而且点完不关菜单 ---- */
-    check(collapse('外观'), 'close the skin group again')
+    /* 弹窗那一节结束时菜单是**重新打开**的，三个分组都是初始的收起状态 —— 先展开再收起。 */
+    check(expand('外观') && collapse('外观'), 'the skin group still opens and closes again')
     check(expand('行为'), 'the behaviour group opens')   /* 开关都在这一组里 */
     const switchOf = (key) => itemsOf().find((i) => i.dataset && i.dataset.switchKey === key)
     const switchKeys = ['frame', 'wander', 'reactions', 'celebrate', 'hungry', 'night']
@@ -5195,17 +5226,30 @@ if (clientSrc !== null) {
     const skinBefore = fifth.skin
     const posBefore = fifth.position
     const padBeforeSkin = fifth.doctor().bounds.visible.left   // 盒左 → 可见左边
-    const srcBeforeSkin = spriteSrcs().at(-1)
-    /* 同样不写死名字：挑一套「和当前不同」的皮肤，用它的显示名去点菜单 */
+    /* 取**她身上那张**立绘，而不是 spriteSrcs() 的最后一条 ——
+       外观弹窗的 44 个缩略图也会往 h.srcs 里塞 blob URL，最后一条早就不是她的图了。 */
+    const herSprite = () => {
+      const ims = fifth.element.querySelectorAll('.wisp-img')
+      return ims.length ? String(ims[ims.length - 1].src) : null
+    }
+    const srcBeforeSkin = herSprite()
+    /* 不写死名字：挑一套「和当前不同」的皮肤，在**外观弹窗**里按 data-skin 找它那一格。
+       v1.63.0 起皮肤不在菜单里平铺了 —— 菜单只有「更换外观…」，列表在弹窗的网格里。 */
+    const skinRow = liveMenuItems().find((i) => i.textContent.indexOf('更换外观') >= 0)
+    check(skinRow !== undefined, 'the appearance entry is in the menu', String(skinRow && skinRow.textContent))
+    skinRow.dispatch('click', itemEvent())
+    const skinList = menuHost().querySelector('.wisp-dialog')
+    check(skinList !== null, 'and it opens the skin list')
     const targetSkin = fifth.skins.find((id) => id !== skinBefore)
-    const targetLabel = fifth.skinLabels.find((s) => s.id === targetSkin).label
-    const targetEl = itemsOf().filter((i) => i.textContent.replace(/^[✓　]\s*/, '') === targetLabel)[0]
-    check(targetEl !== undefined, 'the other skin has a menu entry', String(targetSkin))
+    const targetEl = skinList.querySelectorAll('.wisp-cell').find((c) => c.dataset && c.dataset.skin === targetSkin)
+    check(targetEl !== undefined, 'the other skin has a cell in the list', String(targetSkin))
     targetEl.dispatch('click', itemEvent())
+    check(menuHost().querySelector('.wisp-dialog') !== null,
+      'picking one keeps the list open so you can keep trying')
     check(fifth.skin === targetSkin, 'choosing a skin switches to it', String(fifth.skin))
     check(fifth.skin !== skinBefore, 'and it is a different skin than before', `${skinBefore} -> ${fifth.skin}`)
-    check(spriteSrcs().at(-1) !== srcBeforeSkin, 'the sprite is swapped for the new skin',
-      `${String(srcBeforeSkin).slice(0, 22)} -> ${String(spriteSrcs().at(-1)).slice(0, 22)}`)
+    check(herSprite() !== srcBeforeSkin, 'the sprite is swapped for the new skin',
+      `${String(srcBeforeSkin).slice(0, 22)} -> ${String(herSprite()).slice(0, 22)}`)
     /* v1.49.2：换皮肤 = 换一张留白不同的图。贴着边的换完还贴着边（位置数值会变，但
        **可见像素到屏幕边的距离**不变）；本来不在边上的，原地不动。 */
     const visibleLeftBefore = posBefore.x + padBeforeSkin
@@ -5216,6 +5260,9 @@ if (clientSrc !== null) {
       `glued=${wasGlued} visibleLeft ${visibleLeftBefore} -> ${visibleLeftAfter}, x ${posBefore.x} -> ${fifth.position.x}`)
     check(JSON.parse(h.win.localStorage.getItem('dsh-wisp:skin:v1') || 'null')?.id === targetSkin,
       'the choice is remembered', h.win.localStorage.getItem('dsh-wisp:skin:v1'))
+    /* 让列表自己收尾 —— 留着它会影响后面那些"菜单还开着吗"的断言（跨节状态是脆性的来源）。 */
+    menuHost().querySelector('.wisp-dialog').querySelector('.wisp-dialog-x').dispatch('click', itemEvent())
+    check(menuHost().querySelector('.wisp-dialog') === null, 'and the list is closed again')
     check(fifth.setSkin('no-such-skin') === false && fifth.skin === targetSkin,
       'an unknown skin name is refused rather than blanking her', String(fifth.skin))
     check(fifth.configure({ skin: 'deepsea' }) && fifth.skin === 'deepsea',
